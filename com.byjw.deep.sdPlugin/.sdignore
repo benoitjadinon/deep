@@ -1,0 +1,5 @@
+# 배포 패키지에서 제외 (gitignore 문법)
+logs/
+*.log
+/bin/stt-helper
+.DS_Store

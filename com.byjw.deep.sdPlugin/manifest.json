@@ -1,0 +1,110 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "UUID": "com.byjw.deep",
+  "Name": "Deep",
+  "Version": "0.1.0.0",
+  "Author": "BYJW Studio",
+  "Description": "Orca에서 도는 Claude 세션을 8칸 상태판으로. 색=상태, 탭=포커스.",
+  "Category": "Deep",
+  "CategoryIcon": "imgs/plugin/category",
+  "Icon": "imgs/plugin/marketplace",
+  "CodePath": "bin/launch.sh",
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "6.5"
+  },
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "10.15"
+    }
+  ],
+  "Actions": [
+    {
+      "Name": "Session Slot",
+      "UUID": "com.byjw.deep.slot",
+      "Icon": "imgs/actions/slot/icon",
+      "Tooltip": "세션 상태 표시 · 탭하면 해당 Orca 터미널로 포커스",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/slot/key"
+        }
+      ]
+    },
+    {
+      "Name": "모델 (Model)",
+      "UUID": "com.byjw.deep.model",
+      "Icon": "imgs/actions/model/icon",
+      "Tooltip": "돌려서 모델 고르고 눌러 적용 (대상 세션에 /model)",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/slot/key"
+        }
+      ],
+      "Encoder": {
+        "Icon": "imgs/actions/slot/icon",
+        "layout": "layouts/dial.json"
+      }
+    },
+    {
+      "Name": "Effort",
+      "UUID": "com.byjw.deep.effort",
+      "Icon": "imgs/actions/effort/icon",
+      "Tooltip": "돌려서 effort 고르고 눌러 적용 (대상 세션에 /effort)",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/slot/key"
+        }
+      ],
+      "Encoder": {
+        "Icon": "imgs/actions/slot/icon",
+        "layout": "layouts/dial.json"
+      }
+    },
+    {
+      "Name": "Talk (말하기)",
+      "UUID": "com.byjw.deep.talk",
+      "Icon": "imgs/actions/talk/icon",
+      "Tooltip": "눌러서 말하기 (whisper STT — 설정 필요)",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/slot/key"
+        }
+      ],
+      "Encoder": {
+        "Icon": "imgs/actions/slot/icon",
+        "layout": "layouts/dial.json"
+      }
+    },
+    {
+      "Name": "대상 세션 선택",
+      "UUID": "com.byjw.deep.target",
+      "Icon": "imgs/actions/target/icon",
+      "Tooltip": "돌려서 대상 세션 이동, 눌러서 그 세션으로 점프",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/slot/key"
+        }
+      ],
+      "Encoder": {
+        "Icon": "imgs/actions/slot/icon",
+        "layout": "layouts/dial.json"
+      }
+    }
+  ]
+}
