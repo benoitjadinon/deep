@@ -49,12 +49,43 @@ describe("keySvg", () => {
     expect(svg).not.toContain("세션제목무시됨");
   });
 
-  it("대상이면 브랜치가 코랄 칩(비대상은 회색 텍스트)", () => {
+  it("대상이면 우측 상단 코랄 점(dot), 비대상은 없음", () => {
     const b = { empty: false as const, handle: "t", label: "x", state: "done", color: "green" as const, repo: "svd", branch: "main" };
     const on = keySvg(b, 0, true);
     const off = keySvg(b, 0, false);
-    expect(on).toContain('fill="#d97757"'); // 코랄 칩
-    expect(on).toContain("main");
+    expect(on).toContain('<circle cx="124" cy="32" r="10" fill="#d97757"'); // 우측 상단 코랄 점
+    expect(on).toContain("main"); // 브랜치는 일반 텍스트 유지
+    expect(on).toContain('fill="#ffffff"'); // 이름은 흰색
     expect(off).not.toContain("#d97757");
+  });
+});
+
+describe("keySvg 주의 애니메이션(펄스 링)", () => {
+  const attn = { empty: false as const, handle: "t", label: "x", state: "waiting", color: "amber" as const, repo: "svd", branch: "main" };
+  const calm = { empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main" };
+  it("주의 키는 nowMs에 따라 SVG가 달라진다(애니메이션)", () => {
+    expect(keySvg(attn, 0, false, 0)).not.toBe(keySvg(attn, 0, false, 320));
+  });
+  it("정적(작업중) 키는 nowMs 무관하게 동일(캐시 안정)", () => {
+    expect(keySvg(calm, 0, false, 0)).toBe(keySvg(calm, 0, false, 999));
+  });
+  it("현재 보는 세션(target)은 애니메이션 안 함(정적)", () => {
+    expect(keySvg(attn, 0, true, 0)).toBe(keySvg(attn, 0, true, 500));
+  });
+  it("주의 키는 배경이 상태색으로 펄스(글로우 오버레이 — 상태띠 포함 최소 2개 fill)", () => {
+    // amber 주의 키: 배경 글로우 + 상태띠 = #f59e0b fill 2개 이상
+    expect((keySvg(attn, 0, false, 200).match(/#f59e0b/g) || []).length).toBeGreaterThanOrEqual(2);
+    // 비주의(파랑) 키는 상태띠 1개뿐(글로우 없음)
+    expect((keySvg(calm, 0, false, 200).match(/#3b82f6/g) || []).length).toBe(1);
+  });
+});
+
+describe("keySvg dim — 주의 없는 키 죽여 대비 만들기", () => {
+  const calm = { empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main" };
+  it("dim이면 키 전체를 어둡게(그룹 opacity)", () => {
+    expect(keySvg(calm, 0, false, 0, true)).toContain('opacity="0.32"');
+  });
+  it("dim 아니면 정상 밝기(죽이지 않음)", () => {
+    expect(keySvg(calm, 0, false, 0, false)).not.toContain('opacity="0.32"');
   });
 });

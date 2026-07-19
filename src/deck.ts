@@ -87,6 +87,16 @@ export function colorFor(state: AgentState): Color {
   return "white";
 }
 
+/**
+ * 주의(애니메이션)가 필요한 세션인지 — orca가 "다 됐다/대답 필요"를 알릴 때 키가 확 띄게.
+ * 대상 = 입력대기(amber)·완료 미확인(green)·에러(red). 작업중(blue)·idle(white)은 조용히.
+ * 지금 보는 세션(target)은 이미 눈앞이라 제외.
+ */
+export function needsAttention(b: Button, isTarget: boolean): boolean {
+  if (b.empty || isTarget) return false;
+  return b.color === "amber" || b.color === "green" || b.color === "red";
+}
+
 const EMPTY: Button = { empty: true };
 
 /**

@@ -17291,6 +17291,10 @@ function colorFor(state) {
   if (state && STATE_COLOR[state]) return STATE_COLOR[state];
   return "white";
 }
+function needsAttention(b, isTarget) {
+  if (b.empty || isTarget) return false;
+  return b.color === "amber" || b.color === "green" || b.color === "red";
+}
 var EMPTY = { empty: true };
 function buildDeck(input, opts = {}) {
   const page = opts.page ?? 0;
@@ -17369,7 +17373,7 @@ function units(s) {
   for (const ch of s) u += /[\x00-\x7F]/.test(ch) ? 0.56 : 1;
   return u || 1;
 }
-function keySvg(b, tick2 = 0, isTarget = false) {
+function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   if (b.empty) {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144"><rect width="144" height="144" rx="18" fill="#141416"/><circle cx="72" cy="72" r="7" fill="#3a3a3e"/></svg>`;
   }
@@ -17381,24 +17385,30 @@ function keySvg(b, tick2 = 0, isTarget = false) {
   const projSvg = fit >= 16 ? `<text x="72" y="84" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="${Math.min(30, Math.floor(fit))}" font-weight="700">${esc2(proj)}</text>` : `<text x="72" y="84" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="20" font-weight="700">${esc2(marqueeWindow(proj, 9, tick2))}</text>`;
   let subSvg = "";
   if (sub) {
-    if (isTarget) {
-      let st = sub;
-      if ([...st].length > 12) st = `${[...st].slice(0, 11).join("")}\u2026`;
-      const w = Math.min(124, Math.round(units(st) * 15) + 22);
-      subSvg = `<rect x="${72 - w / 2}" y="99" width="${w}" height="24" rx="12" fill="#d97757"/><text x="72" y="116" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="15" font-weight="700">${esc2(st)}</text>`;
-    } else {
-      subSvg = `<text x="72" y="112" text-anchor="middle" fill="#b8b8be" font-family="sans-serif" font-size="17" font-weight="600">${esc2(sub)}</text>`;
-    }
+    subSvg = `<text x="72" y="112" text-anchor="middle" fill="#b8b8be" font-family="sans-serif" font-size="17" font-weight="600">${esc2(sub)}</text>`;
   }
+  const attn = needsAttention(b, isTarget);
+  let glow = "";
+  if (attn) {
+    const urgent = b.color === "amber" || b.color === "red";
+    const period = urgent ? 640 : 1300;
+    const p = 0.5 - 0.5 * Math.cos(2 * Math.PI * (nowMs % period) / period);
+    const op = (urgent ? 0.4 : 0.28) * p;
+    glow = `<rect width="144" height="144" rx="18" fill="${color}" opacity="${op.toFixed(2)}"/>`;
+  }
+  const g0 = dim ? '<g opacity="0.32">' : "";
+  const g1 = dim ? "</g>" : "";
+  const cornerTag = isTarget ? `<circle cx="124" cy="32" r="10" fill="#d97757"/>` : "";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144">
   <defs><clipPath id="r"><rect width="144" height="144" rx="18"/></clipPath></defs>
-  <rect width="144" height="144" rx="18" fill="#1c1c1e"/>
+  ${g0}<rect width="144" height="144" rx="18" fill="#1c1c1e"/>
+  ${glow}
   <rect width="144" height="13" fill="${color}" clip-path="url(#r)"/>
-  ${projSvg}${subSvg}
+  ${projSvg}${subSvg}${g1}${cornerTag}
 </svg>`;
 }
-function keyImage(b, tick2 = 0, isTarget = false) {
-  return "data:image/svg+xml;base64," + Buffer.from(keySvg(b, tick2, isTarget), "utf8").toString("base64");
+function keyImage(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
+  return "data:image/svg+xml;base64," + Buffer.from(keySvg(b, tick2, isTarget, nowMs, dim), "utf8").toString("base64");
 }
 var DIAL_ACCENT = {
   model: "#3b82f6",
@@ -17453,6 +17463,23 @@ async function orcaJson(args) {
 }
 async function orcaRun(args) {
   await execFileP(ORCA, args, EXEC);
+}
+async function focusOrca() {
+  try {
+    await execFileP("/usr/bin/open", ["-b", "com.stablyai.orca"], EXEC);
+  } catch (e) {
+    plugin_default.logger.error(`focus orca: ${e}`);
+  }
+}
+var lastNav = 0;
+var targetSwitchTimer = null;
+function switchTargetSoon(handle) {
+  if (targetSwitchTimer) clearTimeout(targetSwitchTimer);
+  targetSwitchTimer = setTimeout(() => {
+    targetSwitchTimer = null;
+    orcaRun(["terminal", "switch", "--terminal", handle]).catch(() => {
+    });
+  }, 180);
 }
 var currentPage = 0;
 var deck = buildDeck({ terminals: [], worktrees: [] }, { page: 0, perPage: 8 });
@@ -17577,10 +17604,13 @@ function dialFeedback(role) {
   return { full: dialImage("target", "TARGET", targetLabel(), tick) };
 }
 function renderAll() {
+  const now = Date.now();
+  const boardAttn = anyAttention();
   for (const [id, { action: a, coordinates }] of slotViews) {
     const b = deck.slots[slotIndex(coordinates)] ?? { empty: true };
     const isTarget = !b.empty && b.handle === targetHandle;
-    const img = keyImage(b, tick, isTarget);
+    const dim = boardAttn && !b.empty && !needsAttention(b, isTarget);
+    const img = keyImage(b, tick, isTarget, now, dim);
     if (lastImg.get(id) === img) continue;
     lastImg.set(id, img);
     a.setImage(img).catch(() => {
@@ -17590,6 +17620,13 @@ function renderAll() {
     a.setFeedback(dialFeedback(role)).catch(() => {
     });
   }
+}
+function anyAttention() {
+  for (const { coordinates } of slotViews.values()) {
+    const b = deck.slots[slotIndex(coordinates)];
+    if (b && !b.empty && needsAttention(b, b.handle === targetHandle)) return true;
+  }
+  return false;
 }
 async function poll() {
   try {
@@ -17612,7 +17649,7 @@ async function poll() {
       }
     }
     const activeWtId = (wp.result?.worktrees ?? []).find((w) => w.isActive)?.worktreeId;
-    if (activeWtId) {
+    if (activeWtId && Date.now() - lastNav > 1800) {
       const terms = (tl.result?.terminals ?? []).filter((t) => t.worktreeId === activeWtId);
       const h = terms.sort((a, b) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0))[0]?.handle;
       if (h && h !== targetHandle) setTarget(h);
@@ -17642,8 +17679,10 @@ var SlotAction = class extends SingletonAction {
     const b = deck.slots[slotIndex(ev.payload?.coordinates)];
     if (b && !b.empty) {
       setTarget(b.handle);
+      lastNav = Date.now();
       try {
         await orcaRun(["terminal", "switch", "--terminal", b.handle]);
+        await focusOrca();
       } catch (e) {
         plugin_default.logger.error(`switch failed: ${e}`);
         ev.action.showAlert?.();
@@ -17682,9 +17721,9 @@ var DialBase = class extends SingletonAction {
       if (allHandles.length) {
         const cur = allHandles.indexOf(t ?? allHandles[0]);
         const next = allHandles[(cur + dir + allHandles.length) % allHandles.length];
+        lastNav = Date.now();
         setTarget(next);
-        orcaRun(["terminal", "switch", "--terminal", next]).catch(() => {
-        });
+        switchTargetSoon(next);
       }
     }
     renderAll();
@@ -17708,8 +17747,10 @@ var DialBase = class extends SingletonAction {
         ev.action.showAlert?.();
       }
     } else if (this.role === "target" && t) {
+      lastNav = Date.now();
       await orcaRun(["terminal", "switch", "--terminal", t]).catch(() => {
       });
+      await focusOrca();
     } else if (this.role === "talk") {
       if (recording) await stopAndSend(ensureTarget());
       else await startRecording();
@@ -17764,6 +17805,9 @@ setInterval(() => {
   tick++;
   renderAll();
 }, 450);
+setInterval(() => {
+  if (anyAttention()) renderAll();
+}, 160);
 poll();
 /*! Bundled license information:
 

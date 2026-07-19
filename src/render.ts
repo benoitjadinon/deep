@@ -1,5 +1,5 @@
 // 버튼 모델 → Stream Deck 키에 그릴 SVG. 순수 함수(테스트 가능).
-import type { Button, Deck } from "./deck";
+import { needsAttention, type Button, type Deck } from "./deck";
 
 const HEX: Record<string, string> = {
   blue: "#3b82f6", amber: "#f59e0b", green: "#22c55e", red: "#ef4444", white: "#6b7280",
@@ -43,7 +43,7 @@ function units(s: string): number {
   return u || 1;
 }
 
-export function keySvg(b: Button, tick = 0, isTarget = false): string {
+export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = false): string {
   if (b.empty) {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144"><rect width="144" height="144" rx="18" fill="#141416"/><circle cx="72" cy="72" r="7" fill="#3a3a3e"/></svg>`;
   }
@@ -63,28 +63,38 @@ export function keySvg(b: Button, tick = 0, isTarget = false): string {
       : `<text x="72" y="84" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="20" font-weight="700">${esc(marqueeWindow(proj, 9, tick))}</text>`;
   let subSvg = "";
   if (sub) {
-    if (isTarget) {
-      let st = sub;
-      if ([...st].length > 12) st = `${[...st].slice(0, 11).join("")}…`;
-      const w = Math.min(124, Math.round(units(st) * 15) + 22);
-      subSvg =
-        `<rect x="${72 - w / 2}" y="99" width="${w}" height="24" rx="12" fill="#d97757"/>` +
-        `<text x="72" y="116" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="15" font-weight="700">${esc(st)}</text>`;
-    } else {
-      subSvg = `<text x="72" y="112" text-anchor="middle" fill="#b8b8be" font-family="sans-serif" font-size="17" font-weight="600">${esc(sub)}</text>`;
-    }
+    subSvg = `<text x="72" y="112" text-anchor="middle" fill="#b8b8be" font-family="sans-serif" font-size="17" font-weight="600">${esc(sub)}</text>`;
   }
+  // 주의 필요(입력대기·완료미확인·에러) 키는 배경이 상태색으로 숨쉬듯 글로우 펄스 → 확 띔.
+  // 긴급(대기·에러)=강하고 빠르게, 완료=은은하게. 피크에서도 틴트라 흰 글자 가독성 유지. nowMs로 위상(순수).
+  const attn = needsAttention(b, isTarget);
+  let glow = "";
+  if (attn) {
+    const urgent = b.color === "amber" || b.color === "red";
+    const period = urgent ? 640 : 1300; // ms/주기
+    const p = 0.5 - 0.5 * Math.cos((2 * Math.PI * (nowMs % period)) / period); // 0→1→0
+    const op = (urgent ? 0.4 : 0.28) * p; // 배경 상태색 틴트 세기(0→피크)
+    glow = `<rect width="144" height="144" rx="18" fill="${color}" opacity="${op.toFixed(2)}"/>`;
+  }
+  // 보드에 주의 키가 있을 때, 주의 없는 키는 어둡게 죽여 대비로 확 띄게(dim). 주의 키는 밝게 유지.
+  const g0 = dim ? '<g opacity="0.32">' : "";
+  const g1 = dim ? "</g>" : "";
+  // 현재 세션(target)은 우측 상단 코랄 점(dot)으로 표시. dim돼도 보이게 그룹 밖에 그림.
+  const cornerTag = isTarget
+    ? `<circle cx="124" cy="32" r="10" fill="#d97757"/>`
+    : "";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144">
   <defs><clipPath id="r"><rect width="144" height="144" rx="18"/></clipPath></defs>
-  <rect width="144" height="144" rx="18" fill="#1c1c1e"/>
+  ${g0}<rect width="144" height="144" rx="18" fill="#1c1c1e"/>
+  ${glow}
   <rect width="144" height="13" fill="${color}" clip-path="url(#r)"/>
-  ${projSvg}${subSvg}
+  ${projSvg}${subSvg}${g1}${cornerTag}
 </svg>`;
 }
 
 // Stream Deck setImage는 data URI를 기대 → SVG를 base64 data URI로 감싼다.
-export function keyImage(b: Button, tick = 0, isTarget = false): string {
-  return "data:image/svg+xml;base64," + Buffer.from(keySvg(b, tick, isTarget), "utf8").toString("base64");
+export function keyImage(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = false): string {
+  return "data:image/svg+xml;base64," + Buffer.from(keySvg(b, tick, isTarget, nowMs, dim), "utf8").toString("base64");
 }
 
 const DIAL_ACCENT: Record<string, string> = {

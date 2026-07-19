@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { buildDeck, type Deck } from "./deck";
+import { buildDeck, needsAttention, type Deck } from "./deck";
 import { keyImage, dialImage } from "./render";
 
 const execFileP = promisify(execFile);
@@ -42,6 +42,27 @@ async function orcaJson(args: string[]): Promise<any> {
 }
 async function orcaRun(args: string[]): Promise<void> {
   await execFileP(ORCA, args, EXEC);
+}
+// Orca가 백그라운드(다른 앱에 포커스)면 앞으로 가져온다 — 키 탭/대상 점프 시 창이 안 뜨는 문제 해결.
+// 이미 앞이면 no-op. `open -b <bundle>`은 실행중이면 activate, 아니면 실행.
+async function focusOrca(): Promise<void> {
+  try {
+    await execFileP("/usr/bin/open", ["-b", "com.stablyai.orca"], EXEC);
+  } catch (e) {
+    streamDeck.logger.error(`focus orca: ${e}`);
+  }
+}
+
+// 수동 이동(다이얼 회전/키 탭) 시각 — 직후 poll 자동추적이 수동 선택을 덮어쓰지 않게 하는 유예용.
+let lastNav = 0;
+// 대상 다이얼을 빠르게 돌릴 때 매 틱 orca switch를 쏘면 포커스가 밀림 → 마지막 선택으로 디바운스(180ms).
+let targetSwitchTimer: ReturnType<typeof setTimeout> | null = null;
+function switchTargetSoon(handle: string): void {
+  if (targetSwitchTimer) clearTimeout(targetSwitchTimer);
+  targetSwitchTimer = setTimeout(() => {
+    targetSwitchTimer = null;
+    orcaRun(["terminal", "switch", "--terminal", handle]).catch(() => {});
+  }, 180);
 }
 
 let currentPage = 0;
@@ -173,10 +194,13 @@ function dialFeedback(role: string): { full: string } {
 }
 
 function renderAll(): void {
+  const now = Date.now();
+  const boardAttn = anyAttention(); // 주의 키가 하나라도 있으면 나머지는 dim으로 죽여 대비 강조
   for (const [id, { action: a, coordinates }] of slotViews) {
     const b = deck.slots[slotIndex(coordinates)] ?? { empty: true as const };
     const isTarget = !b.empty && (b as any).handle === targetHandle;
-    const img = keyImage(b, tick, isTarget);
+    const dim = boardAttn && !b.empty && !needsAttention(b, isTarget);
+    const img = keyImage(b, tick, isTarget, now, dim);
     if (lastImg.get(id) === img) continue;
     lastImg.set(id, img);
     a.setImage(img).catch(() => {});
@@ -184,6 +208,15 @@ function renderAll(): void {
   for (const { action: a, role } of dialViews.values()) {
     a.setFeedback(dialFeedback(role)).catch(() => {});
   }
+}
+
+// 화면에 보이는 키 중 주의 필요(펄스)한 게 하나라도 있나 — 펄스 루프 게이트(없으면 렌더 스킵).
+function anyAttention(): boolean {
+  for (const { coordinates } of slotViews.values()) {
+    const b = deck.slots[slotIndex(coordinates)];
+    if (b && !b.empty && needsAttention(b, (b as any).handle === targetHandle)) return true;
+  }
+  return false;
 }
 
 async function poll(): Promise<void> {
@@ -209,7 +242,8 @@ async function poll(): Promise<void> {
     }
     // 현재 포커스(활성) 세션을 대상으로 자동 지정 → 말하면 지금 보는 세션으로 감
     const activeWtId = (wp.result?.worktrees ?? []).find((w: any) => w.isActive)?.worktreeId;
-    if (activeWtId) {
+    // 방금(1.8s 내) 다이얼/키로 수동 이동했으면 자동추적 억제 — 수동 선택이 poll에 밀리지 않게
+    if (activeWtId && Date.now() - lastNav > 1800) {
       const terms = (tl.result?.terminals ?? []).filter((t: any) => t.worktreeId === activeWtId);
       const h = terms.sort((a: any, b: any) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0))[0]?.handle;
       if (h && h !== targetHandle) setTarget(h);
@@ -240,8 +274,10 @@ class SlotAction extends SingletonAction {
     const b: any = deck.slots[slotIndex(ev.payload?.coordinates)];
     if (b && !b.empty) {
       setTarget(b.handle); // 탭한 세션을 다이얼 대상으로(pending 모델도 그 세션값으로)
+      lastNav = Date.now(); // 방금 수동 이동 → poll 자동추적 잠깐 억제
       try {
         await orcaRun(["terminal", "switch", "--terminal", b.handle]);
+        await focusOrca(); // Orca가 백그라운드면 앞으로 + 그 세션으로 이동
       } catch (e) {
         streamDeck.logger.error(`switch failed: ${e}`);
         ev.action.showAlert?.();
@@ -272,12 +308,13 @@ class DialBase extends SingletonAction {
     } else if (this.role === "effort") {
       pendingEffort = EFFORTS[(EFFORTS.indexOf(pendingEffort) + dir + EFFORTS.length) % EFFORTS.length];
     } else if (this.role === "target") {
-      // 모든 세션을 순회하며 실제로 그 세션을 포커스(Orca 사이드바 선택이 드르륵 이동)
+      // 모든 세션 순회. 데크 코랄 점은 즉시 이동(setTarget+renderAll), 실제 Orca 전환은 디바운스(밀림 방지).
       if (allHandles.length) {
         const cur = allHandles.indexOf(t ?? allHandles[0]);
         const next = allHandles[(cur + dir + allHandles.length) % allHandles.length];
+        lastNav = Date.now();
         setTarget(next);
-        orcaRun(["terminal", "switch", "--terminal", next]).catch(() => {});
+        switchTargetSoon(next);
       }
     }
     // talk 회전(스크롤)은 orca 미지원 → no-op
@@ -302,7 +339,9 @@ class DialBase extends SingletonAction {
         ev.action.showAlert?.();
       }
     } else if (this.role === "target" && t) {
+      lastNav = Date.now();
       await orcaRun(["terminal", "switch", "--terminal", t]).catch(() => {});
+      await focusOrca(); // 대상 다이얼 눌러 점프 시 Orca 앞으로
     } else if (this.role === "talk") {
       // 토글: 누르면 녹음 시작, 다시 누르면 정지·변환·전송
       // (hold 아님 — 녹음 시작 지연 때문에 짧게 누르면 거의 안 잡힘)
@@ -342,4 +381,8 @@ setInterval(() => {
   tick++;
   renderAll();
 }, 450);
+// 주의 필요 키를 부드럽게 펄스(≈6fps, Elgato ≤10/s 준수). 주의 키 없으면 렌더 스킵.
+setInterval(() => {
+  if (anyAttention()) renderAll();
+}, 160);
 poll();

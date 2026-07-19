@@ -1,5 +1,23 @@
 import { describe, it, expect } from "vitest";
-import { buildDeck, colorFor, projectOf } from "../src/deck.js";
+import { buildDeck, colorFor, projectOf, needsAttention } from "../src/deck.js";
+
+describe("needsAttention — 주의 필요 세션 판정(애니메이션 트리거)", () => {
+  const b = (color: any, unread?: boolean) => ({ empty: false as const, handle: "t", label: "x", state: "s" as any, color, unread });
+  it("입력대기(amber)·완료미확인(green)·에러(red)는 주의 필요", () => {
+    expect(needsAttention(b("amber"), false)).toBe(true);
+    expect(needsAttention(b("green", true), false)).toBe(true);
+    expect(needsAttention(b("red"), false)).toBe(true);
+  });
+  it("작업중(blue)·idle(white)·빈칸은 주의 불필요", () => {
+    expect(needsAttention(b("blue"), false)).toBe(false);
+    expect(needsAttention(b("white"), false)).toBe(false);
+    expect(needsAttention({ empty: true }, false)).toBe(false);
+  });
+  it("현재 보는 세션(target)은 이미 보고 있어 애니메이션 안 함", () => {
+    expect(needsAttention(b("amber"), true)).toBe(false);
+    expect(needsAttention(b("green", true), true)).toBe(false);
+  });
+});
 
 // orca terminal list --json  →  result.terminals[]
 const terminals = [
