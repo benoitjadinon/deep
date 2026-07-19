@@ -16,7 +16,7 @@
 | 에이전트 | Claude Code 권장. 세션판·Talk는 어떤 Orca 에이전트든, **모델·Effort 다이얼은 `/model`·`/effort` 쓰는 에이전트**(Claude 등) |
 
 ## 다운로드 · 설치 (사용자)
-1. [Releases](https://github.com/Jungwoon/deep-streamdeck/releases)에서 최신 `com.byjw.deep.streamDeckPlugin` 다운로드
+1. [Releases](https://github.com/Jungwoon/deep/releases)에서 최신 `com.byjw.deep.streamDeckPlugin` 다운로드
 2. 파일 **더블클릭** → Stream Deck 앱 설치창 → 설치
 3. Stream Deck 앱 오른쪽 **Deep** 카테고리 확인 → 아래 [액션 배치](#액션-배치-stream-deck-앱)대로 키·다이얼에 드래그
 
@@ -24,7 +24,7 @@
 
 ## 소스에서 빌드 (개발)
 ```bash
-git clone https://github.com/Jungwoon/deep-streamdeck && cd deep-streamdeck
+git clone https://github.com/Jungwoon/deep && cd deep
 npm install
 npm run package                              # 아이콘 + esbuild 번들
 npx streamdeck link com.byjw.deep.sdPlugin
