@@ -50,6 +50,7 @@ export type Button =
       branch?: string;
       dupIndex?: number; // 같은 repo(branch) 내 순번 (0=첫째, 1↑는 -N 표기)
       unread?: boolean; // 완료됐지만 아직 안 본 상태 표시용
+      agentType?: string; // orca가 보고한 에이전트 종류 (claude/codex/opencode/…) — 다이얼 게이팅에 사용
     };
 
 export interface Deck {
@@ -110,12 +111,15 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   const page = opts.page ?? 0;
   const perPage = opts.perPage ?? 8;
 
-  // paneKey → state 맵 + worktreeId → {repo, branch} 메타
+  // paneKey → state 맵 + 폴백 에이전트 타입 + worktreeId → {repo, branch} 메타
   const stateByPane = new Map<string, AgentState>();
+  const agentByPane = new Map<string, string>();
   const metaByWt = new Map<string, { repo?: string; branch?: string; unread?: boolean }>();
   for (const wt of input.worktrees ?? []) {
     for (const a of wt.agents ?? []) {
       stateByPane.set(a.paneKey, a.state);
+      // 같은 paneKey의 에이전트가 여럿일 수 있으니 첫 번째만 (폴백), 보통 0~1개
+      if (!agentByPane.has(a.paneKey)) agentByPane.set(a.paneKey, a.agentType ?? "");
     }
     if (wt.worktreeId) {
       const branch = wt.displayName || (wt.branch ?? "").replace(/^refs\/heads\//, "");
@@ -168,6 +172,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       branch: e.branch,
       dupIndex: e.dupIndex,
       unread: e.unread,
+      agentType: agentByPane.get(`${e.item.t.tabId}:${e.item.t.leafId}`),
     });
   }
 

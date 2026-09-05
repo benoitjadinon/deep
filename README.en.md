@@ -68,7 +68,7 @@ If something's wrong, the **Talk dial shows the cause**: `받아쓰기 켜기` (
 ## Limitations
 - **Mac + Orca only**. Other terminals/OSes unsupported.
 - **Keys are 8 slots (1 page)**. With more than 8 sessions, the 9th+ aren't on the keys but remain reachable via the **target dial**.
-- Model/effort presets are Claude-based (other agents use different names).
+- Dial signals are **gated per running agent**: only supported agents (Claude, OpenCode) get a working model/effort dial, and OpenCode's model list is **loaded live** from `opencode models`. Unsupported/unknown agents get the dial blocked (`-`), so no wrong command is ever sent.
 
 ## Development
 ```bash

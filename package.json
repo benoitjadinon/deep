@@ -10,10 +10,12 @@
     "poll": "node scripts/poll.mjs",
     "icons": "node scripts/gen-icons.mjs",
     "build": "esbuild src/plugin.ts --bundle --platform=node --target=node20 --format=cjs --outfile=com.byjw.deep.sdPlugin/bin/plugin.js --log-level=warning",
+    "restart": "bash scripts/restart-streamdeck.sh",
     "package": "npm run icons && npm run build"
   },
   "devDependencies": {
     "@elgato/cli": "^1.7.4",
+    "@types/node": "^26.4.1",
     "esbuild": "^0.28.1",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

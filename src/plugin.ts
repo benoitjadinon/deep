@@ -5,9 +5,25 @@ import streamDeck, { action, SingletonAction } from "@elgato/streamdeck";
 import { execFile } from "node:child_process";
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { buildDeck, needsAttention, type Deck } from "./deck";
 import { keyImage, dialImage } from "./render";
+import {
+  profileFor,
+  supported,
+  stepsFor,
+  discoverModelCmd,
+  parseModels,
+  providerShort,
+  parseOpenCodeState,
+  sortModels,
+  UNSUPPORTED_PROFILE,
+  type AgentProfile,
+  type ApplyStep,
+  type ControlKind,
+  type OpenCodeModelState,
+} from "./agents";
 
 const execFileP = promisify(execFile);
 // 머신마다 설치 위치가 다르므로 공통 경로를 탐색(하드코딩 제거 = 다른 맥에서도 동작)
@@ -22,6 +38,9 @@ const STT_TXT = "/tmp/agentdeck-stt.txt";
 const STT_PID = "/tmp/agentdeck-stt.pid";
 const STT_PARTIAL = "/tmp/agentdeck-stt.partial"; // 실시간 부분 인식결과
 const STT_STATUS = "/tmp/agentdeck-stt.status"; // 실패 원인 코드
+// opencode가 마지막에 기록한 현재 선택 모델/변형(ef) — TUI에서 바꾸면 이 파일에 반영됨.
+// 최신 순(recent[0]) = 가장 최근 선택 모델. variant[모델ID] = 그 모델의 현재 effort.
+const OPENCODE_STATE = join(homedir(), ".local", "state", "opencode", "model.json");
 // 실패 코드 → 다이얼에 띄울 한글 안내
 const TALK_HINT: Record<string, string> = {
   MIC_DENIED: "마이크 권한 켜기",
@@ -32,9 +51,6 @@ const TALK_HINT: Record<string, string> = {
 };
 const talkHint = (code: string) => TALK_HINT[code] ?? "STT 오류";
 const EXEC = { maxBuffer: 64 * 1024 * 1024 } as const;
-
-const MODELS = ["opus", "sonnet", "haiku"];
-const EFFORTS = ["low", "medium", "high", "xhigh", "ultracode"];
 
 async function orcaJson(args: string[]): Promise<any> {
   const { stdout } = await execFileP(ORCA, [...args, "--json"], EXEC);
@@ -71,10 +87,20 @@ let tick = 0;
 
 // 다이얼 대상/설정 상태
 let targetHandle: string | undefined; // 다이얼이 작용할 세션(키 탭 or 4번 다이얼로 선택)
-let pendingEffort = "medium"; // 2번 다이얼로 '고른' effort(누르기 전엔 미적용)
-let pendingModel = MODELS[0]; // 1번 다이얼로 '고른' 모델(누르기 전엔 미적용)
+let pendingEffort = ""; // 2번 다이얼로 '고른' effort(누르기 전엔 미적용) — 에이전트 프로파일에서 채움
+let pendingModel = ""; // 1번 다이얼로 '고른' 모델(누르기 전엔 미적용)
 const modelByHandle = new Map<string, string>(); // 세션별 마지막 '적용'된 모델
 const effortByHandle = new Map<string, string>(); // 세션별 마지막 '적용'된 effort
+// 세션별 '현재 선택' 모델/effort — 디스크(opencode model.json)에서 정기 리드한 값(TUI 변경 추적용)
+const currentModelByHandle = new Map<string, string>();
+const currentEffortByHandle = new Map<string, string>();
+// 다이얼을 방금 돌려 '고른' 시각 — 이 구간엔 자동 동기화가 사용자 선택을 덮어쓰지 않도록 유예
+const pickAt = { model: 0, effort: 0 };
+const PICK_GRACE = 2500;
+// 에이전트 타입별 게이팅/발견 상태: agentType → 프로파일 · 발견된 라이브 목록
+const agentByHandle = new Map<string, string>(); // 세션 → agentType (orca worktree ps)
+const profileByHandle = new Map<string, AgentProfile>(); // 세션 → 게이트에 쓸 프로파일
+const modelsByHandle = new Map<string, string[]>(); // 세션 → 발견된 모델 목록(opencode 등)
 let allHandles: string[] = []; // 모든 세션(최근순) 핸들 — 8키 페이지와 무관, 사이드바 전체
 const sessionByHandle = new Map<string, any>(); // 핸들 → 버튼(라벨 조회용)
 
@@ -162,11 +188,148 @@ async function stopAndSend(target?: string): Promise<void> {
   renderAll();
 }
 
-// 대상 변경 시 pending을 그 세션의 적용값으로 리셋
+// 대상 변경 시 pending을 그 세션의 적용값/프로파일 목록으로 리셋
+function noteHandle(h: string): void {
+  const b = sessionByHandle.get(h);
+  if (b && !agentByHandle.has(h)) {
+    agentByHandle.set(h, b.agentType ?? "");
+    profileByHandle.set(h, profileFor(b.agentType ?? ""));
+  }
+}
 function setTarget(h?: string): void {
   targetHandle = h;
-  pendingModel = (h && modelByHandle.get(h)) || MODELS[0];
-  pendingEffort = (h && effortByHandle.get(h)) || "medium";
+  if (h) noteHandle(h);
+  profileForHandle();
+  pickAt.model = 0; // 대상이 바뀌면 이전 유예 무효 → 새 세션의 실제 상태부터 채움
+  pickAt.effort = 0;
+  applyPending();
+}
+// 게이트용: 대상 세션의 프로파일(모르는 에이전트 = 미지원)
+function profileForHandle(): AgentProfile {
+  const t = ensureTarget();
+  if (!t) return UNSUPPORTED_PROFILE;
+  noteHandle(t);
+  return profileByHandle.get(t) ?? UNSUPPORTED_PROFILE;
+}
+// 대상 세션이 다이얼에 쓸 모델/effort 목록: 발견분 우선, 없으면 프로파일 정적 목록
+function dialList(kind: ControlKind): string[] {
+  const t = ensureTarget();
+  if (!t) return [];
+  const live = kind === "model" ? modelsByHandle.get(t) : undefined;
+  if (live && live.length) return live;
+  const p = profileByHandle.get(t);
+  return p ? (kind === "model" ? p.models : p.efforts) : [];
+}
+function applyPending(): void {
+  adoptPending("model");
+  adoptPending("effort");
+}
+// 다이얼에 표시할 모델/effort를 '현재 읽은 값' 우선으로 채운다.
+// 사용자가 방금(2.5s 내) 다이얼을 돌렸으면 그 선택을 존중해 건너뛴다.
+function adoptPending(role: ControlKind): void {
+  const t = targetHandle;
+  if (!t) return;
+  if (Date.now() - pickAt[role] < PICK_GRACE) return;
+  if (role === "model") {
+    const current = currentModelByHandle.get(t);
+    const applied = modelByHandle.get(t);
+    const first = dialList("model")[0] || "";
+    pendingModel = current || applied || first;
+  } else {
+    const current = currentEffortByHandle.get(t);
+    const applied = effortByHandle.get(t);
+    const first = dialList("effort")[0] || "";
+    pendingEffort = current || applied || first;
+  }
+}
+// 다이얼에 보여줄 값 — 미지원/빈 목록이면 안내 글자
+function dialValue(role: string): string {
+  const p = profileForHandle();
+  if (role === "model") {
+    if (!supported(p, "model")) return "-";
+    return pendingModel ? providerShort(pendingModel) : "…";
+  }
+  if (role === "effort") {
+    if (!supported(p, "effort")) return "-";
+    return pendingEffort || "…";
+  }
+  if (role === "target") return targetLabel();
+  return talkState;
+}
+// 터미널로 한 단계씩 명령 전송(픽커 다이얼로그 반응 대기 포함) — 게이트 후 호출
+async function applyAgentSteps(handle: string, steps: ApplyStep[]): Promise<void> {
+  for (const s of steps) {
+    if (s.delayMs) await new Promise((r) => setTimeout(r, s.delayMs));
+    const args = ["terminal", "send", "--terminal", handle, "--text", s.text];
+    if (s.enter) args.push("--enter");
+    await orcaRun(args);
+  }
+}
+// 에이전트가 노출하는 모델 목록을 주기적(스로틀)으로 로드 — 지원하는 agent만.
+let lastDiscoverAt = 0;
+let discoverBusy = false;
+async function refreshDiscovery(): Promise<void> {
+  const t = ensureTarget();
+  if (!t) return;
+  const agentType = agentByHandle.get(t);
+  const cmd = discoverModelCmd(agentType);
+  if (!cmd) return; // 발견 불가한 에이전트(정적 목록 사용)
+  if (discoverBusy || Date.now() - lastDiscoverAt < 30000) return;
+  discoverBusy = true;
+  try {
+    lastDiscoverAt = Date.now();
+    const { stdout } = await execFileP(cmd[0], cmd.slice(1), EXEC);
+    const list = parseModels(stdout);
+    if (list.length) {
+      // 발견 첫 로드에도 즐겨찾기/최근 순 정렬 적용
+      const st = readOpenCodeState();
+      modelsByHandle.set(t, sortModels(list, st.recent ?? [], st.favorites ?? []));
+    }
+  } catch (e) {
+    streamDeck.logger.error(`discover models: ${e}`);
+  } finally {
+    discoverBusy = false;
+    renderAll();
+  }
+}
+
+// 대상 세션이 '지금 쓰고 있는' 모델/effort를 리드 — TUI에서 바뀐 것을 다이얼에 반영.
+// opencode: ~/.local/state/opencode/model.json (recent[0]=현재 모델, variant[모델]=effort, favorite=즐겨찾기).
+// 모델 다이얼 회전 목록도 여기서 즐겨찾기/최근 순으로 재정렬한다.
+function readOpenCodeState(): OpenCodeModelState {
+  try {
+    return parseOpenCodeState(readFileSync(OPENCODE_STATE, "utf8"));
+  } catch (e) {
+    if (!(e instanceof Error && "code" in e && (e as any).code === "ENOENT")) {
+      streamDeck.logger.error(`read opencode state: ${e}`);
+    }
+    return {};
+  }
+}
+function refreshCurrentModel(): void {
+  const t = ensureTarget();
+  const agentType = t && agentByHandle.get(t);
+  if (!agentType || !discoverModelCmd(agentType)) return; // 상태파일 리드 지원(결국 opencode)만
+  const state = readOpenCodeState();
+  if (!state.model) return;
+  const id = `${state.model.providerID}/${state.model.modelID}`;
+  const changed = currentModelByHandle.get(t) !== id;
+  currentModelByHandle.set(t, id);
+  // 그 모델의 현재 effort(variant)를 추적해 effort 다이얼에 반영
+  const v = state.variant && state.variant[id];
+  if (v && v !== "default") currentEffortByHandle.set(t, v);
+  // 모델 목록을 즐겨찾기/최근 우선으로 재정렬(발견 목록이 이미 있을 때)
+  const list = modelsByHandle.get(t);
+  if (list && list.length) {
+    const sorted = sortModels(list, state.recent ?? [], state.favorites ?? []);
+    // 내용이 다를 때만 반영(불필요한 재렌더 방지)
+    if (sorted.length !== list.length || sorted.some((m, i) => m !== list[i])) {
+      modelsByHandle.set(t, sorted);
+    }
+  }
+  if (changed) renderAll();
+  adoptPending("model");
+  adoptPending("effort");
 }
 
 type Coords = { column: number; row: number };
@@ -177,7 +340,12 @@ const lastImg = new Map<string, string>();
 const slotIndex = (c?: Coords) => (c ? c.row * 4 + c.column : 0);
 
 function ensureTarget(): string | undefined {
-  if (!targetHandle || !allHandles.includes(targetHandle)) targetHandle = allHandles[0];
+  if (!targetHandle || !allHandles.includes(targetHandle)) {
+    if (targetHandle !== allHandles[0]) {
+      targetHandle = allHandles[0];
+      applyPending();
+    }
+  }
   return targetHandle;
 }
 function targetLabel(): string {
@@ -187,10 +355,11 @@ function targetLabel(): string {
 
 function dialFeedback(role: string): { full: string } {
   ensureTarget();
-  if (role === "model") return { full: dialImage("model", "MODEL", pendingModel, tick) };
-  if (role === "effort") return { full: dialImage("effort", "EFFORT", pendingEffort, tick) };
-  if (role === "talk") return { full: dialImage("talk", "TALK", talkState, tick) };
-  return { full: dialImage("target", "TARGET", targetLabel(), tick) };
+  const v = dialValue(role);
+  if (role === "model") return { full: dialImage("model", "MODEL", v, tick) };
+  if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick) };
+  if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
+  return { full: dialImage("target", "TARGET", v, tick) };
 }
 
 function renderAll(): void {
@@ -238,6 +407,11 @@ async function poll(): Promise<void> {
       if (!s.empty) {
         allHandles.push((s as any).handle);
         sessionByHandle.set((s as any).handle, s);
+        // 에이전트 타입 → 게이트 프로파일 저장(없던 세션만)
+        if (!agentByHandle.has((s as any).handle)) {
+          agentByHandle.set((s as any).handle, (s as any).agentType ?? "");
+          profileByHandle.set((s as any).handle, profileFor((s as any).agentType ?? ""));
+        }
       }
     }
     // 현재 포커스(활성) 세션을 대상으로 자동 지정 → 말하면 지금 보는 세션으로 감
@@ -248,6 +422,8 @@ async function poll(): Promise<void> {
       const h = terms.sort((a: any, b: any) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0))[0]?.handle;
       if (h && h !== targetHandle) setTarget(h);
     }
+    refreshDiscovery(); // 지원 에이전트의 모델 목록 주기 로드(스로틀)
+    refreshCurrentModel(); // 지금 선택된 모델/effort를 TUI에서 추적해 다이얼에 반영(매 폴)
     renderAll();
     try {
       writeFileSync(
@@ -303,10 +479,25 @@ class DialBase extends SingletonAction {
     const dir = (ev.payload?.ticks ?? 0) > 0 ? 1 : (ev.payload?.ticks ?? 0) < 0 ? -1 : 0;
     if (!dir) return;
     const t = ensureTarget();
-    if (this.role === "model") {
-      pendingModel = MODELS[(MODELS.indexOf(pendingModel) + dir + MODELS.length) % MODELS.length];
-    } else if (this.role === "effort") {
-      pendingEffort = EFFORTS[(EFFORTS.indexOf(pendingEffort) + dir + EFFORTS.length) % EFFORTS.length];
+    if (this.role === "model" || this.role === "effort") {
+      // 게이트: 미지원 에이전트/빈 목록이면 회전 no-op + 빨간 불
+      const p = profileForHandle();
+      if (!t || !supported(p, this.role as ControlKind)) {
+        ev.action.showAlert?.();
+        return;
+      }
+      const list = dialList(this.role as ControlKind);
+      if (!list.length) {
+        ev.action.showAlert?.(); // 아직 로드 전(발견 대기)
+        return;
+      }
+      const cur = (this.role === "model" ? pendingModel : pendingEffort);
+      const idx = cur ? list.indexOf(cur) : -1;
+      const start = idx < 0 ? (dir > 0 ? -1 : 0) : idx;
+      const next = list[(start + dir + list.length) % list.length];
+      if (this.role === "model") pendingModel = next;
+      else pendingEffort = next;
+      pickAt[this.role as ControlKind] = Date.now(); // 자동 동기화가 이 선택을 덮지 않게 유예 시작
     } else if (this.role === "target") {
       // 모든 세션 순회. 데크 코랄 점은 즉시 이동(setTarget+renderAll), 실제 Orca 전환은 디바운스(밀림 방지).
       if (allHandles.length) {
@@ -322,21 +513,26 @@ class DialBase extends SingletonAction {
   }
   override async onDialDown(ev: any): Promise<void> {
     const t = ensureTarget();
-    if (this.role === "model" && t) {
-      modelByHandle.set(t, pendingModel);
-      try {
-        await orcaRun(["terminal", "send", "--terminal", t, "--text", `/model ${pendingModel}`, "--enter"]);
-      } catch (e) {
-        streamDeck.logger.error(`model apply: ${e}`);
+    if (this.role === "model" || this.role === "effort") {
+      const p = profileForHandle();
+      const kind = this.role as ControlKind;
+      if (!t || !supported(p, kind)) {
+        streamDeck.logger.info(`apply ${kind}: unsupported agent (${agentByHandle.get(t ?? "") ?? "?"}) — gated`);
         ev.action.showAlert?.();
-      }
-    } else if (this.role === "effort" && t) {
-      effortByHandle.set(t, pendingEffort);
-      try {
-        await orcaRun(["terminal", "send", "--terminal", t, "--text", `/effort ${pendingEffort}`, "--enter"]);
-      } catch (e) {
-        streamDeck.logger.error(`effort apply: ${e}`);
-        ev.action.showAlert?.();
+      } else {
+        const value = this.role === "model" ? pendingModel : pendingEffort;
+        if (!value) {
+          ev.action.showAlert?.();
+          return;
+        }
+        if (this.role === "model") modelByHandle.set(t, value);
+        else effortByHandle.set(t, value);
+        try {
+          await applyAgentSteps(t, stepsFor(p, kind, value));
+        } catch (e) {
+          streamDeck.logger.error(`apply ${kind}: ${e}`);
+          ev.action.showAlert?.();
+        }
       }
     } else if (this.role === "target" && t) {
       lastNav = Date.now();

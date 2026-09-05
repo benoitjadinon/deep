@@ -104,18 +104,39 @@ const DIAL_ACCENT: Record<string, string> = {
   target: "#f59e0b", // 앰버
 };
 
-/** 다이얼 터치스크린(200×100) 커스텀 렌더 — 좌측 색 액센트 + 라벨 + 큰 값 + 적용 배지 */
+/** 다이얼 터치스크린(200×100) 커스텀 렌더 — 좌측 색 레일 + 상단 작은 라벨 + 값(가득 채운 3줄 래핑, 위로 정렬). */
 export function dialImage(role: string, label: string, value: string, tick = 0): string {
   const accent = DIAL_ACCENT[role] ?? "#8a8a90";
+  const textX = 18;
+  const avail = 195 - textX; // 레일(7px) 제외 실제 텍스트 가용 폭
+  const lineFont = 15; // 3줄 값 폰트
+  const lineH = 16;
+  const top = 44;
+  // 실제 글자 폭(units: ASCII≈0.56, CJK≈1) 기준 줄당 글자수 — 8px 하드코딩 제거.
+  const perLine = Math.max(4, Math.floor(avail / (lineFont * 0.56)));
+  // 값이 끊김 없이 한 줄(단일 폭)에 들어가면 한 줄, 아니면 3줄 래핑(가득)
+  const oneLineFits = units(value || " ") * lineFont <= avail; // 폰트 크기에 비례한 총 폭
+  const lines = oneLineFits ? [value || " "] : wrap(value || " ", perLine, 3);
+
   // 값이 조금만 넘쳐도 마퀴로 흐르게(정적은 여백 확보), 아니면 폭 맞춰 자동 크기
-  const overflow = units(value) > 5;
-  const valText = overflow ? marqueeWindow(value, 6, tick) : value;
-  const vfs = overflow ? 28 : Math.min(36, Math.max(20, Math.floor(164 / units(value || " "))));
+  const overflow = units(value) > perLine;
+  const valText = overflow ? marqueeWindow(value, perLine, tick) : value;
+  const singleSize = overflow ? 28 : Math.min(28, Math.max(20, Math.floor((avail - 4) / units(value || " "))));
+
+  const labelSvg = role === "model"
+    ? `<text x="${textX}" y="20" fill="${accent}" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="2">${esc(label)}</text>`
+    : `<text x="${textX}" y="24" fill="${accent}" font-family="sans-serif" font-size="13" font-weight="800" letter-spacing="1">${esc(label)}</text>`;
+
+  // 3줄 렌더(위로 정렬) — 100px 다이얼에서 top부터 lineH 간격
+  const valueSvg = lines.length > 1
+    ? lines.map((ln, i) => `<text x="${textX}" y="${top + i * lineH}" fill="#ffffff" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc(ln)}</text>`).join("")
+    : `<text x="${textX}" y="56" fill="#ffffff" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc(overflow ? marqueeWindow(valText, perLine, tick) : valText)}</text>`;
+
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
   <rect width="7" height="100" fill="${accent}"/>
-  <text x="20" y="32" fill="${accent}" font-family="sans-serif" font-size="17" font-weight="800" letter-spacing="1">${esc(label)}</text>
-  <text x="20" y="80" fill="#ffffff" font-family="sans-serif" font-size="${vfs}" font-weight="700">${esc(valText)}</text>
+  ${labelSvg}
+  ${valueSvg}
 </svg>`;
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
 }

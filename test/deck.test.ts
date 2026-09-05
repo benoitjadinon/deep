@@ -30,8 +30,16 @@ const terminals = [
 // orca worktree ps --json  →  result.worktrees[].agents[]  (paneKey = `${tabId}:${leafId}`)
 const worktrees = [
   { agents: [{ paneKey: "tab1:leaf1", state: "working", agentType: "claude" }] },
-  { agents: [{ paneKey: "tab2:leaf2", state: "waiting", agentType: "claude" }] },
+  { agents: [{ paneKey: "tab2:leaf2", state: "waiting", agentType: "opencode" }] },
 ];
+
+describe("buildDeck — 에이전트 타입 스레딩 + 게이팅용 메타", () => {
+  it("버튼에 paneKey 매칭 agentType이 담긴다", () => {
+    const slots = buildDeck({ terminals, worktrees }).slots as any[];
+    expect(slots[0].agentType).toBe("claude");
+    expect(slots[1].agentType).toBe("opencode");
+  });
+});
 
 describe("colorFor — 상태→색 매핑", () => {
   it("관측된 상태를 색으로", () => {

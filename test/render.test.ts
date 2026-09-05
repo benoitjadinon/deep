@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { keySvg, wrap, stripSpinner, marqueeWindow } from "../src/render.js";
+import { keySvg, wrap, stripSpinner, marqueeWindow, dialImage } from "../src/render.js";
 
 describe("stripSpinner / wrap", () => {
   it("앞 스피너 글리프만 제거, 한글 보존", () => {
@@ -87,5 +87,26 @@ describe("keySvg dim — 주의 없는 키 죽여 대비 만들기", () => {
   });
   it("dim 아니면 정상 밝기(죽이지 않음)", () => {
     expect(keySvg(calm, 0, false, 0, false)).not.toContain('opacity="0.32"');
+  });
+});
+
+describe("dialImage — 다이얼 렌더", () => {
+  it("렌더 throw 없이 data URI 반환 (한 줄 값)", () => {
+    const img = dialImage("model", "MODEL", "opus", 0);
+    expect(img.startsWith("data:image/svg+xml;base64,")).toBe(true);
+  });
+  it("짧은 값은 한 줄 텍스트, 줄당 글자수는 가용 폭(narrow) 기준", () => {
+    const svg = Buffer.from(dialImage("effort", "EFFORT", "high", 0).split(",")[1], "base64").toString("utf8");
+    expect(svg.match(/<text/g) || []).toHaveLength(2); // label + value (한 줄)
+    expect(svg).toContain('font-size="28"');
+  });
+  it("긴 값은 가용 폭 기준으로 3줄 래핑(모델 라벨 소형)", () => {
+    const long = "opencode/claude-opus-4-6-preview-2025-nerf-extra-long";
+    const svg = Buffer.from(dialImage("model", "MODEL", long, 0).split(",")[1], "base64").toString("utf8");
+    expect(svg).toContain('font-size="11"'); // model label small
+    const lines = svg.match(/y="[0-9]+"/g) || [];
+    expect(lines.length).toBe(4); // label + 3 value lines
+    expect(svg).toContain("opencode"); // provider survives full-width wrap
+    expect(svg).toContain("claude-opus"); // model slug survives full-width wrap (not 8-char)
   });
 });

@@ -17269,6 +17269,7 @@ var plugin_default = streamDeck;
 var import_node_child_process = require("node:child_process");
 var import_node_fs4 = require("node:fs");
 var import_node_path6 = require("node:path");
+var import_node_os = require("node:os");
 var import_node_util = require("node:util");
 
 // src/deck.ts
@@ -17300,10 +17301,12 @@ function buildDeck(input, opts = {}) {
   const page = opts.page ?? 0;
   const perPage = opts.perPage ?? 8;
   const stateByPane = /* @__PURE__ */ new Map();
+  const agentByPane = /* @__PURE__ */ new Map();
   const metaByWt = /* @__PURE__ */ new Map();
   for (const wt of input.worktrees ?? []) {
     for (const a of wt.agents ?? []) {
       stateByPane.set(a.paneKey, a.state);
+      if (!agentByPane.has(a.paneKey)) agentByPane.set(a.paneKey, a.agentType ?? "");
     }
     if (wt.worktreeId) {
       const branch = wt.displayName || (wt.branch ?? "").replace(/^refs\/heads\//, "");
@@ -17344,7 +17347,8 @@ function buildDeck(input, opts = {}) {
       repo: e.project,
       branch: e.branch,
       dupIndex: e.dupIndex,
-      unread: e.unread
+      unread: e.unread,
+      agentType: agentByPane.get(`${e.item.t.tabId}:${e.item.t.leafId}`)
     });
   }
   return { slots, page, pageCount, total };
@@ -17359,6 +17363,17 @@ var HEX = {
   white: "#6b7280"
 };
 var esc2 = (s) => (s ?? "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
+function wrap(s, perLine = 6, maxLines = 3) {
+  const chars = [...s];
+  const lines = [];
+  for (let i = 0; i < chars.length && lines.length < maxLines; i += perLine) {
+    lines.push(chars.slice(i, i + perLine).join(""));
+  }
+  if (chars.length > perLine * maxLines) {
+    lines[maxLines - 1] = [...lines[maxLines - 1]].slice(0, perLine - 1).join("") + "\u2026";
+  }
+  return lines;
+}
 function marqueeWindow(s, win, tick2) {
   const chars = [...s];
   if (chars.length <= win) return s;
@@ -17422,16 +17437,131 @@ var DIAL_ACCENT = {
 };
 function dialImage(role, label, value, tick2 = 0) {
   const accent = DIAL_ACCENT[role] ?? "#8a8a90";
-  const overflow = units(value) > 5;
-  const valText = overflow ? marqueeWindow(value, 6, tick2) : value;
-  const vfs = overflow ? 28 : Math.min(36, Math.max(20, Math.floor(164 / units(value || " "))));
+  const textX = 18;
+  const avail = 195 - textX;
+  const lineFont = 15;
+  const lineH = 16;
+  const top = 44;
+  const perLine = Math.max(4, Math.floor(avail / (lineFont * 0.56)));
+  const oneLineFits = units(value || " ") * lineFont <= avail;
+  const lines = oneLineFits ? [value || " "] : wrap(value || " ", perLine, 3);
+  const overflow = units(value) > perLine;
+  const valText = overflow ? marqueeWindow(value, perLine, tick2) : value;
+  const singleSize = overflow ? 28 : Math.min(28, Math.max(20, Math.floor((avail - 4) / units(value || " "))));
+  const labelSvg = role === "model" ? `<text x="${textX}" y="20" fill="${accent}" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="2">${esc2(label)}</text>` : `<text x="${textX}" y="24" fill="${accent}" font-family="sans-serif" font-size="13" font-weight="800" letter-spacing="1">${esc2(label)}</text>`;
+  const valueSvg = lines.length > 1 ? lines.map((ln, i) => `<text x="${textX}" y="${top + i * lineH}" fill="#ffffff" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc2(ln)}</text>`).join("") : `<text x="${textX}" y="56" fill="#ffffff" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc2(overflow ? marqueeWindow(valText, perLine, tick2) : valText)}</text>`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
   <rect width="7" height="100" fill="${accent}"/>
-  <text x="20" y="32" fill="${accent}" font-family="sans-serif" font-size="17" font-weight="800" letter-spacing="1">${esc2(label)}</text>
-  <text x="20" y="80" fill="#ffffff" font-family="sans-serif" font-size="${vfs}" font-weight="700">${esc2(valText)}</text>
+  ${labelSvg}
+  ${valueSvg}
 </svg>`;
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
+}
+
+// src/agents.ts
+var DISCOVER_MODEL_CMD = {
+  opencode: ["opencode", "models"]
+};
+var slash = (cmd, value) => [
+  { text: `${cmd} ${value}`, enter: true, delayMs: 120 }
+];
+var picker = (cmd, value) => [
+  { text: cmd, enter: true, delayMs: 450 },
+  { text: value, enter: true }
+];
+var AGENTS = {
+  claude: {
+    agentType: "claude",
+    label: "Claude",
+    models: ["opus", "sonnet", "haiku"],
+    efforts: ["low", "medium", "high", "xhigh", "ultracode"],
+    model: { supported: true, steps: (v) => slash("/model", v) },
+    effort: { supported: true, steps: (v) => slash("/effort", v) }
+  },
+  opencode: {
+    agentType: "opencode",
+    label: "OpenCode",
+    models: [],
+    // 라이브 발견(opencode models)이 채운다. 발견 전엔 비어 있어 다이얼이 잠깐 "…" 표시.
+    efforts: ["low", "medium", "high", "max"],
+    model: { supported: true, steps: (v) => picker("/models", providerShort(v)) },
+    effort: { supported: true, steps: (v) => picker("/variants", v) }
+  }
+  // 코드엑스/그 밖의 에이전트는 세션 중 모델 변경의 안전한 슬래시 명령이 없음 → 게이팅으로 차단.
+};
+var UNSUPPORTED_PROFILE = {
+  agentType: "",
+  label: "\uBBF8\uC9C0\uC6D0",
+  models: [],
+  efforts: [],
+  model: { supported: false, steps: () => [] },
+  effort: { supported: false, steps: () => [] }
+};
+function profileFor(agentType) {
+  if (agentType && AGENTS[agentType]) return AGENTS[agentType];
+  return UNSUPPORTED_PROFILE;
+}
+function supported(p, kind) {
+  return p[kind].supported;
+}
+function stepsFor(p, kind, value) {
+  return p[kind].steps(value);
+}
+function discoverModelCmd(agentType) {
+  return agentType ? DISCOVER_MODEL_CMD[agentType] : void 0;
+}
+function parseModels(stdout) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const raw of stdout.split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!line) continue;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    out.push(line);
+  }
+  return out;
+}
+function providerShort(id) {
+  const i = id.indexOf("/");
+  return i >= 0 ? id.slice(i + 1) : id;
+}
+function fullIds(entries) {
+  if (!Array.isArray(entries)) return void 0;
+  const out = [];
+  for (const e of entries) {
+    if (e && typeof e === "object" && e.providerID && e.modelID) {
+      out.push(`${String(e.providerID)}/${String(e.modelID)}`);
+    }
+  }
+  return out.length ? out : void 0;
+}
+function parseOpenCodeState(text) {
+  try {
+    const j = JSON.parse(text);
+    const r = Array.isArray(j?.recent) ? j.recent[0] : void 0;
+    const model = r && typeof r === "object" && r.providerID && r.modelID ? { providerID: String(r.providerID), modelID: String(r.modelID) } : void 0;
+    const variant = j?.variant && typeof j?.variant === "object" && !Array.isArray(j.variant) ? j.variant : void 0;
+    return { model, variant, recent: fullIds(j?.recent), favorites: fullIds(j?.favorite) };
+  } catch {
+    return {};
+  }
+}
+function sortModels(discovered, recent, favorites) {
+  const have = new Set(discovered);
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  const push = (id) => {
+    if (have.has(id) && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  };
+  for (const f of favorites ?? []) push(f);
+  for (const r of recent ?? []) push(r);
+  for (const d of discovered) push(d);
+  return out;
 }
 
 // src/plugin.ts
@@ -17446,6 +17576,7 @@ var STT_TXT = "/tmp/agentdeck-stt.txt";
 var STT_PID = "/tmp/agentdeck-stt.pid";
 var STT_PARTIAL = "/tmp/agentdeck-stt.partial";
 var STT_STATUS = "/tmp/agentdeck-stt.status";
+var OPENCODE_STATE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "model.json");
 var TALK_HINT = {
   MIC_DENIED: "\uB9C8\uC774\uD06C \uAD8C\uD55C \uCF1C\uAE30",
   SPEECH_DENIED: "\uC74C\uC131\uC778\uC2DD \uAD8C\uD55C \uCF1C\uAE30",
@@ -17455,8 +17586,6 @@ var TALK_HINT = {
 };
 var talkHint = (code) => TALK_HINT[code] ?? "STT \uC624\uB958";
 var EXEC = { maxBuffer: 64 * 1024 * 1024 };
-var MODELS = ["opus", "sonnet", "haiku"];
-var EFFORTS = ["low", "medium", "high", "xhigh", "ultracode"];
 async function orcaJson(args) {
   const { stdout } = await execFileP(ORCA, [...args, "--json"], EXEC);
   return JSON.parse(stdout);
@@ -17485,10 +17614,17 @@ var currentPage = 0;
 var deck = buildDeck({ terminals: [], worktrees: [] }, { page: 0, perPage: 8 });
 var tick = 0;
 var targetHandle;
-var pendingEffort = "medium";
-var pendingModel = MODELS[0];
+var pendingEffort = "";
+var pendingModel = "";
 var modelByHandle = /* @__PURE__ */ new Map();
 var effortByHandle = /* @__PURE__ */ new Map();
+var currentModelByHandle = /* @__PURE__ */ new Map();
+var currentEffortByHandle = /* @__PURE__ */ new Map();
+var pickAt = { model: 0, effort: 0 };
+var PICK_GRACE = 2500;
+var agentByHandle = /* @__PURE__ */ new Map();
+var profileByHandle = /* @__PURE__ */ new Map();
+var modelsByHandle = /* @__PURE__ */ new Map();
 var allHandles = [];
 var sessionByHandle = /* @__PURE__ */ new Map();
 var recording = false;
@@ -17579,17 +17715,144 @@ async function stopAndSend(target) {
   }
   renderAll();
 }
+function noteHandle(h) {
+  const b = sessionByHandle.get(h);
+  if (b && !agentByHandle.has(h)) {
+    agentByHandle.set(h, b.agentType ?? "");
+    profileByHandle.set(h, profileFor(b.agentType ?? ""));
+  }
+}
 function setTarget(h) {
   targetHandle = h;
-  pendingModel = h && modelByHandle.get(h) || MODELS[0];
-  pendingEffort = h && effortByHandle.get(h) || "medium";
+  if (h) noteHandle(h);
+  profileForHandle();
+  pickAt.model = 0;
+  pickAt.effort = 0;
+  applyPending();
+}
+function profileForHandle() {
+  const t = ensureTarget();
+  if (!t) return UNSUPPORTED_PROFILE;
+  noteHandle(t);
+  return profileByHandle.get(t) ?? UNSUPPORTED_PROFILE;
+}
+function dialList(kind) {
+  const t = ensureTarget();
+  if (!t) return [];
+  const live = kind === "model" ? modelsByHandle.get(t) : void 0;
+  if (live && live.length) return live;
+  const p = profileByHandle.get(t);
+  return p ? kind === "model" ? p.models : p.efforts : [];
+}
+function applyPending() {
+  adoptPending("model");
+  adoptPending("effort");
+}
+function adoptPending(role) {
+  const t = targetHandle;
+  if (!t) return;
+  if (Date.now() - pickAt[role] < PICK_GRACE) return;
+  if (role === "model") {
+    const current = currentModelByHandle.get(t);
+    const applied = modelByHandle.get(t);
+    const first = dialList("model")[0] || "";
+    pendingModel = current || applied || first;
+  } else {
+    const current = currentEffortByHandle.get(t);
+    const applied = effortByHandle.get(t);
+    const first = dialList("effort")[0] || "";
+    pendingEffort = current || applied || first;
+  }
+}
+function dialValue(role) {
+  const p = profileForHandle();
+  if (role === "model") {
+    if (!supported(p, "model")) return "-";
+    return pendingModel ? providerShort(pendingModel) : "\u2026";
+  }
+  if (role === "effort") {
+    if (!supported(p, "effort")) return "-";
+    return pendingEffort || "\u2026";
+  }
+  if (role === "target") return targetLabel();
+  return talkState;
+}
+async function applyAgentSteps(handle, steps) {
+  for (const s of steps) {
+    if (s.delayMs) await new Promise((r) => setTimeout(r, s.delayMs));
+    const args = ["terminal", "send", "--terminal", handle, "--text", s.text];
+    if (s.enter) args.push("--enter");
+    await orcaRun(args);
+  }
+}
+var lastDiscoverAt = 0;
+var discoverBusy = false;
+async function refreshDiscovery() {
+  const t = ensureTarget();
+  if (!t) return;
+  const agentType = agentByHandle.get(t);
+  const cmd = discoverModelCmd(agentType);
+  if (!cmd) return;
+  if (discoverBusy || Date.now() - lastDiscoverAt < 3e4) return;
+  discoverBusy = true;
+  try {
+    lastDiscoverAt = Date.now();
+    const { stdout } = await execFileP(cmd[0], cmd.slice(1), EXEC);
+    const list = parseModels(stdout);
+    if (list.length) {
+      const st = readOpenCodeState();
+      modelsByHandle.set(t, sortModels(list, st.recent ?? [], st.favorites ?? []));
+    }
+  } catch (e) {
+    plugin_default.logger.error(`discover models: ${e}`);
+  } finally {
+    discoverBusy = false;
+    renderAll();
+  }
+}
+function readOpenCodeState() {
+  try {
+    return parseOpenCodeState((0, import_node_fs4.readFileSync)(OPENCODE_STATE, "utf8"));
+  } catch (e) {
+    if (!(e instanceof Error && "code" in e && e.code === "ENOENT")) {
+      plugin_default.logger.error(`read opencode state: ${e}`);
+    }
+    return {};
+  }
+}
+function refreshCurrentModel() {
+  const t = ensureTarget();
+  const agentType = t && agentByHandle.get(t);
+  if (!agentType || !discoverModelCmd(agentType)) return;
+  const state = readOpenCodeState();
+  if (!state.model) return;
+  const id = `${state.model.providerID}/${state.model.modelID}`;
+  const changed = currentModelByHandle.get(t) !== id;
+  currentModelByHandle.set(t, id);
+  const v = state.variant && state.variant[id];
+  if (v && v !== "default") currentEffortByHandle.set(t, v);
+  const list = modelsByHandle.get(t);
+  if (list && list.length) {
+    const sorted = sortModels(list, state.recent ?? [], state.favorites ?? []);
+    if (sorted.length !== list.length || sorted.some((m, i) => m !== list[i])) {
+      modelsByHandle.set(t, sorted);
+    }
+  }
+  if (changed) renderAll();
+  adoptPending("model");
+  adoptPending("effort");
 }
 var slotViews = /* @__PURE__ */ new Map();
 var dialViews = /* @__PURE__ */ new Map();
 var lastImg = /* @__PURE__ */ new Map();
 var slotIndex = (c) => c ? c.row * 4 + c.column : 0;
 function ensureTarget() {
-  if (!targetHandle || !allHandles.includes(targetHandle)) targetHandle = allHandles[0];
+  if (!targetHandle || !allHandles.includes(targetHandle)) {
+    if (targetHandle !== allHandles[0]) {
+      targetHandle = allHandles[0];
+      applyPending();
+    }
+  }
   return targetHandle;
 }
 function targetLabel() {
@@ -17598,10 +17861,11 @@ function targetLabel() {
 }
 function dialFeedback(role) {
   ensureTarget();
-  if (role === "model") return { full: dialImage("model", "MODEL", pendingModel, tick) };
-  if (role === "effort") return { full: dialImage("effort", "EFFORT", pendingEffort, tick) };
-  if (role === "talk") return { full: dialImage("talk", "TALK", talkState, tick) };
-  return { full: dialImage("target", "TARGET", targetLabel(), tick) };
+  const v = dialValue(role);
+  if (role === "model") return { full: dialImage("model", "MODEL", v, tick) };
+  if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick) };
+  if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
+  return { full: dialImage("target", "TARGET", v, tick) };
 }
 function renderAll() {
   const now = Date.now();
@@ -17646,6 +17910,10 @@ async function poll() {
       if (!s.empty) {
         allHandles.push(s.handle);
         sessionByHandle.set(s.handle, s);
+        if (!agentByHandle.has(s.handle)) {
+          agentByHandle.set(s.handle, s.agentType ?? "");
+          profileByHandle.set(s.handle, profileFor(s.agentType ?? ""));
+        }
       }
     }
     const activeWtId = (wp.result?.worktrees ?? []).find((w) => w.isActive)?.worktreeId;
@@ -17654,6 +17922,8 @@ async function poll() {
       const h = terms.sort((a, b) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0))[0]?.handle;
       if (h && h !== targetHandle) setTarget(h);
     }
+    refreshDiscovery();
+    refreshCurrentModel();
     renderAll();
     try {
       (0, import_node_fs4.writeFileSync)(
@@ -17713,10 +17983,24 @@ var DialBase = class extends SingletonAction {
     const dir = (ev.payload?.ticks ?? 0) > 0 ? 1 : (ev.payload?.ticks ?? 0) < 0 ? -1 : 0;
     if (!dir) return;
     const t = ensureTarget();
-    if (this.role === "model") {
-      pendingModel = MODELS[(MODELS.indexOf(pendingModel) + dir + MODELS.length) % MODELS.length];
-    } else if (this.role === "effort") {
-      pendingEffort = EFFORTS[(EFFORTS.indexOf(pendingEffort) + dir + EFFORTS.length) % EFFORTS.length];
+    if (this.role === "model" || this.role === "effort") {
+      const p = profileForHandle();
+      if (!t || !supported(p, this.role)) {
+        ev.action.showAlert?.();
+        return;
+      }
+      const list = dialList(this.role);
+      if (!list.length) {
+        ev.action.showAlert?.();
+        return;
+      }
+      const cur = this.role === "model" ? pendingModel : pendingEffort;
+      const idx = cur ? list.indexOf(cur) : -1;
+      const start = idx < 0 ? dir > 0 ? -1 : 0 : idx;
+      const next = list[(start + dir + list.length) % list.length];
+      if (this.role === "model") pendingModel = next;
+      else pendingEffort = next;
+      pickAt[this.role] = Date.now();
     } else if (this.role === "target") {
       if (allHandles.length) {
         const cur = allHandles.indexOf(t ?? allHandles[0]);
@@ -17730,21 +18014,26 @@ var DialBase = class extends SingletonAction {
   }
   async onDialDown(ev) {
     const t = ensureTarget();
-    if (this.role === "model" && t) {
-      modelByHandle.set(t, pendingModel);
-      try {
-        await orcaRun(["terminal", "send", "--terminal", t, "--text", `/model ${pendingModel}`, "--enter"]);
-      } catch (e) {
-        plugin_default.logger.error(`model apply: ${e}`);
+    if (this.role === "model" || this.role === "effort") {
+      const p = profileForHandle();
+      const kind = this.role;
+      if (!t || !supported(p, kind)) {
+        plugin_default.logger.info(`apply ${kind}: unsupported agent (${agentByHandle.get(t ?? "") ?? "?"}) \u2014 gated`);
         ev.action.showAlert?.();
-      }
-    } else if (this.role === "effort" && t) {
-      effortByHandle.set(t, pendingEffort);
-      try {
-        await orcaRun(["terminal", "send", "--terminal", t, "--text", `/effort ${pendingEffort}`, "--enter"]);
-      } catch (e) {
-        plugin_default.logger.error(`effort apply: ${e}`);
-        ev.action.showAlert?.();
+      } else {
+        const value = this.role === "model" ? pendingModel : pendingEffort;
+        if (!value) {
+          ev.action.showAlert?.();
+          return;
+        }
+        if (this.role === "model") modelByHandle.set(t, value);
+        else effortByHandle.set(t, value);
+        try {
+          await applyAgentSteps(t, stepsFor(p, kind, value));
+        } catch (e) {
+          plugin_default.logger.error(`apply ${kind}: ${e}`);
+          ev.action.showAlert?.();
+        }
       }
     } else if (this.role === "target" && t) {
       lastNav = Date.now();
