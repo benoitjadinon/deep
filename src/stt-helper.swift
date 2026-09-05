@@ -1,9 +1,11 @@
 // AgentDeck STT 헬퍼 — Apple Speech(SFSpeechRecognizer) + AVAudioEngine.
-// ffmpeg 대신 OS 오디오 스택으로 캡처 → Brio 웹캠 노이즈 회피, 한국어 온디바이스 인식.
+// ffmpeg 대신 OS 오디오 스택으로 캡처 → 웹캠 노이즈 회피, 온디바이스 인식(가능할 때).
+// 인식 언어는 시스템 기본 설정을 따름(고정 언어 없음) — 파일/환경변수로 강제 지정 가능.
 // .app 번들 + Developer ID 서명으로 실행해야 TCC가 usage description을 신뢰(직접 CLI는 크래시).
 //
 // 사용:  stt-helper --file <audio>   파일 인식(테스트) /  stt-helper   라이브(SIGINT로 정지)
 // 결과는 STT_OUT(기본 /tmp/agentdeck-stt.txt)에 기록.
+// 언어 지정: STT_LOCALE 환경변수 또는 /tmp/agentdeck-stt.locale 파일 (없으면 시스템 기본)
 // ⚠️ 인증은 메인 스레드 블로킹 금지(데드락) → requestAuthorization 콜백 + RunLoop 방식.
 import Foundation
 import Speech
@@ -23,7 +25,33 @@ func writeStatus(_ code: String) { try? code.write(toFile: "/tmp/agentdeck-stt.s
 
 let args = CommandLine.arguments
 let outPath = ProcessInfo.processInfo.environment["STT_OUT"] ?? "/tmp/agentdeck-stt.txt"
-guard let rec = SFSpeechRecognizer(locale: Locale(identifier: "ko-KR")) else { writeStatus("NO_RECOGNIZER"); log("no ko-KR recognizer"); exit(2) }
+
+// 인식 언어 결정 — ko-KR 하드코딩 제거.
+// 1) 명시 지정(우선): STT_LOCALE 환경변수 or /tmp/agentdeck-stt.locale 파일 (예: en-US, ko-KR, ja-JP)
+// 2) 시스템 기본: SFSpeechRecognizer() — macOS가 사용자 기본 언어(→키보드 받아쓰기 언어로 폴백)로 만든다.
+func resolveRecognizer() -> SFSpeechRecognizer? {
+  var explicit: String?
+  if let e = ProcessInfo.processInfo.environment["STT_LOCALE"], !e.isEmpty {
+    explicit = e
+  } else if let c = try? String(contentsOfFile: "/tmp/agentdeck-stt.locale", encoding: .utf8) {
+    let t = c.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !t.isEmpty { explicit = t }
+  }
+  if let ov = explicit {
+    log("STT locale override: \(ov)")
+    return SFSpeechRecognizer(locale: Locale(identifier: ov))
+  }
+  let rec = SFSpeechRecognizer()
+  log("STT locale system default: \(rec?.locale.identifier ?? "nil")")
+  return rec
+}
+let rec: SFSpeechRecognizer
+if let r = resolveRecognizer() {
+  rec = r
+  log("STT rec locale=\(rec.locale.identifier) onDevice=\(rec.supportsOnDeviceRecognition) available=\(rec.isAvailable)")
+} else {
+  writeStatus("NO_RECOGNIZER"); log("no recognizer for requested language"); exit(2)
+}
 
 func writeOut(_ s: String) {
   try? s.write(toFile: outPath, atomically: true, encoding: .utf8)

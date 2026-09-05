@@ -27,7 +27,7 @@ const TALK_HINT: Record<string, string> = {
   MIC_DENIED: "마이크 권한 켜기",
   SPEECH_DENIED: "음성인식 권한 켜기",
   DICTATION_OFF: "받아쓰기 켜기",
-  NO_RECOGNIZER: "한국어 STT 없음",
+  NO_RECOGNIZER: "STT 언어 없음",
   MIC_ERR: "마이크 오류",
 };
 const talkHint = (code: string) => TALK_HINT[code] ?? "STT 오류";
