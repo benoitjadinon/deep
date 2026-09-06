@@ -152,4 +152,12 @@ describe("dialImage — 다이얼 렌더", () => {
     expect(svg).toContain("opencode"); // provider survives full-width wrap
     expect(svg).toContain("claude-opus"); // model slug survives full-width wrap (not 8-char)
   });
+  it("한 줄에 못 들어가는 값은 '/' 경계에서 줄바꿈(마지막 글자 잘림 방지)", () => {
+    const v = "minimax/minimax-m3";
+    const svg = Buffer.from(dialImage("model", "MODEL", v, 0).split(",")[1], "base64").toString("utf8");
+    const textY = [...svg.matchAll(/text x="18" y="(\d+)"/g)].map((m) => m[1]);
+    expect(textY.length).toBeGreaterThan(1); // 2줄 이상
+    expect(svg).toContain(">minimax</text>");
+    expect(svg).toContain(">minimax-m3</text>");
+  });
 });

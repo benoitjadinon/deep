@@ -17468,13 +17468,11 @@ function dialImage(role, label, value, tick2 = 0) {
   const lineH = 16;
   const top = 44;
   const perLine = Math.max(4, Math.floor(avail / (lineFont * 0.56)));
-  const oneLineFits = units(value || " ") * lineFont <= avail;
-  const lines = oneLineFits ? [value || " "] : wrap(value || " ", perLine, 3);
-  const overflow = units(value) > perLine;
-  const valText = overflow ? marqueeWindow(value, perLine, tick2) : value;
-  const singleSize = overflow ? 28 : Math.min(28, Math.max(20, Math.floor((avail - 4) / units(value || " "))));
+  const oneLineFits = units(value || " ") * 20 <= avail;
+  const lines = oneLineFits ? [value || " "] : splitSlash(value || " ", perLine);
+  const singleSize = oneLineFits ? Math.min(28, Math.max(16, Math.floor((avail - 4) / units(value || " ")))) : lineFont;
   const labelSvg = role === "model" ? `<text x="${textX}" y="20" fill="${accent}" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="2">${esc2(label)}</text>` : `<text x="${textX}" y="24" fill="${accent}" font-family="sans-serif" font-size="13" font-weight="800" letter-spacing="1">${esc2(label)}</text>`;
-  const valueSvg = lines.length > 1 ? lines.map((ln, i) => `<text x="${textX}" y="${top + i * lineH}" fill="#ffffff" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc2(ln)}</text>`).join("") : `<text x="${textX}" y="56" fill="#ffffff" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc2(overflow ? marqueeWindow(valText, perLine, tick2) : valText)}</text>`;
+  const valueSvg = lines.length > 1 ? lines.map((ln, i) => `<text x="${textX}" y="${top + i * lineH}" fill="#ffffff" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc2(ln)}</text>`).join("") : `<text x="${textX}" y="56" fill="#ffffff" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc2(lines[0])}</text>`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
   <rect width="7" height="100" fill="${accent}"/>
@@ -17482,6 +17480,13 @@ function dialImage(role, label, value, tick2 = 0) {
   ${valueSvg}
 </svg>`;
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
+}
+function splitSlash(value, perLine) {
+  const parts = (value || " ").split("/").filter((p) => p !== "");
+  if (parts.length <= 3 && parts.every((p) => [...p].length <= perLine)) {
+    return parts;
+  }
+  return wrap(value || " ", perLine, 3);
 }
 
 // src/agents.ts

@@ -131,14 +131,15 @@ export function dialImage(role: string, label: string, value: string, tick = 0):
   const top = 44;
   // 실제 글자 폭(units: ASCII≈0.56, CJK≈1) 기준 줄당 글자수 — 8px 하드코딩 제거.
   const perLine = Math.max(4, Math.floor(avail / (lineFont * 0.56)));
-  // 값이 끊김 없이 한 줄(단일 폭)에 들어가면 한 줄, 아니면 3줄 래핑(가득)
-  const oneLineFits = units(value || " ") * lineFont <= avail; // 폰트 크기에 비례한 총 폭
-  const lines = oneLineFits ? [value || " "] : wrap(value || " ", perLine, 3);
 
-  // 값이 조금만 넘쳐도 마퀴로 흐르게(정적은 여백 확보), 아니면 폭 맞춰 자동 크기
-  const overflow = units(value) > perLine;
-  const valText = overflow ? marqueeWindow(value, perLine, tick) : value;
-  const singleSize = overflow ? 28 : Math.min(28, Math.max(20, Math.floor((avail - 4) / units(value || " "))));
+  // 한 줄로 렌더할 때 실제 폭(자동 크기) 기준으로 판정 — lineFont로 판단하면 그보다 큰
+  // 자동크기로 그릴 때 글자가 잘리는 회귀가 난다. 읽기 가능(≥20px) 한 줄이면 그대로,
+  // 아니면 "/"(provider/model 등) 기준으로 줄바꿈해 두 번째 줄로 넘긴다.
+  const oneLineFits = units(value || " ") * 20 <= avail;
+  const lines = oneLineFits
+    ? [value || " "]
+    : splitSlash(value || " ", perLine);
+  const singleSize = oneLineFits ? Math.min(28, Math.max(16, Math.floor((avail - 4) / units(value || " ")))) : lineFont;
 
   const labelSvg = role === "model"
     ? `<text x="${textX}" y="20" fill="${accent}" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="2">${esc(label)}</text>`
@@ -147,7 +148,7 @@ export function dialImage(role: string, label: string, value: string, tick = 0):
   // 3줄 렌더(위로 정렬) — 100px 다이얼에서 top부터 lineH 간격
   const valueSvg = lines.length > 1
     ? lines.map((ln, i) => `<text x="${textX}" y="${top + i * lineH}" fill="#ffffff" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc(ln)}</text>`).join("")
-    : `<text x="${textX}" y="56" fill="#ffffff" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc(overflow ? marqueeWindow(valText, perLine, tick) : valText)}</text>`;
+    : `<text x="${textX}" y="56" fill="#ffffff" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc(lines[0])}</text>`;
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
@@ -156,4 +157,14 @@ export function dialImage(role: string, label: string, value: string, tick = 0):
   ${valueSvg}
 </svg>`;
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
+}
+
+// 값이 한 줄에 안 들어가면 "/"(provider/model 등) 경계에서 줄을 나눈다.
+// 각 파트가 perLine 안에 들어가고 파트 수가 3을 안 넘으면 그대로 여러 줄, 아니면 글자 단위 래핑.
+function splitSlash(value: string, perLine: number): string[] {
+  const parts = (value || " ").split("/").filter((p) => p !== "");
+  if (parts.length <= 3 && parts.every((p) => [...p].length <= perLine)) {
+    return parts;
+  }
+  return wrap(value || " ", perLine, 3);
 }
