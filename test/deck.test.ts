@@ -97,6 +97,41 @@ describe("unread — 완료 후 확인 여부로 색 전환", () => {
   it("working은 읽어도 파랑 유지(unread는 done에만)", () => expect(mk("working", false).color).toBe("blue"));
 });
 
+describe("buildDeck — 열려 있는 에이전트(agentIdentity)가 worktree ps보다 먼저 감지되면", () => {
+  it("worktree ps가 아직 안 보고했어도 터미널의 agentIdentity로 세션 표시", () => {
+    const ts = [
+      // worktree ps에 agent 없음(에이전트 방금 열림, 아직 생각 안 함) + agentIdentity 있음
+      { handle: "term_fresh", tabId: "t1", leafId: "l1", title: "Terminal 1", worktreePath: "/x/deep", worktreeId: "wt1", agentIdentity: "opencode" },
+      // 순수 셸 — agentIdentity 없음 → 제외
+      { handle: "term_shell", tabId: "t2", leafId: "l2", title: "Terminal 2", worktreePath: "", worktreeId: "wt2", agentIdentity: null },
+    ];
+    const wts = [{ worktreeId: "wt1", repo: "deep", displayName: "main" }]; // agents 배열 자체가 없음
+    const deck = buildDeck({ terminals: ts, worktrees: wts });
+    const handles = deck.slots.filter((s) => !s.empty).map((s: any) => s.handle);
+    expect(handles).toEqual(["term_fresh"]);
+    // 아직 상태를 모르므로 기본 waiting(amber) — 다이얼 게이팅이 제출 전부터 살아 있다
+    expect(deck.slots[0]).toMatchObject({ state: "waiting", color: "amber", agentType: "opencode" });
+  });
+
+  it("worktree ps가 상태를 보고하면 그 상태를 우선한다", () => {
+    const ts = [
+      { handle: "term_fresh", tabId: "t1", leafId: "l1", title: "T", worktreePath: "/x/deep", worktreeId: "wt1", agentIdentity: "opencode" },
+    ];
+    const wts = [{ worktreeId: "wt1", repo: "deep", agents: [{ paneKey: "t1:l1", state: "working", agentType: "opencode" }] }];
+    const a = buildDeck({ terminals: ts, worktrees: wts }).slots[0] as any;
+    expect(a.state).toBe("working");
+    expect(a.color).toBe("blue");
+    expect(a.agentType).toBe("opencode");
+  });
+
+  it("agentIdentity 없이 worktree ps agent도 기존처럼 동작", () => {
+    const ts = [{ handle: "term_old", tabId: "t1", leafId: "l1", title: "T", worktreePath: "/x", worktreeId: "wt1" }];
+    const wts = [{ worktreeId: "wt1", repo: "x", agents: [{ paneKey: "t1:l1", state: "done", agentType: "claude" }] }];
+    const a = buildDeck({ terminals: ts, worktrees: wts }).slots[0] as any;
+    expect(a).toMatchObject({ state: "done", agentType: "claude" });
+  });
+});
+
 describe("buildDeck — orca 두 소스를 8칸 버튼 모델로", () => {
   it("항상 8칸 고정, 앞 2칸만 채워지고 나머진 빈칸", () => {
     const deck = buildDeck({ terminals, worktrees });

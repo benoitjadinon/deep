@@ -14,6 +14,8 @@ export interface OrcaTerminal {
   worktreePath?: string;
   worktreeId?: string;
   lastOutputAt?: number | null;
+  /** 터미널에 에이전트가 살아 있는지 — orca가 worktree ps에 보고하기 전이라도 즉시 감지. null/없음 = 순수 셸. */
+  agentIdentity?: string | null;
 }
 
 /** orca worktree ps --json → result.worktrees[] 중 우리가 쓰는 필드 */
@@ -129,9 +131,25 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
 
   // 에이전트가 붙은 터미널만 세션으로. 위치 고정 = handle 기준 안정 정렬.
   // (최근순으로 하면 세션이 출력할 때마다 자리가 바뀌어 헷갈림 → 세션 수명 동안 자리 고정)
+  // 판정: worktree ps가 그 paneKey의 에이전트를 아직 안 보고했더라도
+  // 터미널의 agentIdentity가 있으면 "열려 있는 에이전트"로 취급한다.
+  // 그 경우 state는 아직 몰라도 되니 기본 waiting(amber)으로 — 다이얼 게이팅이 제출 전부터 살아 있다.
   const sessions = (input.terminals ?? [])
-    .map((t) => ({ t, state: stateByPane.get(`${t.tabId}:${t.leafId}`) }))
-    .filter((x) => stateByPane.has(`${x.t.tabId}:${x.t.leafId}`))
+    .map((t) => {
+      const pane = `${t.tabId}:${t.leafId}`;
+      const hasWt = stateByPane.has(pane);
+      const idFromWt = agentByPane.get(pane);
+      const agent = t.agentIdentity || idFromWt || "";
+      return {
+        t,
+        pane,
+        hasWt,
+        agent,
+        state: hasWt ? stateByPane.get(pane) : "waiting",
+        agentType: idFromWt || agent,
+      };
+    })
+    .filter((x) => x.hasWt || Boolean(x.agent))
     .sort((a, b) => a.t.handle.localeCompare(b.t.handle));
 
   // 프로젝트명·브랜치·중복순번을 전체(정렬된) 세션 기준으로 부여 → 페이지 넘어도 안정
@@ -172,7 +190,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       branch: e.branch,
       dupIndex: e.dupIndex,
       unread: e.unread,
-      agentType: agentByPane.get(`${e.item.t.tabId}:${e.item.t.leafId}`),
+      agentType: e.item.agentType,
     });
   }
 

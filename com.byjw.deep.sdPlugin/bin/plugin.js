@@ -17313,7 +17313,20 @@ function buildDeck(input, opts = {}) {
       metaByWt.set(wt.worktreeId, { repo: wt.repo, branch: branch || void 0, unread: wt.unread });
     }
   }
-  const sessions = (input.terminals ?? []).map((t) => ({ t, state: stateByPane.get(`${t.tabId}:${t.leafId}`) })).filter((x) => stateByPane.has(`${x.t.tabId}:${x.t.leafId}`)).sort((a, b) => a.t.handle.localeCompare(b.t.handle));
+  const sessions = (input.terminals ?? []).map((t) => {
+    const pane = `${t.tabId}:${t.leafId}`;
+    const hasWt = stateByPane.has(pane);
+    const idFromWt = agentByPane.get(pane);
+    const agent = t.agentIdentity || idFromWt || "";
+    return {
+      t,
+      pane,
+      hasWt,
+      agent,
+      state: hasWt ? stateByPane.get(pane) : "waiting",
+      agentType: idFromWt || agent
+    };
+  }).filter((x) => x.hasWt || Boolean(x.agent)).sort((a, b) => a.t.handle.localeCompare(b.t.handle));
   const dupCount = /* @__PURE__ */ new Map();
   const enriched = sessions.map((item) => {
     const meta = item.t.worktreeId ? metaByWt.get(item.t.worktreeId) : void 0;
@@ -17348,7 +17361,7 @@ function buildDeck(input, opts = {}) {
       branch: e.branch,
       dupIndex: e.dupIndex,
       unread: e.unread,
-      agentType: agentByPane.get(`${e.item.t.tabId}:${e.item.t.leafId}`)
+      agentType: e.item.agentType
     });
   }
   return { slots, page, pageCount, total };
