@@ -9,7 +9,7 @@
     "test:watch": "vitest",
     "poll": "node scripts/poll.mjs",
     "icons": "node scripts/gen-icons.mjs",
-    "build": "esbuild src/plugin.ts --bundle --platform=node --target=node20 --format=cjs --external:@resvg/resvg-js --outfile=com.byjw.deep.sdPlugin/bin/plugin.js --log-level=warning",
+    "build": "esbuild src/plugin.ts --bundle --platform=node --target=node20 --format=cjs --outfile=com.byjw.deep.sdPlugin/bin/plugin.js --log-level=warning",
     "restart": "bash scripts/restart-streamdeck.sh",
     "package": "npm run icons && npm run build"
   },
@@ -21,7 +21,6 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
-    "@elgato/streamdeck": "^2.1.0",
-    "@resvg/resvg-js": "^2.6.2"
+    "@elgato/streamdeck": "^2.1.0"
   }
 }

@@ -17396,19 +17396,17 @@ function marqueeWindow(s, win, tick2) {
   for (let i = 0; i < win; i++) out.push(loop[(start + i) % loop.length]);
   return out.join("");
 }
-var AGENT_LOGOS = {
-  claude: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAADS0lEQVR4nO2by4pVVxCGv6rTXjIQJELAJA8gBLuFJmgimolRiIKIL6BTJ/0AvoOQSYZR6AcQwSRoRkmwFaTBVgJ5gERBiAQcSJ/bkv9YS1YOtDROPGdXf7DZd1h/7apae7B+Y4pSygLgZtaP8y+Br4FFYAk4AvSAUexngToW7R8BG8BjYM3MHuqBUspuYGxmw/ZFqwelFJfweGhcSvkCOAOcAD4F9gMHgI/jvdK+/4GpY9H+BfAv8B/wFPgDuGNmf05rpAqIGz0zG8T5WeAy8B3wEfPNK+Bn4LqZ/aQLpZRdyhYzGyvdiZQfRCC+Aq7GXukyaCI8CRSzjcpg3IxZYi8qi0spyor7oVXax/b24E3aq9Z/AA7Hy+MQzQyl+3ZRAGg06PwJcMXM1mo5eHx9iVe9X4tGp+v9EF23eaMdez80Sds1aY0e4JNuX0o5BKwARyOF9MLu5uvPMx5a+qFNGlek2cz6HiVwHjgVNU/U+Tx+9a2wpncNQ+t5aVd0loHj0SxGc9Lo3odeaBuFVmle1oVjMc+XpnF0mapTmo95/OHta6a5ruOhVZoXa2fUH55Y6FjtTyNt9d9Hmpf0HzDoYNPbDiqDkQKQoe63xKMrZgzCTgaQpOu/Eyc5TnKc5DjJcZLjJMdJjpMcJzlOcpzkOMlxkuMkx0mOkxwnOU5ynOQ4yXGS4yTHSY6THCc5TnKc5DjJcZLjJMdJjpMc31kiU3YWSQ0TL5IaevhrZDMRExtJx6kapXmjBkAeGxJkw+Srx7E0TwIgd9XLuJklA0pofqwAPAh3VbbF0tL8QCfrwL1IjeoT6GImVE290CrN67LM6OQW8EtjPvyfubAjDBuDpbTeknZZZvaa2V/AKvBPLCfXQ4OOZII01BXxC6FxVZpLKXsnNR8WsjXgx5ge6sOVeZwZ2jHXj/oiNFbbHFouPzEXhnvsk3CPXWpsNHVq7M2Rl2gUWzVI1KZ3A/jezJ6Hl3hQrbOyzY7i+HPgG+BCx6yzN4HfzOzvVrPVp6qTsrqrwzx9GjgJHAQ+i23WnSUl6lzbM+B34K7M05ObjVOWaTFRDnt0aGabcU22OvmIzwHfNjbUWQtEHZOE/QrcDp+wpnnpkC7d3zSzt/3hNdYyOeHtxhu1AAAAAElFTkSuQmCC",
-  opencode: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABg0lEQVR4nO2bbY6DIBRFrycuoM10/yu0aXcwE380MUYtAipw5/wzvA8uPBQ0Sv940+11+LndflU4z/c7WFfXiujYwaBl8SH9J8W5FrZ0EONUI2t62GNcO0u6CDFqibk+thpbZaoTmYPMwa3853qROcicPnfA4fVabXvc76flCs3Zn9mZj03ugbh8CQwB4lPsj6RPDbAkZmmG53bjdQmVQIrzXNQoaE3UUlsJlUBO8SGUNgjkCLK3lEso/aQBGDLP2pVVQGqA2NkspQqQOcgcZA4yp08NELujy3HnD9lxHlIBj8x38KOeCCFxaekwFBOX2GSxW9rYLfRRcbvUd4Kxp8E1u6Pyr3047VM7MCZbOuqG+B3B3rhckbQU8VmWwJXvBFN55lgCpYv8BjIHmYPMQeYgc5A5yBxkDjIHmYPMQeYgc5A5yBxkDjG/mbTARy8yB5nD9MJlGUx1stXYInN9hBi1wpIu9hjXzJoeYpxqY0sHKc418K3/3d6ANfxZUvuk6Uz+AKUnp1pEz3VVAAAAAElFTkSuQmCC",
-  codex: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAA2UlEQVR4nO2VMQ7DMAzEZP//zy4ydAlSoGhk6a4hRw+GSVhQBAAAAAAAAAAA6LPWWll3zTCVP0f4NcoMIz5J3/kRM0y4khxjjLvjMOPB8hYBvpU/zv4uwNosLx2gQl42QJW8ZIBKebkA1fJSATrkZQJ0yUsE6JRvD9At3xpAQb4tgIp8SwAl+fIAavKlARTlywKoypcEUJbfHkBdfmsAB/ltAVzktwRwkk8P4CafGsBRPi2Aq3xagLOYi3zqCLwFneQP0h/mJL99C6jLb90CDvIAAAAAAADxVF7AxQA9+aQhwwAAAABJRU5ErkJggg=="
+var AGENT_BADGE = {
+  claude: { bg: "#d97757", label: "CL" },
+  opencode: { bg: "#10b981", label: "OC" },
+  codex: { bg: "#a78bfa", label: "CX" }
 };
 function agentBadge(agentType) {
   const a = (agentType || "").toLowerCase();
-  const logo = AGENT_LOGOS[a];
-  if (logo) {
-    return `<image xlink:href="${logo}" href="${logo}" x="108" y="108" width="26" height="26" preserveAspectRatio="xMidYMid meet"/>`;
-  }
-  const glyph = a ? [...a][0].toUpperCase() : "?";
-  return `<circle cx="127" cy="127" r="11" fill="#4b5563"/><text x="127" y="132" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="13" font-weight="800">${esc2(glyph)}</text>`;
+  const known = AGENT_BADGE[a];
+  const bg = known?.bg ?? "#4b5563";
+  const label = known?.label ?? (a ? [...a].slice(0, 2).join("").toUpperCase() : "?");
+  return `<rect x="104" y="118" width="32" height="18" rx="9" fill="${bg}"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
 }
 function units(s) {
   let u = 0;
@@ -17449,15 +17447,8 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   ${projSvg}${subSvg}${agentBadge(b.agentType)}${g1}${cornerTag}
 </svg>`;
 }
-var resvgModule = null;
-function svgToPng(svg) {
-  if (!resvgModule) resvgModule = require("@resvg/resvg-js");
-  const { Resvg } = resvgModule;
-  const r = new Resvg(svg, { fitTo: { mode: "width", value: 144 } });
-  return Buffer.from(r.render().asPng());
-}
 function keyImage(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
-  return "data:image/png;base64," + svgToPng(keySvg(b, tick2, isTarget, nowMs, dim)).toString("base64");
+  return "data:image/svg+xml;base64," + Buffer.from(keySvg(b, tick2, isTarget, nowMs, dim), "utf8").toString("base64");
 }
 var DIAL_ACCENT = {
   model: "#3b82f6",
@@ -17902,6 +17893,10 @@ function dialFeedback(role) {
   return { full: dialImage("target", "TARGET", v, tick) };
 }
 function renderAll() {
+  renderKeys();
+  renderDials();
+}
+function renderKeys() {
   const now = Date.now();
   const boardAttn = anyAttention();
   for (const [id, { action: a, coordinates }] of slotViews) {
@@ -17914,6 +17909,8 @@ function renderAll() {
     a.setImage(img).catch(() => {
     });
   }
+}
+function renderDials() {
   for (const { action: a, role } of dialViews.values()) {
     a.setFeedback(dialFeedback(role)).catch(() => {
     });
@@ -18035,6 +18032,7 @@ var DialBase = class extends SingletonAction {
       if (this.role === "model") pendingModel = next;
       else pendingEffort = next;
       pickAt[this.role] = Date.now();
+      renderDials();
     } else if (this.role === "target") {
       if (allHandles.length) {
         const cur = allHandles.indexOf(t ?? allHandles[0]);
@@ -18043,8 +18041,10 @@ var DialBase = class extends SingletonAction {
         setTarget(next);
         switchTargetSoon(next);
       }
+      renderAll();
+    } else {
+      renderDials();
     }
-    renderAll();
   }
   async onDialDown(ev) {
     const t = ensureTarget();
@@ -18126,12 +18126,22 @@ plugin_default.connect();
 setInterval(poll, 1500);
 setInterval(() => {
   tick++;
-  renderAll();
+  if (anyAttention() || anyMarquee()) renderKeys();
 }, 450);
 setInterval(() => {
-  if (anyAttention()) renderAll();
+  if (anyAttention()) renderKeys();
 }, 160);
 poll();
+function anyMarquee() {
+  for (const { coordinates } of slotViews.values()) {
+    const b = deck.slots[slotIndex(coordinates)];
+    if (b && !b.empty) {
+      const proj = b.repo || (b.worktreePath ? String(b.worktreePath).split("/").filter(Boolean).pop() : "") || "";
+      if (proj.length > 9) return true;
+    }
+  }
+  return false;
+}
 /*! Bundled license information:
 
 @elgato/schemas/dist/streamdeck/plugins/index.mjs:

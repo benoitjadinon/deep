@@ -363,6 +363,12 @@ function dialFeedback(role: string): { full: string } {
 }
 
 function renderAll(): void {
+  renderKeys();
+  renderDials();
+}
+
+// 키(세션판)만 다시 그린다. 데이터/대상 변경 시 호출, 다이얼 회전에는 부르지 않음.
+function renderKeys(): void {
   const now = Date.now();
   const boardAttn = anyAttention(); // 주의 키가 하나라도 있으면 나머지는 dim으로 죽여 대비 강조
   for (const [id, { action: a, coordinates }] of slotViews) {
@@ -374,6 +380,10 @@ function renderAll(): void {
     lastImg.set(id, img);
     a.setImage(img).catch(() => {});
   }
+}
+
+// 다이얼만 다시 그린다 — 회전 tick마다 키를 다시 그릴 필요 없어 렌더 비용/랙 줄임.
+function renderDials(): void {
   for (const { action: a, role } of dialViews.values()) {
     a.setFeedback(dialFeedback(role)).catch(() => {});
   }
@@ -498,6 +508,8 @@ class DialBase extends SingletonAction {
       if (this.role === "model") pendingModel = next;
       else pendingEffort = next;
       pickAt[this.role as ControlKind] = Date.now(); // 자동 동기화가 이 선택을 덮지 않게 유예 시작
+      // 모델/effort 회전은 키를 안 건드림 — 다이얼만 즉시 갱신 (렌더 비용/랙 없이 즉시 반영)
+      renderDials();
     } else if (this.role === "target") {
       // 모든 세션 순회. 데크 코랄 점은 즉시 이동(setTarget+renderAll), 실제 Orca 전환은 디바운스(밀림 방지).
       if (allHandles.length) {
@@ -507,9 +519,12 @@ class DialBase extends SingletonAction {
         setTarget(next);
         switchTargetSoon(next);
       }
+      // 대상이 바뀌면 키의 코랄 점도 따라가야 하니 키까지
+      renderAll();
+    } else {
+      // model/effort 회전은 키를 안 건드림 — 다이얼만 갱신 (렌더 비용/랙 방지)
+      renderDials();
     }
-    // talk 회전(스크롤)은 orca 미지원 → no-op
-    renderAll();
   }
   override async onDialDown(ev: any): Promise<void> {
     const t = ensureTarget();
@@ -573,12 +588,25 @@ streamDeck.actions.registerAction(new TargetDial());
 streamDeck.connect();
 
 setInterval(poll, 1500);
+// 마퀴/펄스 중인 키만 매 tick 다시 그린다(나머지는 캐시로 건너뜀). 둘 다 없으면 스킵.
 setInterval(() => {
   tick++;
-  renderAll();
+  if (anyAttention() || anyMarquee()) renderKeys();
 }, 450);
 // 주의 필요 키를 부드럽게 펄스(≈6fps, Elgato ≤10/s 준수). 주의 키 없으면 렌더 스킵.
 setInterval(() => {
-  if (anyAttention()) renderAll();
+  if (anyAttention()) renderKeys();
 }, 160);
 poll();
+
+// 화면에 보이는 세션 키 중 마퀴(긴 제목/값)로 매 tick 다시 그려야 할 게 하나라도 있나.
+function anyMarquee(): boolean {
+  for (const { coordinates } of slotViews.values()) {
+    const b = deck.slots[slotIndex(coordinates)];
+    if (b && !b.empty) {
+      const proj = (b as any).repo || ((b as any).worktreePath ? String((b as any).worktreePath).split("/").filter(Boolean).pop() : "") || "";
+      if (proj.length > 9) return true;
+    }
+  }
+  return false;
+}

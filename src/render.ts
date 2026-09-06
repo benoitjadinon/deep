@@ -36,25 +36,20 @@ export function marqueeWindow(s: string, win: number, tick: number): string {
   return out.join("");
 }
 
-// 에이전트 타입 → 하단 우측 뱃지. 브랜드 PNG를 `<image>`(xlink:href — Elgato 렌더러가 읽는 방식)로 삽입한다.
-// 배경 칩(원)을 깔지 않아 아이콘이 그대로 보이고, 라이브러리가 없어도 로드 실패 시 그냥 그 자리가 투명.
-// 알려진 타입만, 모르면 회색 원 + 이니셜/물음표 폴백.
-const AGENT_LOGOS: Record<string, string> = {
-  claude: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAADS0lEQVR4nO2by4pVVxCGv6rTXjIQJELAJA8gBLuFJmgimolRiIKIL6BTJ/0AvoOQSYZR6AcQwSRoRkmwFaTBVgJ5gERBiAQcSJ/bkv9YS1YOtDROPGdXf7DZd1h/7apae7B+Y4pSygLgZtaP8y+Br4FFYAk4AvSAUexngToW7R8BG8BjYM3MHuqBUspuYGxmw/ZFqwelFJfweGhcSvkCOAOcAD4F9gMHgI/jvdK+/4GpY9H+BfAv8B/wFPgDuGNmf05rpAqIGz0zG8T5WeAy8B3wEfPNK+Bn4LqZ/aQLpZRdyhYzGyvdiZQfRCC+Aq7GXukyaCI8CRSzjcpg3IxZYi8qi0spyor7oVXax/b24E3aq9Z/AA7Hy+MQzQyl+3ZRAGg06PwJcMXM1mo5eHx9iVe9X4tGp+v9EF23eaMdez80Sds1aY0e4JNuX0o5BKwARyOF9MLu5uvPMx5a+qFNGlek2cz6HiVwHjgVNU/U+Tx+9a2wpncNQ+t5aVd0loHj0SxGc9Lo3odeaBuFVmle1oVjMc+XpnF0mapTmo95/OHta6a5ruOhVZoXa2fUH55Y6FjtTyNt9d9Hmpf0HzDoYNPbDiqDkQKQoe63xKMrZgzCTgaQpOu/Eyc5TnKc5DjJcZLjJMdJjpMcJzlOcpzkOMlxkuMkx0mOkxwnOU5ynOQ4yXGS4yTHSY6THCc5TnKc5DjJcZLjJMdJjpMc31kiU3YWSQ0TL5IaevhrZDMRExtJx6kapXmjBkAeGxJkw+Srx7E0TwIgd9XLuJklA0pofqwAPAh3VbbF0tL8QCfrwL1IjeoT6GImVE290CrN67LM6OQW8EtjPvyfubAjDBuDpbTeknZZZvaa2V/AKvBPLCfXQ4OOZII01BXxC6FxVZpLKXsnNR8WsjXgx5ge6sOVeZwZ2jHXj/oiNFbbHFouPzEXhnvsk3CPXWpsNHVq7M2Rl2gUWzVI1KZ3A/jezJ6Hl3hQrbOyzY7i+HPgG+BCx6yzN4HfzOzvVrPVp6qTsrqrwzx9GjgJHAQ+i23WnSUl6lzbM+B34K7M05ObjVOWaTFRDnt0aGabcU22OvmIzwHfNjbUWQtEHZOE/QrcDp+wpnnpkC7d3zSzt/3hNdYyOeHtxhu1AAAAAElFTkSuQmCC",
-  opencode: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABg0lEQVR4nO2bbY6DIBRFrycuoM10/yu0aXcwE380MUYtAipw5/wzvA8uPBQ0Sv940+11+LndflU4z/c7WFfXiujYwaBl8SH9J8W5FrZ0EONUI2t62GNcO0u6CDFqibk+thpbZaoTmYPMwa3853qROcicPnfA4fVabXvc76flCs3Zn9mZj03ugbh8CQwB4lPsj6RPDbAkZmmG53bjdQmVQIrzXNQoaE3UUlsJlUBO8SGUNgjkCLK3lEso/aQBGDLP2pVVQGqA2NkspQqQOcgcZA4yp08NELujy3HnD9lxHlIBj8x38KOeCCFxaekwFBOX2GSxW9rYLfRRcbvUd4Kxp8E1u6Pyr3047VM7MCZbOuqG+B3B3rhckbQU8VmWwJXvBFN55lgCpYv8BjIHmYPMQeYgc5A5yBxkDjIHmYPMQeYgc5A5yBxkDjG/mbTARy8yB5nD9MJlGUx1stXYInN9hBi1wpIu9hjXzJoeYpxqY0sHKc418K3/3d6ANfxZUvuk6Uz+AKUnp1pEz3VVAAAAAElFTkSuQmCC",
-  codex: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAA2UlEQVR4nO2VMQ7DMAzEZP//zy4ydAlSoGhk6a4hRw+GSVhQBAAAAAAAAAAA6LPWWll3zTCVP0f4NcoMIz5J3/kRM0y4khxjjLvjMOPB8hYBvpU/zv4uwNosLx2gQl42QJW8ZIBKebkA1fJSATrkZQJ0yUsE6JRvD9At3xpAQb4tgIp8SwAl+fIAavKlARTlywKoypcEUJbfHkBdfmsAB/ltAVzktwRwkk8P4CafGsBRPi2Aq3xagLOYi3zqCLwFneQP0h/mJL99C6jLb90CDvIAAAAAAADxVF7AxQA9+aQhwwAAAABJRU5ErkJggg==",
+// 에이전트 타입 → 타이틀 우측 하단에 2글자 컬러 뱃지(알약). 이미지 없이 SVG 글자로 가볍고
+// 선명하게 — Elgato SVG 렌더러에서 이미지-in-SVG와 무관하게 항상 렌더링된다.
+const AGENT_BADGE: Record<string, { bg: string; label: string }> = {
+  claude: { bg: "#d97757", label: "CL" },
+  opencode: { bg: "#10b981", label: "OC" },
+  codex: { bg: "#a78bfa", label: "CX" },
 };
 
 export function agentBadge(agentType?: string | null): string {
   const a = (agentType || "").toLowerCase();
-  const logo = AGENT_LOGOS[a];
-  if (logo) {
-    // 그림자는 깔지 않고 아이콘만. 우측 하단에 26px — 타일 코너(rx 18) 밖으로 안 나가게 안쪽으로.
-    return `<image xlink:href="${logo}" href="${logo}" x="108" y="108" width="26" height="26" preserveAspectRatio="xMidYMid meet"/>`;
-  }
-  // 알 수 없는 에이전트 — 회색 원 + 이니셜(없으면 ?)
-  const glyph = a ? [...a][0].toUpperCase() : "?";
-  return `<circle cx="127" cy="127" r="11" fill="#4b5563"/><text x="127" y="132" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="13" font-weight="800">${esc(glyph)}</text>`;
+  const known = AGENT_BADGE[a];
+  const bg = known?.bg ?? "#4b5563";
+  const label = known?.label ?? (a ? [...a].slice(0, 2).join("").toUpperCase() : "?");
+  return `<rect x="104" y="118" width="32" height="18" rx="9" fill="${bg}"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
 }
 
 // 대략적 글자 폭(단위). ASCII는 좁게, 한글/CJK는 넓게 잡아 자동 크기 계산에 사용.
@@ -113,18 +108,10 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
 </svg>`;
 }
 
-// Stream Deck setImage는 data URI를 기대. Elgato의 SVG 렌더러는 `<image>`(PNG)를 막으므로,
-// SVG를 resvg로 한 번 rasterize해 PNG로 보낸다(그래야 브랜드 PNG 뱃지가 실제로 보임).
-let resvgModule: any = null;
-function svgToPng(svg: string): Buffer {
-  if (!resvgModule) resvgModule = require("@resvg/resvg-js");
-  const { Resvg } = resvgModule;
-  const r = new Resvg(svg, { fitTo: { mode: "width", value: 144 } });
-  return Buffer.from(r.render().asPng());
-}
-
+// Stream Deck setImage는 data URI를 기대 → SVG를 base64 data URI로 감싼다.
+// (뱃지는 글자 기반이라 Elgato 렌더러에서 어김없이 동작 — 이미지-in-SVG·래스터 라이브러리 불필요)
 export function keyImage(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = false): string {
-  return "data:image/png;base64," + svgToPng(keySvg(b, tick, isTarget, nowMs, dim)).toString("base64");
+  return "data:image/svg+xml;base64," + Buffer.from(keySvg(b, tick, isTarget, nowMs, dim), "utf8").toString("base64");
 }
 
 const DIAL_ACCENT: Record<string, string> = {
