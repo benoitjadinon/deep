@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { keySvg, wrap, stripSpinner, marqueeWindow, dialImage } from "../src/render.js";
+import { keySvg, agentBadge, keyImage, wrap, stripSpinner, marqueeWindow, dialImage } from "../src/render.js";
 
 describe("stripSpinner / wrap", () => {
   it("앞 스피너 글리프만 제거, 한글 보존", () => {
@@ -60,6 +60,41 @@ describe("keySvg", () => {
   });
 });
 
+describe("agentBadge — 타일마다 에이전트 아이콘", () => {
+  it("알려진 타입은 브랜드 PNG(image)로 삽입", () => {
+    const oc = agentBadge("opencode");
+    expect(oc).toContain("<image");
+    expect(oc).toContain("data:image/png;base64,iVBORw0");
+    expect(oc).toMatch(/xlink:href="data:image\/png/);
+    expect(oc).toContain('y="108" width="26" height="26"');
+    expect(oc).not.toContain("circle"); // 배경 칩(원) 없음
+  });
+  it("알려진 타입 3종 모두 PNG", () => {
+    for (const a of ["claude", "opencode", "codex"]) {
+      expect(agentBadge(a)).toContain("data:image/png;base64,iVBORw0");
+    }
+  });
+  it("대소문자 무시", () => {
+    expect(agentBadge("OpenCode")).toContain("data:image/png;base64,iVBORw0");
+  });
+  it("모르는 타입은 회색 원 + 이니셜, 없으면 물음표", () => {
+    const g = agentBadge("grok");
+    expect(g).toContain('fill="#4b5563"');
+    expect(g).toContain(">G</text>");
+    expect(g).not.toContain("data:image/png");
+    expect(agentBadge(undefined)).toContain(">?</text>");
+    expect(agentBadge(null)).toContain(">?</text>");
+  });
+  it("keySvg에 타일마다 뱃지 PNG가 들어간다", () => {
+    const svg = keySvg({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main", agentType: "opencode" });
+    expect(svg).toContain("<image");
+    expect(svg).toContain("data:image/png;base64,iVBORw0");
+  });
+  it("빈 칸은 뱃지 없음", () => {
+    expect(keySvg({ empty: true })).not.toContain("<image");
+  });
+});
+
 describe("keySvg 주의 애니메이션(펄스 링)", () => {
   const attn = { empty: false as const, handle: "t", label: "x", state: "waiting", color: "amber" as const, repo: "svd", branch: "main" };
   const calm = { empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main" };
@@ -87,6 +122,19 @@ describe("keySvg dim — 주의 없는 키 죽여 대비 만들기", () => {
   });
   it("dim 아니면 정상 밝기(죽이지 않음)", () => {
     expect(keySvg(calm, 0, false, 0, false)).not.toContain('opacity="0.32"');
+  });
+});
+
+describe("keyImage — 키는 PNG로 내보낸다(브랜드 뱃지용)", () => {
+  it("SVG를 resvg로 rasterize해 PNG data URI 반환", () => {
+    const img = keyImage({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main", agentType: "opencode" });
+    expect(img.startsWith("data:image/png;base64,")).toBe(true);
+    const b = Buffer.from(img.split(",")[1], "base64");
+    expect(b.subarray(1, 4).toString()).toBe("PNG");
+    expect(b.length).toBeGreaterThan(500); // 내용물이 있음
+  });
+  it("빈 칸도 PNG로 내보낸다", () => {
+    expect(keyImage({ empty: true })).toMatch(/^data:image\/png;base64,/);
   });
 });
 
