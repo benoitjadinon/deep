@@ -428,10 +428,10 @@ export function readAgyState(): AgentStateSnapshot {
     if (existsSync(AGY_SETTINGS)) {
       const cfg = parseAgySettings(readFileSync(AGY_SETTINGS, "utf8"));
       const effort = extractEffortFromModel(cfg.model);
-      return { model: cfg.model, effort, mode: cfg.mode ? normalizeAgyMode(cfg.mode) : "default" };
+      return { model: cfg.model, effort, mode: cfg.mode ? normalizeAgyMode(cfg.mode) : undefined };
     }
   } catch {}
-  return { mode: "default" };
+  return {};
 }
 
 // Agy 구현체

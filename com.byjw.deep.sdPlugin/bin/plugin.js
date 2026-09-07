@@ -17947,11 +17947,11 @@ function readAgyState() {
     if ((0, import_node_fs4.existsSync)(AGY_SETTINGS)) {
       const cfg = parseAgySettings((0, import_node_fs4.readFileSync)(AGY_SETTINGS, "utf8"));
       const effort = extractEffortFromModel(cfg.model);
-      return { model: cfg.model, effort, mode: cfg.mode ? normalizeAgyMode(cfg.mode) : "default" };
+      return { model: cfg.model, effort, mode: cfg.mode ? normalizeAgyMode(cfg.mode) : void 0 };
     }
   } catch {
   }
-  return { mode: "default" };
+  return {};
 }
 var AgyAgent = class extends AbstractAgent {
   constructor() {
