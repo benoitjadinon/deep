@@ -42,6 +42,9 @@ const AGENT_BADGE: Record<string, { bg: string; label: string }> = {
   claude: { bg: "#d97757", label: "CL" },
   opencode: { bg: "#10b981", label: "OC" },
   codex: { bg: "#a78bfa", label: "CX" },
+  code: { bg: "#a78bfa", label: "CX" },
+  agy: { bg: "#3b82f6", label: "AG" },
+  antigravity: { bg: "#3b82f6", label: "AG" },
 };
 
 export function agentBadge(agentType?: string | null): string {
@@ -122,9 +125,13 @@ const DIAL_ACCENT: Record<string, string> = {
   target: "#f59e0b", // 앰버
 };
 
-/** 다이얼 터치스크린(200×100) 커스텀 렌더 — 좌측 색 레일 + 상단 작은 라벨 + 값(가득 채운 3줄 래핑, 위로 정렬). */
-export function dialImage(role: string, label: string, value: string, tick = 0): string {
-  const accent = DIAL_ACCENT[role] ?? "#8a8a90";
+/** 다이얼 터치스크린(200×100) 커스텀 렌더 — 좌측 색 레일 + 상단 작은 라벨 + 값(가득 채운 3줄 래핑, 위로 정렬).
+ *  disabled인 경우 시각적으로 비활성화(어둡고 흐린 레일/라벨/값 + 투명도 딤). */
+export function dialImage(role: string, label: string, value: string, tick = 0, disabled = false): string {
+  const accent = disabled ? "#2e2e34" : (DIAL_ACCENT[role] ?? "#8a8a90");
+  const labelColor = disabled ? "#4a4a52" : accent;
+  const valueColor = disabled ? "#4a4a52" : "#ffffff";
+  const val = disabled ? (value && value !== " " && value !== "…" ? value : "-") : (value || " ");
   const textX = 18;
   const avail = 195 - textX; // 레일(7px) 제외 실제 텍스트 가용 폭
   const lineFont = 15; // 3줄 값 폰트
@@ -136,26 +143,29 @@ export function dialImage(role: string, label: string, value: string, tick = 0):
   // 한 줄로 렌더할 때 실제 폭(자동 크기) 기준으로 판정 — lineFont로 판단하면 그보다 큰
   // 자동크기로 그릴 때 글자가 잘리는 회귀가 난다. 읽기 가능(≥20px) 한 줄이면 그대로,
   // 아니면 "/"(provider/model 등) 기준으로 줄바꿈해 두 번째 줄로 넘긴다.
-  const oneLineFits = units(value || " ") * 20 <= avail;
+  const oneLineFits = units(val) * 20 <= avail;
   const lines = oneLineFits
-    ? [value || " "]
-    : splitSlash(value || " ", perLine);
-  const singleSize = oneLineFits ? Math.min(28, Math.max(16, Math.floor((avail - 4) / units(value || " ")))) : lineFont;
+    ? [val]
+    : splitSlash(val, perLine);
+  const singleSize = oneLineFits ? Math.min(28, Math.max(16, Math.floor((avail - 4) / units(val)))) : lineFont;
 
   const labelSvg = role === "model"
-    ? `<text x="${textX}" y="20" fill="${accent}" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="2">${esc(label)}</text>`
-    : `<text x="${textX}" y="24" fill="${accent}" font-family="sans-serif" font-size="13" font-weight="800" letter-spacing="1">${esc(label)}</text>`;
+    ? `<text x="${textX}" y="20" fill="${labelColor}" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="2">${esc(label)}</text>`
+    : `<text x="${textX}" y="24" fill="${labelColor}" font-family="sans-serif" font-size="13" font-weight="800" letter-spacing="1">${esc(label)}</text>`;
 
   // 3줄 렌더(위로 정렬) — 100px 다이얼에서 top부터 lineH 간격
   const valueSvg = lines.length > 1
-    ? lines.map((ln, i) => `<text x="${textX}" y="${top + i * lineH}" fill="#ffffff" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc(ln)}</text>`).join("")
-    : `<text x="${textX}" y="56" fill="#ffffff" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc(lines[0])}</text>`;
+    ? lines.map((ln, i) => `<text x="${textX}" y="${top + i * lineH}" fill="${valueColor}" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc(ln)}</text>`).join("")
+    : `<text x="${textX}" y="56" fill="${valueColor}" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc(lines[0])}</text>`;
+
+  const dimG0 = disabled ? '<g opacity="0.38">' : "";
+  const dimG1 = disabled ? "</g>" : "";
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
-  <rect width="7" height="100" fill="${accent}"/>
+  ${dimG0}<rect width="7" height="100" fill="${accent}"/>
   ${labelSvg}
-  ${valueSvg}
+  ${valueSvg}${dimG1}
 </svg>`;
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
 }

@@ -17267,9 +17267,9 @@ var plugin_default = streamDeck;
 
 // src/plugin.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs4 = require("node:fs");
-var import_node_path6 = require("node:path");
-var import_node_os = require("node:os");
+var import_node_fs5 = require("node:fs");
+var import_node_path7 = require("node:path");
+var import_node_os2 = require("node:os");
 var import_node_util = require("node:util");
 
 // src/deck.ts
@@ -17399,7 +17399,10 @@ function marqueeWindow(s, win, tick2) {
 var AGENT_BADGE = {
   claude: { bg: "#d97757", label: "CL" },
   opencode: { bg: "#10b981", label: "OC" },
-  codex: { bg: "#a78bfa", label: "CX" }
+  codex: { bg: "#a78bfa", label: "CX" },
+  code: { bg: "#a78bfa", label: "CX" },
+  agy: { bg: "#3b82f6", label: "AG" },
+  antigravity: { bg: "#3b82f6", label: "AG" }
 };
 function agentBadge(agentType) {
   const a = (agentType || "").toLowerCase();
@@ -17462,24 +17465,29 @@ var DIAL_ACCENT = {
   target: "#f59e0b"
   // 앰버
 };
-function dialImage(role, label, value, tick2 = 0) {
-  const accent = DIAL_ACCENT[role] ?? "#8a8a90";
+function dialImage(role, label, value, tick2 = 0, disabled = false) {
+  const accent = disabled ? "#2e2e34" : DIAL_ACCENT[role] ?? "#8a8a90";
+  const labelColor = disabled ? "#4a4a52" : accent;
+  const valueColor = disabled ? "#4a4a52" : "#ffffff";
+  const val = disabled ? value && value !== " " && value !== "\u2026" ? value : "-" : value || " ";
   const textX = 18;
   const avail = 195 - textX;
   const lineFont = 15;
   const lineH = 16;
   const top = 44;
   const perLine = Math.max(4, Math.floor(avail / (lineFont * 0.56)));
-  const oneLineFits = units(value || " ") * 20 <= avail;
-  const lines = oneLineFits ? [value || " "] : splitSlash(value || " ", perLine);
-  const singleSize = oneLineFits ? Math.min(28, Math.max(16, Math.floor((avail - 4) / units(value || " ")))) : lineFont;
-  const labelSvg = role === "model" ? `<text x="${textX}" y="20" fill="${accent}" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="2">${esc2(label)}</text>` : `<text x="${textX}" y="24" fill="${accent}" font-family="sans-serif" font-size="13" font-weight="800" letter-spacing="1">${esc2(label)}</text>`;
-  const valueSvg = lines.length > 1 ? lines.map((ln, i) => `<text x="${textX}" y="${top + i * lineH}" fill="#ffffff" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc2(ln)}</text>`).join("") : `<text x="${textX}" y="56" fill="#ffffff" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc2(lines[0])}</text>`;
+  const oneLineFits = units(val) * 20 <= avail;
+  const lines = oneLineFits ? [val] : splitSlash(val, perLine);
+  const singleSize = oneLineFits ? Math.min(28, Math.max(16, Math.floor((avail - 4) / units(val)))) : lineFont;
+  const labelSvg = role === "model" ? `<text x="${textX}" y="20" fill="${labelColor}" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="2">${esc2(label)}</text>` : `<text x="${textX}" y="24" fill="${labelColor}" font-family="sans-serif" font-size="13" font-weight="800" letter-spacing="1">${esc2(label)}</text>`;
+  const valueSvg = lines.length > 1 ? lines.map((ln, i) => `<text x="${textX}" y="${top + i * lineH}" fill="${valueColor}" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc2(ln)}</text>`).join("") : `<text x="${textX}" y="56" fill="${valueColor}" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc2(lines[0])}</text>`;
+  const dimG0 = disabled ? '<g opacity="0.38">' : "";
+  const dimG1 = disabled ? "</g>" : "";
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
-  <rect width="7" height="100" fill="${accent}"/>
+  ${dimG0}<rect width="7" height="100" fill="${accent}"/>
   ${labelSvg}
-  ${valueSvg}
+  ${valueSvg}${dimG1}
 </svg>`;
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
 }
@@ -17492,22 +17500,367 @@ function splitSlash(value, perLine) {
 }
 
 // src/agents.ts
-var DISCOVER_MODEL_CMD = {
-  opencode: ["opencode", "models"]
+var import_node_fs4 = require("node:fs");
+var import_node_path6 = require("node:path");
+var import_node_os = require("node:os");
+var AbstractAgent = class {
+  /** 사용 가능한 모델 목록 (정적 폴백 또는 기본값) */
+  getModels() {
+    return [];
+  }
+  /** 사용 가능한 effort 목록 */
+  getEfforts(_modelId) {
+    return [];
+  }
+  /** 사용 가능한 모드/에이전트 목록 */
+  getModes() {
+    return [];
+  }
+  /** 모델 목록을 가져올 호스트 CLI (인자 배열) */
+  getDiscoverModelCmd() {
+    return void 0;
+  }
+  /** 모드 목록을 가져올 호스트 CLI */
+  getDiscoverAgentCmd() {
+    return void 0;
+  }
+  /** 모델별 변형(effort)을 가져올 호스트 CLI */
+  getDiscoverVariantCmd() {
+    return void 0;
+  }
+  /** CLI 출력에서 모델 목록 파싱 */
+  parseDiscoveredModels(stdout) {
+    return parseModels(stdout);
+  }
+  /** CLI 출력에서 모드 목록 파싱 */
+  parseDiscoveredModes(stdout) {
+    return parsePrimaryAgents(stdout);
+  }
+  /** CLI 출력에서 모델별 변형(effort) 파싱 */
+  parseDiscoveredEfforts(stdout, modelId) {
+    return parseModelVariants(stdout, modelId);
+  }
+  /** 로컬 상태 파일/설정에서 현재 선택된 상태 읽기 */
+  readCurrentState() {
+    return {};
+  }
 };
-var DISCOVER_AGENT_CMD = {
-  opencode: ["opencode", "agent", "list"]
+var slash = (cmd, value) => [
+  { text: `${cmd} ${value}`, enter: true, delayMs: 120 }
+];
+var picker = (cmd, value) => [
+  { text: cmd, enter: true, delayMs: 450 },
+  { text: value, enter: true }
+];
+var modePicker = (value) => [
+  { text: "", enter: false, delayMs: 300 },
+  // ctrl+x (leader)
+  { text: "a", enter: false, delayMs: 450 },
+  // agent list dialog
+  { text: value, enter: true }
+];
+var ClaudeAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "claude";
+    this.label = "Claude";
+  }
+  supports(kind) {
+    return kind === "model";
+  }
+  getModels() {
+    return ["opus", "sonnet", "haiku"];
+  }
+  getEfforts() {
+    return [];
+  }
+  getModes() {
+    return [];
+  }
+  getApplySteps(kind, value) {
+    if (kind === "model") {
+      return slash("/model", value);
+    }
+    return [];
+  }
 };
-var DISCOVER_VARIANT_CMD = {
-  opencode: ["opencode", "models", "--verbose"]
+var CODEX_CONFIG = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".codex", "config.toml");
+var CODEX_MODELS_CACHE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".codex", "models_cache.json");
+function parseCodexConfig(toml) {
+  const modelMatch = /^model\s*=\s*"([^"]+)"/m.exec(toml || "");
+  const effortMatch = /^model_reasoning_effort\s*=\s*"([^"]+)"/m.exec(toml || "");
+  return {
+    model: modelMatch ? modelMatch[1] : void 0,
+    effort: effortMatch ? effortMatch[1] : void 0
+  };
+}
+function parseCodexModelsCache(text) {
+  try {
+    const j = JSON.parse(text);
+    if (Array.isArray(j?.models)) {
+      return j.models.map((m) => m?.slug).filter((s) => typeof s === "string" && s && !s.includes("auto-review"));
+    }
+  } catch {
+  }
+  return [];
+}
+function readCodexState() {
+  try {
+    if ((0, import_node_fs4.existsSync)(CODEX_CONFIG)) {
+      const cfg = parseCodexConfig((0, import_node_fs4.readFileSync)(CODEX_CONFIG, "utf8"));
+      return { model: cfg.model };
+    }
+  } catch {
+  }
+  return {};
+}
+function readCodexModelsCache() {
+  try {
+    if ((0, import_node_fs4.existsSync)(CODEX_MODELS_CACHE)) {
+      return parseCodexModelsCache((0, import_node_fs4.readFileSync)(CODEX_MODELS_CACHE, "utf8"));
+    }
+  } catch {
+  }
+  return [];
+}
+var CodexAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "codex";
+    this.label = "Codex";
+  }
+  supports(kind) {
+    return kind === "model";
+  }
+  getModels() {
+    const cached2 = readCodexModelsCache();
+    if (cached2.length) return cached2;
+    return ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4-mini", "gpt-reserve"];
+  }
+  getEfforts() {
+    return [];
+  }
+  getModes() {
+    return [];
+  }
+  getApplySteps(kind, value) {
+    if (kind === "model") {
+      return slash("/model", value);
+    }
+    return [];
+  }
+  readCurrentState() {
+    return readCodexState();
+  }
+};
+var OPENCODE_STATE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "model.json");
+var OPENCODE_TUI = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "tui");
+function readOpenCodeState() {
+  try {
+    return parseOpenCodeState((0, import_node_fs4.readFileSync)(OPENCODE_STATE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+function readTuiAgent() {
+  try {
+    return parseTuiAgent((0, import_node_fs4.readFileSync)(OPENCODE_TUI, "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+var OpenCodeAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "opencode";
+    this.label = "OpenCode";
+  }
+  supports(kind) {
+    return kind === "model" || kind === "effort" || kind === "mode";
+  }
+  getModels() {
+    return [];
+  }
+  getEfforts() {
+    return ["low", "medium", "high", "max"];
+  }
+  getModes() {
+    return ["build", "plan"];
+  }
+  getApplySteps(kind, value) {
+    if (kind === "model") {
+      return picker("/models", providerShort(value));
+    }
+    if (kind === "effort") {
+      return picker("/variants", value);
+    }
+    if (kind === "mode") {
+      return modePicker(value);
+    }
+    return [];
+  }
+  getDiscoverModelCmd() {
+    return ["opencode", "models"];
+  }
+  getDiscoverAgentCmd() {
+    return ["opencode", "agent", "list"];
+  }
+  getDiscoverVariantCmd() {
+    return ["opencode", "models", "--verbose"];
+  }
+  readCurrentState() {
+    const st = readOpenCodeState();
+    const tuiAgent = readTuiAgent();
+    const model = st.model ? `${st.model.providerID}/${st.model.modelID}` : void 0;
+    const effort = model && st.variant ? st.variant[model] : void 0;
+    return {
+      model,
+      effort,
+      mode: tuiAgent,
+      recentModels: st.recent,
+      favoriteModels: st.favorites
+    };
+  }
+};
+var AGY_SETTINGS = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "settings.json");
+function parseAgySettings(text) {
+  try {
+    const data = JSON.parse(text);
+    if (typeof data?.model === "string" && data.model) {
+      return { model: data.model };
+    }
+  } catch {
+  }
+  return {};
+}
+function parseAgyModels(stdout) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const raw of (stdout || "").split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!line || line.startsWith("Fetching")) continue;
+    const parts = line.split("	");
+    const id = parts[0]?.trim();
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+function readAgyState() {
+  try {
+    if ((0, import_node_fs4.existsSync)(AGY_SETTINGS)) {
+      const cfg = parseAgySettings((0, import_node_fs4.readFileSync)(AGY_SETTINGS, "utf8"));
+      return { model: cfg.model };
+    }
+  } catch {
+  }
+  return {};
+}
+var AgyAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "agy";
+    this.label = "Agy";
+  }
+  supports(kind) {
+    return kind === "model" || kind === "effort";
+  }
+  getModels() {
+    return [
+      "gemini-3.8-flash-medium",
+      "gemini-3.8-flash-high",
+      "gemini-3.8-flash-low",
+      "gemini-3.7-flash-medium",
+      "gemini-3.1-pro-high",
+      "claude-sonnet-4-6"
+    ];
+  }
+  getEfforts() {
+    return ["low", "medium", "high"];
+  }
+  getModes() {
+    return [];
+  }
+  getApplySteps(kind, value) {
+    if (kind === "model") {
+      return slash("/model", value);
+    }
+    if (kind === "effort") {
+      return slash("/effort", value);
+    }
+    return [];
+  }
+  getDiscoverModelCmd() {
+    return ["agy", "models"];
+  }
+  parseDiscoveredModels(stdout) {
+    return parseAgyModels(stdout);
+  }
+  readCurrentState() {
+    return readAgyState();
+  }
+};
+var UnsupportedAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "";
+    this.label = "\uBBF8\uC9C0\uC6D0";
+  }
+  supports(_kind) {
+    return false;
+  }
+  getApplySteps(_kind, _value) {
+    return [];
+  }
+};
+var AGENT_INSTANCES = {
+  claude: new ClaudeAgent(),
+  codex: new CodexAgent(),
+  code: new CodexAgent(),
+  opencode: new OpenCodeAgent(),
+  agy: new AgyAgent(),
+  antigravity: new AgyAgent()
+};
+var UNSUPPORTED_AGENT = new UnsupportedAgent();
+function agentFor(agentType) {
+  if (!agentType) return UNSUPPORTED_AGENT;
+  const key = agentType.trim().toLowerCase();
+  return AGENT_INSTANCES[key] ?? UNSUPPORTED_AGENT;
+}
+function profileFor(agentType) {
+  const agent = agentFor(agentType);
+  return {
+    agentType: agent.agentType,
+    label: agent.label,
+    models: agent.getModels(),
+    efforts: agent.getEfforts(),
+    modes: agent.getModes(),
+    model: {
+      supported: agent.supports("model"),
+      steps: (v) => agent.getApplySteps("model", v)
+    },
+    effort: {
+      supported: agent.supports("effort"),
+      steps: (v) => agent.getApplySteps("effort", v)
+    },
+    mode: {
+      supported: agent.supports("mode"),
+      steps: (v) => agent.getApplySteps("mode", v)
+    }
+  };
+}
+var UNSUPPORTED_PROFILE = profileFor("");
+var AGENTS = {
+  claude: profileFor("claude"),
+  codex: profileFor("codex"),
+  code: profileFor("code"),
+  opencode: profileFor("opencode"),
+  agy: profileFor("agy"),
+  antigravity: profileFor("antigravity")
 };
 var HIDDEN_PRIMARY_AGENTS = /* @__PURE__ */ new Set(["compaction", "summary", "title"]);
-function discoverAgentCmd(agentType) {
-  return agentType ? DISCOVER_AGENT_CMD[agentType] : void 0;
-}
-function discoverVariantCmd(agentType) {
-  return agentType ? DISCOVER_VARIANT_CMD[agentType] : void 0;
-}
 function parsePrimaryAgents(stdout) {
   const out = [];
   for (let line of (stdout || "").split("\n")) {
@@ -17518,9 +17871,8 @@ function parsePrimaryAgents(stdout) {
   return out;
 }
 function parseModelVariants(stdout, modelId) {
-  const target = modelId;
   for (const block of splitJsonBlocks(stdout || "")) {
-    if (block.id === target && block.variants && typeof block.variants === "object") {
+    if (block.id === modelId && block.variants && typeof block.variants === "object") {
       const keys = Object.keys(block.variants);
       if (keys.length) return ["default", ...keys];
     }
@@ -17547,69 +17899,6 @@ function splitJsonBlocks(text) {
     }
   }
   return out;
-}
-var slash = (cmd, value) => [
-  { text: `${cmd} ${value}`, enter: true, delayMs: 120 }
-];
-var picker = (cmd, value) => [
-  { text: cmd, enter: true, delayMs: 450 },
-  { text: value, enter: true }
-];
-var modePicker = (value) => [
-  { text: "", enter: false, delayMs: 300 },
-  // ctrl+x (leader)
-  { text: "a", enter: false, delayMs: 450 },
-  // agent list dialog
-  { text: value, enter: true }
-];
-var AGENTS = {
-  claude: {
-    agentType: "claude",
-    label: "Claude",
-    models: ["opus", "sonnet", "haiku"],
-    efforts: ["low", "medium", "high", "xhigh", "ultracode"],
-    modes: [],
-    // Claude Code에 안전한 세션 중 모드 전환 명령 없음 → 게이트(-)
-    model: { supported: true, steps: (v) => slash("/model", v) },
-    effort: { supported: true, steps: (v) => slash("/effort", v) },
-    mode: { supported: false, steps: () => [] }
-  },
-  opencode: {
-    agentType: "opencode",
-    label: "OpenCode",
-    models: [],
-    // 라이브 발견(opencode models)이 채운다. 발견 전엔 비어 있어 다이얼이 잠깐 "…" 표시.
-    efforts: ["low", "medium", "high", "max"],
-    modes: ["build", "plan"],
-    // 라이브 발견(opencode agent list, hidden 제외)이 덮어쓴다. 폴백.
-    model: { supported: true, steps: (v) => picker("/models", providerShort(v)) },
-    effort: { supported: true, steps: (v) => picker("/variants", v) },
-    mode: { supported: true, steps: (v) => modePicker(v) }
-  }
-  // 코드엑스/그 밖의 에이전트는 세션 중 모델 변경의 안전한 슬래시 명령이 없음 → 게이팅으로 차단.
-};
-var UNSUPPORTED_PROFILE = {
-  agentType: "",
-  label: "\uBBF8\uC9C0\uC6D0",
-  models: [],
-  efforts: [],
-  modes: [],
-  model: { supported: false, steps: () => [] },
-  effort: { supported: false, steps: () => [] },
-  mode: { supported: false, steps: () => [] }
-};
-function profileFor(agentType) {
-  if (agentType && AGENTS[agentType]) return AGENTS[agentType];
-  return UNSUPPORTED_PROFILE;
-}
-function supported(p, kind) {
-  return p[kind].supported;
-}
-function stepsFor(p, kind, value) {
-  return p[kind].steps(value);
-}
-function discoverModelCmd(agentType) {
-  return agentType ? DISCOVER_MODEL_CMD[agentType] : void 0;
 }
 function parseModels(stdout) {
   const seen = /* @__PURE__ */ new Set();
@@ -17671,17 +17960,17 @@ function parseTuiAgent(text) {
 // src/plugin.ts
 var execFileP = (0, import_node_util.promisify)(import_node_child_process.execFile);
 function firstExisting(candidates, fallback) {
-  for (const p of candidates) if ((0, import_node_fs4.existsSync)(p)) return p;
+  for (const p of candidates) if ((0, import_node_fs5.existsSync)(p)) return p;
   return fallback;
 }
 var ORCA = firstExisting(["/usr/local/bin/orca", "/opt/homebrew/bin/orca"], "orca");
-var STT_APP = (0, import_node_path6.join)(__dirname, "SttHelper.app");
+var STT_APP = (0, import_node_path7.join)(__dirname, "SttHelper.app");
 var STT_TXT = "/tmp/agentdeck-stt.txt";
 var STT_PID = "/tmp/agentdeck-stt.pid";
 var STT_PARTIAL = "/tmp/agentdeck-stt.partial";
 var STT_STATUS = "/tmp/agentdeck-stt.status";
-var OPENCODE_STATE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "model.json");
-var OPENCODE_TUI = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "tui");
+var OPENCODE_STATE2 = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".local", "state", "opencode", "model.json");
+var OPENCODE_TUI2 = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".local", "state", "opencode", "tui");
 var TALK_HINT = {
   MIC_DENIED: "\uB9C8\uC774\uD06C \uAD8C\uD55C \uCF1C\uAE30",
   SPEECH_DENIED: "\uC74C\uC131\uC778\uC2DD \uAD8C\uD55C \uCF1C\uAE30",
@@ -17731,7 +18020,7 @@ var currentModeByHandle = /* @__PURE__ */ new Map();
 var pickAt = { model: 0, effort: 0, mode: 0 };
 var PICK_GRACE = 2500;
 var agentByHandle = /* @__PURE__ */ new Map();
-var profileByHandle = /* @__PURE__ */ new Map();
+var agentInstanceByHandle = /* @__PURE__ */ new Map();
 var modelsByHandle = /* @__PURE__ */ new Map();
 var modesByHandle = /* @__PURE__ */ new Map();
 var effortsByHandle = /* @__PURE__ */ new Map();
@@ -17746,15 +18035,15 @@ async function startRecording() {
   talkState = "\u25CF REC";
   renderAll();
   try {
-    for (const f of [STT_TXT, STT_PID, STT_PARTIAL, STT_STATUS]) if ((0, import_node_fs4.existsSync)(f)) try {
-      (0, import_node_fs4.unlinkSync)(f);
+    for (const f of [STT_TXT, STT_PID, STT_PARTIAL, STT_STATUS]) if ((0, import_node_fs5.existsSync)(f)) try {
+      (0, import_node_fs5.unlinkSync)(f);
     } catch {
     }
     await execFileP("/usr/bin/open", [STT_APP]);
     recPoll = setInterval(() => {
       try {
-        if ((0, import_node_fs4.existsSync)(STT_STATUS)) {
-          talkState = talkHint((0, import_node_fs4.readFileSync)(STT_STATUS, "utf8").trim());
+        if ((0, import_node_fs5.existsSync)(STT_STATUS)) {
+          talkState = talkHint((0, import_node_fs5.readFileSync)(STT_STATUS, "utf8").trim());
           recording = false;
           if (recPoll) {
             clearInterval(recPoll);
@@ -17763,7 +18052,7 @@ async function startRecording() {
           renderAll();
           return;
         }
-        const p = (0, import_node_fs4.existsSync)(STT_PARTIAL) ? (0, import_node_fs4.readFileSync)(STT_PARTIAL, "utf8").trim() : "";
+        const p = (0, import_node_fs5.existsSync)(STT_PARTIAL) ? (0, import_node_fs5.readFileSync)(STT_PARTIAL, "utf8").trim() : "";
         talkState = p || "\u25CF REC";
         renderAll();
       } catch {
@@ -17786,7 +18075,7 @@ async function stopAndSend(target) {
   talkState = "processing";
   renderAll();
   try {
-    const pid = (0, import_node_fs4.existsSync)(STT_PID) ? (0, import_node_fs4.readFileSync)(STT_PID, "utf8").trim() : "";
+    const pid = (0, import_node_fs5.existsSync)(STT_PID) ? (0, import_node_fs5.readFileSync)(STT_PID, "utf8").trim() : "";
     if (pid) try {
       await execFileP("/bin/kill", ["-INT", pid]);
     } catch {
@@ -17794,13 +18083,13 @@ async function stopAndSend(target) {
     let txt = "";
     for (let i = 0; i < 15; i++) {
       await new Promise((r) => setTimeout(r, 200));
-      if ((0, import_node_fs4.existsSync)(STT_TXT)) {
-        txt = (0, import_node_fs4.readFileSync)(STT_TXT, "utf8").trim();
+      if ((0, import_node_fs5.existsSync)(STT_TXT)) {
+        txt = (0, import_node_fs5.readFileSync)(STT_TXT, "utf8").trim();
         if (txt) break;
       }
     }
-    if (!txt && (0, import_node_fs4.existsSync)(STT_STATUS)) {
-      talkState = talkHint((0, import_node_fs4.readFileSync)(STT_STATUS, "utf8").trim());
+    if (!txt && (0, import_node_fs5.existsSync)(STT_STATUS)) {
+      talkState = talkHint((0, import_node_fs5.readFileSync)(STT_STATUS, "utf8").trim());
       renderAll();
       return;
     }
@@ -17815,7 +18104,7 @@ async function stopAndSend(target) {
       }
     }
     try {
-      (0, import_node_fs4.writeFileSync)("/tmp/agentdeck-talk.json", JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), txt, target: target ?? null, sent, sendErr }, null, 2));
+      (0, import_node_fs5.writeFileSync)("/tmp/agentdeck-talk.json", JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), txt, target: target ?? null, sent, sendErr }, null, 2));
     } catch {
     }
     talkState = "hold";
@@ -17829,44 +18118,44 @@ function noteHandle(h) {
   const b = sessionByHandle.get(h);
   if (b && !agentByHandle.has(h)) {
     agentByHandle.set(h, b.agentType ?? "");
-    profileByHandle.set(h, profileFor(b.agentType ?? ""));
+    agentInstanceByHandle.set(h, agentFor(b.agentType ?? ""));
   }
 }
 function setTarget(h) {
   targetHandle = h;
   if (h) noteHandle(h);
-  profileForHandle();
+  agentForHandle();
   pickAt.model = 0;
   pickAt.effort = 0;
   pickAt.mode = 0;
   applyPending();
 }
-function profileForHandle() {
+function agentForHandle() {
   const t = ensureTarget();
-  if (!t) return UNSUPPORTED_PROFILE;
+  if (!t) return UNSUPPORTED_AGENT;
   noteHandle(t);
-  return profileByHandle.get(t) ?? UNSUPPORTED_PROFILE;
+  return agentInstanceByHandle.get(t) ?? agentFor(agentByHandle.get(t));
 }
 function dialList(kind) {
   const t = ensureTarget();
   if (!t) return [];
+  const agent = agentForHandle();
   if (kind === "model") {
     const live = modelsByHandle.get(t);
     if (live && live.length) return live;
+    return agent.getModels();
   }
   if (kind === "effort") {
     const live = effortsByHandle.get(t);
     if (live && live.length) return live;
+    return agent.getEfforts(currentModelByHandle.get(t));
   }
   if (kind === "mode") {
     const live = modesByHandle.get(t);
     if (live && live.length) return live;
+    return agent.getModes();
   }
-  const p = profileByHandle.get(t);
-  if (!p) return [];
-  if (kind === "model") return p.models;
-  if (kind === "effort") return p.efforts;
-  return p.modes;
+  return [];
 }
 function applyPending() {
   adoptPending("model");
@@ -17893,17 +18182,17 @@ function adoptPending(role) {
   }
 }
 function dialValue(role) {
-  const p = profileForHandle();
+  const agent = agentForHandle();
   if (role === "model") {
-    if (!supported(p, "model")) return "-";
+    if (!agent.supports("model")) return "-";
     return pendingModel ? providerShort(pendingModel) : "\u2026";
   }
   if (role === "effort") {
-    if (!supported(p, "effort")) return "-";
+    if (!agent.supports("effort")) return "-";
     return pendingEffort || "\u2026";
   }
   if (role === "mode") {
-    if (!supported(p, "mode")) return "-";
+    if (!agent.supports("mode")) return "-";
     return pendingMode || "\u2026";
   }
   if (role === "target") return targetLabel();
@@ -17922,25 +18211,25 @@ var discoverBusy = false;
 async function refreshDiscovery() {
   const t = ensureTarget();
   if (!t) return;
-  const agentType = agentByHandle.get(t);
+  const agent = agentForHandle();
   if (discoverBusy || Date.now() - lastDiscoverAt < 3e4) return;
   discoverBusy = true;
   try {
     lastDiscoverAt = Date.now();
-    const modelCmd = discoverModelCmd(agentType);
+    const modelCmd = agent.getDiscoverModelCmd();
     if (modelCmd) {
       const { stdout } = await execFileP(modelCmd[0], modelCmd.slice(1), EXEC);
-      const list = parseModels(stdout);
+      const list = agent.parseDiscoveredModels(stdout);
       if (list.length) {
-        const st = readOpenCodeState();
-        modelsByHandle.set(t, sortModels(list, st.recent ?? [], st.favorites ?? []));
+        const st = agent.readCurrentState();
+        modelsByHandle.set(t, sortModels(list, st.recentModels ?? [], st.favoriteModels ?? []));
       }
     }
-    const agentCmd = discoverAgentCmd(agentType);
+    const agentCmd = agent.getDiscoverAgentCmd();
     if (agentCmd) {
       try {
         const { stdout } = await execFileP(agentCmd[0], agentCmd.slice(1), EXEC);
-        const modes = parsePrimaryAgents(stdout);
+        const modes = agent.parseDiscoveredModes(stdout);
         if (modes.length) modesByHandle.set(t, modes);
       } catch (e) {
         plugin_default.logger.error(`discover agents: ${e}`);
@@ -17953,32 +18242,31 @@ async function refreshDiscovery() {
     renderAll();
   }
 }
-function readOpenCodeState() {
-  try {
-    return parseOpenCodeState((0, import_node_fs4.readFileSync)(OPENCODE_STATE, "utf8"));
-  } catch (e) {
-    if (!(e instanceof Error && "code" in e && e.code === "ENOENT")) {
-      plugin_default.logger.error(`read opencode state: ${e}`);
-    }
-    return {};
-  }
-}
-function refreshCurrentModel() {
+function refreshCurrentState() {
   const t = ensureTarget();
-  const agentType = t && agentByHandle.get(t);
-  if (!agentType || !discoverModelCmd(agentType)) return;
-  const state = readOpenCodeState();
-  if (!state.model) return;
-  const id = `${state.model.providerID}/${state.model.modelID}`;
-  const changed = currentModelByHandle.get(t) !== id;
-  currentModelByHandle.set(t, id);
-  const v = state.variant && state.variant[id];
-  if (v) currentEffortByHandle.set(t, v);
-  const list = modelsByHandle.get(t);
-  if (list && list.length) {
-    const sorted = sortModels(list, state.recent ?? [], state.favorites ?? []);
-    if (sorted.length !== list.length || sorted.some((m, i) => m !== list[i])) {
-      modelsByHandle.set(t, sorted);
+  if (!t) return;
+  const agent = agentForHandle();
+  const state = agent.readCurrentState();
+  let changed = false;
+  if (state.model) {
+    if (currentModelByHandle.get(t) !== state.model) {
+      currentModelByHandle.set(t, state.model);
+      changed = true;
+    }
+  }
+  if (state.effort) {
+    currentEffortByHandle.set(t, state.effort);
+  }
+  if (state.mode) {
+    currentModeByHandle.set(t, state.mode);
+  }
+  if (state.recentModels || state.favoriteModels) {
+    const list = modelsByHandle.get(t);
+    if (list && list.length) {
+      const sorted = sortModels(list, state.recentModels ?? [], state.favoriteModels ?? []);
+      if (sorted.length !== list.length || sorted.some((m, i) => m !== list[i])) {
+        modelsByHandle.set(t, sorted);
+      }
     }
   }
   if (changed) {
@@ -17987,25 +18275,25 @@ function refreshCurrentModel() {
   }
   adoptPending("model");
   adoptPending("effort");
+  adoptPending("mode");
 }
 var lastEffortDiscoverAt = 0;
 var effortDiscoverBusy = false;
 async function refreshEfforts() {
   const t = ensureTarget();
   if (!t) return;
-  const agentType = agentByHandle.get(t);
-  const cmd = discoverVariantCmd(agentType);
+  const agent = agentForHandle();
+  const cmd = agent.getDiscoverVariantCmd();
   if (!cmd) return;
-  const state = readOpenCodeState();
-  if (!state.model) return;
-  const id = `${state.model.providerID}/${state.model.modelID}`;
+  const currentModel = currentModelByHandle.get(t);
+  if (!currentModel) return;
   if (effortDiscoverBusy || Date.now() - lastEffortDiscoverAt < 3e4) return;
   effortDiscoverBusy = true;
   try {
     lastEffortDiscoverAt = Date.now();
-    const provider = id.split("/")[0];
+    const provider = currentModel.split("/")[0];
     const { stdout } = await execFileP(cmd[0], [...cmd.slice(1), provider], EXEC);
-    const efforts = parseModelVariants(stdout, id);
+    const efforts = agent.parseDiscoveredEfforts(stdout, currentModel);
     if (efforts.length) {
       effortsByHandle.set(t, efforts);
       adoptPending("effort");
@@ -18015,28 +18303,6 @@ async function refreshEfforts() {
   } finally {
     effortDiscoverBusy = false;
   }
-}
-function readTuiAgent() {
-  try {
-    return parseTuiAgent((0, import_node_fs4.readFileSync)(OPENCODE_TUI, "utf8"));
-  } catch (e) {
-    if (!(e instanceof Error && "code" in e && e.code === "ENOENT")) {
-      plugin_default.logger.error(`read tui agent: ${e}`);
-    }
-    return void 0;
-  }
-}
-function refreshCurrentMode() {
-  const t = ensureTarget();
-  const agentType = t && agentByHandle.get(t);
-  if (!agentType || !discoverModelCmd(agentType)) return;
-  const agent = readTuiAgent();
-  if (agent) {
-    if (currentModeByHandle.get(t) !== agent) {
-      currentModeByHandle.set(t, agent);
-    }
-  }
-  adoptPending("mode");
 }
 var slotViews = /* @__PURE__ */ new Map();
 var dialViews = /* @__PURE__ */ new Map();
@@ -18057,10 +18323,12 @@ function targetLabel() {
 }
 function dialFeedback(role) {
   ensureTarget();
+  const agent = agentForHandle();
+  const isSupported = role === "target" || role === "talk" ? true : agent.supports(role);
   const v = dialValue(role);
-  if (role === "model") return { full: dialImage("model", "MODEL", v, tick) };
-  if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick) };
-  if (role === "mode") return { full: dialImage("mode", "MODE", v, tick) };
+  if (role === "model") return { full: dialImage("model", "MODEL", v, tick, !isSupported) };
+  if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick, !isSupported) };
+  if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported) };
   if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
   return { full: dialImage("target", "TARGET", v, tick) };
 }
@@ -18115,7 +18383,7 @@ async function poll() {
         sessionByHandle.set(s.handle, s);
         if (!agentByHandle.has(s.handle)) {
           agentByHandle.set(s.handle, s.agentType ?? "");
-          profileByHandle.set(s.handle, profileFor(s.agentType ?? ""));
+          agentInstanceByHandle.set(s.handle, agentFor(s.agentType ?? ""));
         }
       }
     }
@@ -18126,12 +18394,11 @@ async function poll() {
       if (h && h !== targetHandle) setTarget(h);
     }
     refreshDiscovery();
-    refreshCurrentModel();
-    refreshCurrentMode();
+    refreshCurrentState();
     refreshEfforts();
     renderAll();
     try {
-      (0, import_node_fs4.writeFileSync)(
+      (0, import_node_fs5.writeFileSync)(
         "/tmp/agentdeck-debug.json",
         JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, target: targetHandle, slots: deck.slots }, null, 2)
       );
@@ -18189,12 +18456,13 @@ var DialBase = class extends SingletonAction {
     if (!dir) return;
     const t = ensureTarget();
     if (this.role === "model" || this.role === "effort" || this.role === "mode") {
-      const p = profileForHandle();
-      if (!t || !supported(p, this.role)) {
+      const agent = agentForHandle();
+      const kind = this.role;
+      if (!t || !agent.supports(kind)) {
         ev.action.showAlert?.();
         return;
       }
-      const list = dialList(this.role);
+      const list = dialList(kind);
       if (!list.length) {
         ev.action.showAlert?.();
         return;
@@ -18206,7 +18474,7 @@ var DialBase = class extends SingletonAction {
       if (this.role === "model") pendingModel = next;
       else if (this.role === "effort") pendingEffort = next;
       else pendingMode = next;
-      pickAt[this.role] = Date.now();
+      pickAt[kind] = Date.now();
       renderDials();
     } else if (this.role === "target") {
       if (allHandles.length) {
@@ -18224,10 +18492,10 @@ var DialBase = class extends SingletonAction {
   async onDialDown(ev) {
     const t = ensureTarget();
     if (this.role === "model" || this.role === "effort" || this.role === "mode") {
-      const p = profileForHandle();
+      const agent = agentForHandle();
       const kind = this.role;
-      if (!t || !supported(p, kind)) {
-        plugin_default.logger.info(`apply ${kind}: unsupported agent (${agentByHandle.get(t ?? "") ?? "?"}) \u2014 gated`);
+      if (!t || !agent.supports(kind)) {
+        plugin_default.logger.info(`apply ${kind}: unsupported in agent (${agent.label}) \u2014 gated`);
         ev.action.showAlert?.();
       } else {
         const value = this.role === "model" ? pendingModel : this.role === "effort" ? pendingEffort : pendingMode;
@@ -18239,7 +18507,7 @@ var DialBase = class extends SingletonAction {
         else if (this.role === "effort") effortByHandle.set(t, value);
         else modeByHandle.set(t, value);
         try {
-          await applyAgentSteps(t, stepsFor(p, kind, value));
+          await applyAgentSteps(t, agent.getApplySteps(kind, value));
         } catch (e) {
           plugin_default.logger.error(`apply ${kind}: ${e}`);
           ev.action.showAlert?.();

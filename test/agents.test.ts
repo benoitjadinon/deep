@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  agentFor,
   profileFor,
   supported,
   stepsFor,
@@ -13,84 +14,136 @@ import {
   discoverAgentCmd,
   discoverVariantCmd,
   sortModels,
+  parseCodexConfig,
+  parseCodexModelsCache,
+  parseAgyModels,
+  parseAgySettings,
+  ClaudeAgent,
+  CodexAgent,
+  OpenCodeAgent,
+  AgyAgent,
+  UnsupportedAgent,
+  UNSUPPORTED_AGENT,
   UNSUPPORTED_PROFILE,
 } from "../src/agents.js";
 
-describe("profileFor — 에이전트 타입 → 프로파일", () => {
-  it("알려진 에이전트는 프로파일 반환", () => {
+describe("agentFor / profileFor — 에이전트 타입 → 추상 인터페이스 및 프로파일", () => {
+  it("알려진 에이전트는 해당 구체 클래스 인스턴스 반환", () => {
+    expect(agentFor("claude")).toBeInstanceOf(ClaudeAgent);
+    expect(agentFor("codex")).toBeInstanceOf(CodexAgent);
+    expect(agentFor("opencode")).toBeInstanceOf(OpenCodeAgent);
+    expect(agentFor("agy")).toBeInstanceOf(AgyAgent);
+
     expect(profileFor("claude").label).toBe("Claude");
+    expect(profileFor("codex").label).toBe("Codex");
     expect(profileFor("opencode").label).toBe("OpenCode");
+    expect(profileFor("agy").label).toBe("Agy");
   });
-  it("모르는 에이전트(null/빈 값 포함)는 미지원 프로파일", () => {
-    expect(profileFor("codex")).toBe(UNSUPPORTED_PROFILE);
-    expect(profileFor("grok")).toBe(UNSUPPORTED_PROFILE);
-    expect(profileFor("")).toBe(UNSUPPORTED_PROFILE);
-    expect(profileFor(undefined)).toBe(UNSUPPORTED_PROFILE);
-    expect(profileFor(null)).toBe(UNSUPPORTED_PROFILE);
+  it("대소문자 및 공백 허용", () => {
+    expect(agentFor(" Claude ")).toBeInstanceOf(ClaudeAgent);
+    expect(agentFor("OpenCode")).toBeInstanceOf(OpenCodeAgent);
+    expect(agentFor("AGY")).toBeInstanceOf(AgyAgent);
+  });
+  it("모르는 에이전트(null/빈 값 포함)는 미지원 에이전트", () => {
+    expect(agentFor("grok")).toBe(UNSUPPORTED_AGENT);
+    expect(agentFor("")).toBe(UNSUPPORTED_AGENT);
+    expect(agentFor(undefined)).toBe(UNSUPPORTED_AGENT);
+    expect(agentFor(null)).toBe(UNSUPPORTED_AGENT);
+
+    expect(profileFor("grok").label).toBe("미지원");
   });
 });
 
-describe("supported — 게이팅", () => {
-  it("claude: 모델·effort 둘 다 지원, 모드는 미지원(안전 명령 없음)", () => {
-    const p = profileFor("claude");
-    expect(supported(p, "model")).toBe(true);
-    expect(supported(p, "effort")).toBe(true);
-    expect(supported(p, "mode")).toBe(false);
+describe("supported — 에이전트별 기능 게이팅", () => {
+  it("claude: 모델 지원, effort 및 모드는 미지원(비활성화)", () => {
+    const a = agentFor("claude");
+    expect(a.supports("model")).toBe(true);
+    expect(a.supports("effort")).toBe(false);
+    expect(a.supports("mode")).toBe(false);
+    expect(supported(a, "model")).toBe(true);
+    expect(supported(a, "effort")).toBe(false);
   });
-  it("opencode: 모델·effort·모드 지원(픽커)", () => {
-    const p = profileFor("opencode");
-    expect(supported(p, "model")).toBe(true);
-    expect(supported(p, "effort")).toBe(true);
-    expect(supported(p, "mode")).toBe(true);
+  it("codex: 모델 지원, effort 및 모드는 미지원(비활성화)", () => {
+    const a = agentFor("codex");
+    expect(a.supports("model")).toBe(true);
+    expect(a.supports("effort")).toBe(false);
+    expect(a.supports("mode")).toBe(false);
   });
-  it("미지원 프로파일은 전부 차단", () => {
-    const p = profileFor("codex");
-    expect(supported(p, "model")).toBe(false);
-    expect(supported(p, "effort")).toBe(false);
-    expect(supported(p, "mode")).toBe(false);
+  it("opencode: 모델·effort·모드 모두 지원(픽커)", () => {
+    const a = agentFor("opencode");
+    expect(a.supports("model")).toBe(true);
+    expect(a.supports("effort")).toBe(true);
+    expect(a.supports("mode")).toBe(true);
+  });
+  it("agy: 모델·effort 지원, 모드는 미지원", () => {
+    const a = agentFor("agy");
+    expect(a.supports("model")).toBe(true);
+    expect(a.supports("effort")).toBe(true);
+    expect(a.supports("mode")).toBe(false);
+  });
+  it("미지원 에이전트는 전부 차단", () => {
+    const a = agentFor("grok");
+    expect(a.supports("model")).toBe(false);
+    expect(a.supports("effort")).toBe(false);
+    expect(a.supports("mode")).toBe(false);
   });
 });
 
 describe("stepsFor — 적용 명령 시퀀스", () => {
-  it("claude: 슬래시 명령 한 줄(/model <m>)", () => {
-    expect(stepsFor(profileFor("claude"), "model", "opus")).toEqual([
+  it("claude: 슬래시 명령 한 줄(/model <m>), effort는 미지원 빈 배열", () => {
+    const a = agentFor("claude");
+    expect(stepsFor(a, "model", "opus")).toEqual([
       { text: "/model opus", enter: true, delayMs: 120 },
     ]);
+    expect(stepsFor(a, "effort", "high")).toEqual([]);
   });
-  it("claude effort: /effort <e>", () => {
-    expect(stepsFor(profileFor("claude"), "effort", "high")).toEqual([
-      { text: "/effort high", enter: true, delayMs: 120 },
+  it("codex: 슬래시 명령 한 줄(/model <m>), effort는 미지원 빈 배열", () => {
+    const a = agentFor("codex");
+    expect(stepsFor(a, "model", "gpt-5.6-luna")).toEqual([
+      { text: "/model gpt-5.6-luna", enter: true, delayMs: 120 },
     ]);
+    expect(stepsFor(a, "effort", "high")).toEqual([]);
   });
   it("opencode: /models 픽커 열기 → 필터어(프로바이더 제거) → Enter", () => {
-    expect(stepsFor(profileFor("opencode"), "model", "opencode/claude-opus-4-7")).toEqual([
+    expect(stepsFor(agentFor("opencode"), "model", "opencode/claude-opus-4-7")).toEqual([
       { text: "/models", enter: true, delayMs: 450 },
       { text: "claude-opus-4-7", enter: true },
     ]);
   });
   it("opencode effort: /variants 픽커", () => {
-    expect(stepsFor(profileFor("opencode"), "effort", "high")).toEqual([
+    expect(stepsFor(agentFor("opencode"), "effort", "high")).toEqual([
       { text: "/variants", enter: true, delayMs: 450 },
       { text: "high", enter: true },
     ]);
   });
   it("opencode mode: 리더(ctrl+x)→a→모드명→Enter", () => {
-    expect(stepsFor(profileFor("opencode"), "mode", "plan")).toEqual([
+    expect(stepsFor(agentFor("opencode"), "mode", "plan")).toEqual([
       { text: "\x18", enter: false, delayMs: 300 },
       { text: "a", enter: false, delayMs: 450 },
       { text: "plan", enter: true },
     ]);
   });
-  it("미지원 프로파일은 빈 시퀀스", () => {
-    expect(stepsFor(profileFor("codex"), "model", "x")).toEqual([]);
-    expect(stepsFor(profileFor("codex"), "mode", "plan")).toEqual([]);
+  it("agy: 슬래시 명령(/model <m>, /effort <e>)", () => {
+    const a = agentFor("agy");
+    expect(stepsFor(a, "model", "gemini-3.8-flash-medium")).toEqual([
+      { text: "/model gemini-3.8-flash-medium", enter: true, delayMs: 120 },
+    ]);
+    expect(stepsFor(a, "effort", "high")).toEqual([
+      { text: "/effort high", enter: true, delayMs: 120 },
+    ]);
+  });
+  it("미지원 에이전트는 빈 시퀀스", () => {
+    expect(stepsFor(agentFor("grok"), "model", "x")).toEqual([]);
+    expect(stepsFor(agentFor("grok"), "mode", "plan")).toEqual([]);
   });
 });
 
 describe("discoverModelCmd / parseModels — 라이브 모델 발견", () => {
-  it("opencode는 발견 CLI 보유, claude/미지원은 없음", () => {
+  it("opencode와 agy는 발견 CLI 보유, claude/codex/미지원은 없음", () => {
     expect(discoverModelCmd("opencode")).toEqual(["opencode", "models"]);
+    expect(discoverModelCmd("agy")).toEqual(["agy", "models"]);
     expect(discoverModelCmd("claude")).toBeUndefined();
+    expect(discoverModelCmd("codex")).toBeUndefined();
     expect(discoverModelCmd(undefined)).toBeUndefined();
   });
   it("parseModels: 줄 단위 + 빈 줄/ANSI 제거 + 중복 제거", () => {
@@ -178,5 +231,47 @@ agent = "plan"
   it("sortModels: 정보 없으면 발견 순서 그대로", () => {
     expect(sortModels(["openrouter/a", "openrouter/b"])).toEqual(["openrouter/a", "openrouter/b"]);
     expect(sortModels(["openrouter/a"], ["openrouter/a"])).toEqual(["openrouter/a"]); // 중복 방지
+  });
+});
+
+describe("Codex & Agy 파서 및 상태 리더", () => {
+  it("parseCodexConfig: TOML에서 model 및 model_reasoning_effort 추출", () => {
+    const toml = `model = "gpt-5.6-luna"\nmodel_reasoning_effort = "medium"\n`;
+    expect(parseCodexConfig(toml)).toEqual({
+      model: "gpt-5.6-luna",
+      effort: "medium",
+    });
+  });
+  it("parseCodexConfig: 누락 시 undefined", () => {
+    expect(parseCodexConfig("")).toEqual({ model: undefined, effort: undefined });
+  });
+  it("parseCodexModelsCache: JSON 캐시에서 auto-review 제외 모델 slug 추출", () => {
+    const json = JSON.stringify({
+      models: [
+        { slug: "gpt-reserve" },
+        { slug: "gpt-5.6-luna" },
+        { slug: "codex-auto-review" },
+      ],
+    });
+    expect(parseCodexModelsCache(json)).toEqual(["gpt-reserve", "gpt-5.6-luna"]);
+  });
+  it("parseAgyModels: 'Fetching...' 제거 및 tab 앞 ID 추출", () => {
+    const stdout = `Fetching available models...
+gemini-3.8-flash-high\tGemini 3.8 Flash (High)
+gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)
+claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
+`;
+    expect(parseAgyModels(stdout)).toEqual([
+      "gemini-3.8-flash-high",
+      "gemini-3.8-flash-medium",
+      "claude-sonnet-4-6",
+    ]);
+  });
+  it("parseAgySettings: settings.json에서 model 추출", () => {
+    expect(parseAgySettings(JSON.stringify({ model: "Gemini 3.8 Flash (Medium)" }))).toEqual({
+      model: "Gemini 3.8 Flash (Medium)",
+    });
+    expect(parseAgySettings("{}")).toEqual({});
+    expect(parseAgySettings("invalid")).toEqual({});
   });
 });

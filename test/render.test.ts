@@ -68,6 +68,8 @@ describe("agentBadge — 타일마다 에이전트 뱃지(2글자 알약)", () =
     expect(agentBadge("opencode")).toContain(">OC</text>");
     expect(agentBadge("codex")).toContain('fill="#a78bfa"');
     expect(agentBadge("codex")).toContain(">CX</text>");
+    expect(agentBadge("agy")).toContain('fill="#3b82f6"');
+    expect(agentBadge("agy")).toContain(">AG</text>");
   });
   it("대소문자 무시", () => {
     expect(agentBadge("OpenCode")).toContain(">OC</text>");
@@ -159,5 +161,11 @@ describe("dialImage — 다이얼 렌더", () => {
     expect(textY.length).toBeGreaterThan(1); // 2줄 이상
     expect(svg).toContain(">minimax</text>");
     expect(svg).toContain(">minimax-m3</text>");
+  });
+  it("disabled=true인 다이얼은 레일/라벨/값이 어두운 회색이고 투명도 그룹 포함", () => {
+    const svg = Buffer.from(dialImage("effort", "EFFORT", "-", 0, true).split(",")[1], "base64").toString("utf8");
+    expect(svg).toContain('fill="#2e2e34"'); // 어두운 레일
+    expect(svg).toContain('fill="#4a4a52"'); // 흐린 라벨 및 값
+    expect(svg).toContain('<g opacity="0.38">'); // 투명도 딤
   });
 });

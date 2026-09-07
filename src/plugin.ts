@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import { buildDeck, needsAttention, type Deck } from "./deck";
 import { keyImage, dialImage } from "./render";
 import {
+  agentFor,
   profileFor,
   supported,
   stepsFor,
@@ -23,6 +24,8 @@ import {
   parseOpenCodeState,
   parseTuiAgent,
   sortModels,
+  AbstractAgent,
+  UNSUPPORTED_AGENT,
   UNSUPPORTED_PROFILE,
   type AgentProfile,
   type ApplyStep,
@@ -109,7 +112,7 @@ const pickAt = { model: 0, effort: 0, mode: 0 };
 const PICK_GRACE = 2500;
 // 에이전트 타입별 게이팅/발견 상태: agentType → 프로파일 · 발견된 라이브 목록
 const agentByHandle = new Map<string, string>(); // 세션 → agentType (orca worktree ps)
-const profileByHandle = new Map<string, AgentProfile>(); // 세션 → 게이트에 쓸 프로파일
+const agentInstanceByHandle = new Map<string, AbstractAgent>(); // 세션 → 에이전트 인터페이스 구현체
 const modelsByHandle = new Map<string, string[]>(); // 세션 → 발견된 모델 목록(opencode 등)
 const modesByHandle = new Map<string, string[]>(); // 세션 → 발견된 모드/에이전트 목록(opencode hidden 제외)
 const effortsByHandle = new Map<string, string[]>(); // 세션 → 발견된 effort(변형) 목록(모델별)
@@ -205,46 +208,49 @@ function noteHandle(h: string): void {
   const b = sessionByHandle.get(h);
   if (b && !agentByHandle.has(h)) {
     agentByHandle.set(h, b.agentType ?? "");
-    profileByHandle.set(h, profileFor(b.agentType ?? ""));
+    agentInstanceByHandle.set(h, agentFor(b.agentType ?? ""));
   }
 }
 function setTarget(h?: string): void {
   targetHandle = h;
   if (h) noteHandle(h);
-  profileForHandle();
+  agentForHandle();
   pickAt.model = 0; // 대상이 바뀌면 이전 유예 무효 → 새 세션의 실제 상태부터 채움
   pickAt.effort = 0;
   pickAt.mode = 0;
   applyPending();
 }
-// 게이트용: 대상 세션의 프로파일(모르는 에이전트 = 미지원)
-function profileForHandle(): AgentProfile {
+// 게이트용: 대상 세션의 에이전트 인스턴스(모르는 에이전트 = 미지원)
+function agentForHandle(): AbstractAgent {
   const t = ensureTarget();
-  if (!t) return UNSUPPORTED_PROFILE;
+  if (!t) return UNSUPPORTED_AGENT;
   noteHandle(t);
-  return profileByHandle.get(t) ?? UNSUPPORTED_PROFILE;
+  return agentInstanceByHandle.get(t) ?? agentFor(agentByHandle.get(t));
 }
-// 대상 세션이 다이얼에 쓸 모델/effort/모드 목록: 발견분 우선, 없으면 프로파일 정적 목록
+function profileForHandle(): AgentProfile {
+  return profileFor(agentForHandle().agentType);
+}
+// 대상 세션이 다이얼에 쓸 모델/effort/모드 목록: 발견분 우선, 없으면 에이전트 인터페이스 목록
 function dialList(kind: ControlKind): string[] {
   const t = ensureTarget();
   if (!t) return [];
+  const agent = agentForHandle();
   if (kind === "model") {
     const live = modelsByHandle.get(t);
     if (live && live.length) return live;
+    return agent.getModels();
   }
   if (kind === "effort") {
     const live = effortsByHandle.get(t);
     if (live && live.length) return live;
+    return agent.getEfforts(currentModelByHandle.get(t));
   }
   if (kind === "mode") {
     const live = modesByHandle.get(t);
     if (live && live.length) return live;
+    return agent.getModes();
   }
-  const p = profileByHandle.get(t);
-  if (!p) return [];
-  if (kind === "model") return p.models;
-  if (kind === "effort") return p.efforts;
-  return p.modes;
+  return [];
 }
 function applyPending(): void {
   adoptPending("model");
@@ -274,17 +280,17 @@ function adoptPending(role: ControlKind): void {
 }
 // 다이얼에 보여줄 값 — 미지원/빈 목록이면 안내 글자
 function dialValue(role: string): string {
-  const p = profileForHandle();
+  const agent = agentForHandle();
   if (role === "model") {
-    if (!supported(p, "model")) return "-";
+    if (!agent.supports("model")) return "-";
     return pendingModel ? providerShort(pendingModel) : "…";
   }
   if (role === "effort") {
-    if (!supported(p, "effort")) return "-";
+    if (!agent.supports("effort")) return "-";
     return pendingEffort || "…";
   }
   if (role === "mode") {
-    if (!supported(p, "mode")) return "-";
+    if (!agent.supports("mode")) return "-";
     return pendingMode || "…";
   }
   if (role === "target") return targetLabel();
@@ -305,26 +311,25 @@ let discoverBusy = false;
 async function refreshDiscovery(): Promise<void> {
   const t = ensureTarget();
   if (!t) return;
-  const agentType = agentByHandle.get(t);
+  const agent = agentForHandle();
   if (discoverBusy || Date.now() - lastDiscoverAt < 30000) return;
   discoverBusy = true;
   try {
     lastDiscoverAt = Date.now();
-    const modelCmd = discoverModelCmd(agentType);
+    const modelCmd = agent.getDiscoverModelCmd();
     if (modelCmd) {
       const { stdout } = await execFileP(modelCmd[0], modelCmd.slice(1), EXEC);
-      const list = parseModels(stdout);
+      const list = agent.parseDiscoveredModels(stdout);
       if (list.length) {
-        // 발견 첫 로드에도 즐겨찾기/최근 순 정렬 적용
-        const st = readOpenCodeState();
-        modelsByHandle.set(t, sortModels(list, st.recent ?? [], st.favorites ?? []));
+        const st = agent.readCurrentState();
+        modelsByHandle.set(t, sortModels(list, st.recentModels ?? [], st.favoriteModels ?? []));
       }
     }
-    const agentCmd = discoverAgentCmd(agentType);
+    const agentCmd = agent.getDiscoverAgentCmd();
     if (agentCmd) {
       try {
         const { stdout } = await execFileP(agentCmd[0], agentCmd.slice(1), EXEC);
-        const modes = parsePrimaryAgents(stdout);
+        const modes = agent.parseDiscoveredModes(stdout);
         if (modes.length) modesByHandle.set(t, modes);
       } catch (e) {
         streamDeck.logger.error(`discover agents: ${e}`);
@@ -338,106 +343,70 @@ async function refreshDiscovery(): Promise<void> {
   }
 }
 
-// 대상 세션이 '지금 쓰고 있는' 모델/effort를 리드 — TUI에서 바뀐 것을 다이얼에 반영.
-// opencode: ~/.local/state/opencode/model.json (recent[0]=현재 모델, variant[모델]=effort, favorite=즐겨찾기).
-// 모델 다이얼 회전 목록도 여기서 즐겨찾기/최근 순으로 재정렬한다.
-function readOpenCodeState(): OpenCodeModelState {
-  try {
-    return parseOpenCodeState(readFileSync(OPENCODE_STATE, "utf8"));
-  } catch (e) {
-    if (!(e instanceof Error && "code" in e && (e as any).code === "ENOENT")) {
-      streamDeck.logger.error(`read opencode state: ${e}`);
-    }
-    return {};
-  }
-}
-function refreshCurrentModel(): void {
+// 대상 세션의 현재 상태(모델/effort/모드)를 에이전트 인터페이스에서 읽어 다이얼에 반영
+function refreshCurrentState(): void {
   const t = ensureTarget();
-  const agentType = t && agentByHandle.get(t);
-  if (!agentType || !discoverModelCmd(agentType)) return; // 상태파일 리드 지원(결국 opencode)만
-  const state = readOpenCodeState();
-  if (!state.model) return;
-  const id = `${state.model.providerID}/${state.model.modelID}`;
-  const changed = currentModelByHandle.get(t) !== id;
-  currentModelByHandle.set(t, id);
-  // 그 모델의 현재 effort(variant)를 추적해 effort 다이얼에 반영
-  const v = state.variant && state.variant[id];
-  if (v) currentEffortByHandle.set(t, v); // "default"도 유효한 선택값
-  // 모델 목록을 즐겨찾기/최근 우선으로 재정렬(발견 목록이 이미 있을 때)
-  const list = modelsByHandle.get(t);
-  if (list && list.length) {
-    const sorted = sortModels(list, state.recent ?? [], state.favorites ?? []);
-    // 내용이 다를 때만 반영(불필요한 재렌더 방지)
-    if (sorted.length !== list.length || sorted.some((m, i) => m !== list[i])) {
-      modelsByHandle.set(t, sorted);
+  if (!t) return;
+  const agent = agentForHandle();
+  const state = agent.readCurrentState();
+  let changed = false;
+  if (state.model) {
+    if (currentModelByHandle.get(t) !== state.model) {
+      currentModelByHandle.set(t, state.model);
+      changed = true;
+    }
+  }
+  if (state.effort) {
+    currentEffortByHandle.set(t, state.effort);
+  }
+  if (state.mode) {
+    currentModeByHandle.set(t, state.mode);
+  }
+  if (state.recentModels || state.favoriteModels) {
+    const list = modelsByHandle.get(t);
+    if (list && list.length) {
+      const sorted = sortModels(list, state.recentModels ?? [], state.favoriteModels ?? []);
+      if (sorted.length !== list.length || sorted.some((m, i) => m !== list[i])) {
+        modelsByHandle.set(t, sorted);
+      }
     }
   }
   if (changed) {
-    // 모델이 바뀌면 effort(변형) 목록도 모델별로 달라진다 → 다음 폴에서 즉시 재발견하도록 스로틀 해제
     lastEffortDiscoverAt = 0;
     renderAll();
   }
   adoptPending("model");
   adoptPending("effort");
+  adoptPending("mode");
 }
 
-// 대상 세션의 현재 모델에 대한 effort(변형) 목록을 주기적(스로틀)으로 로드.
-// opencode: `opencode models <provider> --verbose`에서 그 모델의 variants 키를 뽑는다(모델별로 다름).
-// 상태파일을 못 읽거나 발견이 실패하면 정적 폴백 목록을 쓴다.
+// 대상 세션의 현재 모델에 대한 effort(변형) 목록을 주기적(스로틀)으로 로드
 let lastEffortDiscoverAt = 0;
 let effortDiscoverBusy = false;
 async function refreshEfforts(): Promise<void> {
   const t = ensureTarget();
   if (!t) return;
-  const agentType = agentByHandle.get(t);
-  const cmd = discoverVariantCmd(agentType);
-  if (!cmd) return; // 발견 불가한 에이전트(정적 목록 사용)
-  const state = readOpenCodeState();
-  if (!state.model) return;
-  const id = `${state.model.providerID}/${state.model.modelID}`;
+  const agent = agentForHandle();
+  const cmd = agent.getDiscoverVariantCmd();
+  if (!cmd) return;
+  const currentModel = currentModelByHandle.get(t);
+  if (!currentModel) return;
   if (effortDiscoverBusy || Date.now() - lastEffortDiscoverAt < 30000) return;
   effortDiscoverBusy = true;
   try {
     lastEffortDiscoverAt = Date.now();
-    // 모델 ID에서 provider 접두어 추출: "provider/model" → "provider"
-    const provider = id.split("/")[0];
+    const provider = currentModel.split("/")[0];
     const { stdout } = await execFileP(cmd[0], [...cmd.slice(1), provider], EXEC);
-    const efforts = parseModelVariants(stdout, id);
+    const efforts = agent.parseDiscoveredEfforts(stdout, currentModel);
     if (efforts.length) {
       effortsByHandle.set(t, efforts);
-      adoptPending("effort"); // 발견 첫 로드 시 현재값과 목록 정합
+      adoptPending("effort");
     }
   } catch (e) {
     streamDeck.logger.error(`discover efforts: ${e}`);
   } finally {
     effortDiscoverBusy = false;
   }
-}
-
-// opencode TUI 상태(TOML)에서 현재 에이전트/모드를 읽어 모드 다이얼의 '현재 값'으로 추적.
-// TUI에서 모드를 바꾸면(탭/에이전트 리스트) tui 파일이 갱신된다 → 다이얼도 자동으로 맞춤.
-function readTuiAgent(): string | undefined {
-  try {
-    return parseTuiAgent(readFileSync(OPENCODE_TUI, "utf8"));
-  } catch (e) {
-    if (!(e instanceof Error && "code" in e && (e as any).code === "ENOENT")) {
-      streamDeck.logger.error(`read tui agent: ${e}`);
-    }
-    return undefined;
-  }
-}
-function refreshCurrentMode(): void {
-  const t = ensureTarget();
-  const agentType = t && agentByHandle.get(t);
-  if (!agentType || !discoverModelCmd(agentType)) return; // opencode 전용(정적 모드 목록 사용)
-  const agent = readTuiAgent();
-  if (agent) {
-    if (currentModeByHandle.get(t) !== agent) {
-      currentModeByHandle.set(t, agent);
-    }
-  }
-  // 매 폴 adopt — 사용자가 방금(2.5s) 다이얼 돌렸으면 유예로 선택 보존, 아니면 현재 모드로 동기화.
-  adoptPending("mode");
 }
 
 type Coords = { column: number; row: number };
@@ -463,10 +432,12 @@ function targetLabel(): string {
 
 function dialFeedback(role: string): { full: string } {
   ensureTarget();
+  const agent = agentForHandle();
+  const isSupported = role === "target" || role === "talk" ? true : agent.supports(role as ControlKind);
   const v = dialValue(role);
-  if (role === "model") return { full: dialImage("model", "MODEL", v, tick) };
-  if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick) };
-  if (role === "mode") return { full: dialImage("mode", "MODE", v, tick) };
+  if (role === "model") return { full: dialImage("model", "MODEL", v, tick, !isSupported) };
+  if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick, !isSupported) };
+  if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported) };
   if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
   return { full: dialImage("target", "TARGET", v, tick) };
 }
@@ -526,10 +497,10 @@ async function poll(): Promise<void> {
       if (!s.empty) {
         allHandles.push((s as any).handle);
         sessionByHandle.set((s as any).handle, s);
-        // 에이전트 타입 → 게이트 프로파일 저장(없던 세션만)
+        // 에이전트 타입 → 게이트 에이전트 인스턴스 저장(없던 세션만)
         if (!agentByHandle.has((s as any).handle)) {
           agentByHandle.set((s as any).handle, (s as any).agentType ?? "");
-          profileByHandle.set((s as any).handle, profileFor((s as any).agentType ?? ""));
+          agentInstanceByHandle.set((s as any).handle, agentFor((s as any).agentType ?? ""));
         }
       }
     }
@@ -542,8 +513,7 @@ async function poll(): Promise<void> {
       if (h && h !== targetHandle) setTarget(h);
     }
     refreshDiscovery(); // 지원 에이전트의 모델 목록 주기 로드(스로틀)
-    refreshCurrentModel(); // 지금 선택된 모델/effort를 TUI에서 추적해 다이얼에 반영(매 폴)
-    refreshCurrentMode(); // 지금 선택된 모드(에이전트)를 TUI에서 추적해 다이얼에 반영(매 폴)
+    refreshCurrentState(); // 지금 선택된 상태(모델/effort/모드)를 에이전트 인터페이스에서 추적해 다이얼에 반영(매 폴)
     refreshEfforts(); // 현재 모델의 effort(변형) 목록을 주기 로드(스로틀)
     renderAll();
     try {
@@ -602,12 +572,13 @@ class DialBase extends SingletonAction {
     const t = ensureTarget();
     if (this.role === "model" || this.role === "effort" || this.role === "mode") {
       // 게이트: 미지원 에이전트/빈 목록이면 회전 no-op + 빨간 불
-      const p = profileForHandle();
-      if (!t || !supported(p, this.role as ControlKind)) {
+      const agent = agentForHandle();
+      const kind = this.role as ControlKind;
+      if (!t || !agent.supports(kind)) {
         ev.action.showAlert?.();
         return;
       }
-      const list = dialList(this.role as ControlKind);
+      const list = dialList(kind);
       if (!list.length) {
         ev.action.showAlert?.(); // 아직 로드 전(발견 대기)
         return;
@@ -619,7 +590,7 @@ class DialBase extends SingletonAction {
       if (this.role === "model") pendingModel = next;
       else if (this.role === "effort") pendingEffort = next;
       else pendingMode = next;
-      pickAt[this.role as ControlKind] = Date.now(); // 자동 동기화가 이 선택을 덮지 않게 유예 시작
+      pickAt[kind] = Date.now(); // 자동 동기화가 이 선택을 덮지 않게 유예 시작
       // 모델/effort/모드 회전은 키를 안 건드림 — 다이얼만 즉시 갱신 (렌더 비용/랙 없이 즉시 반영)
       renderDials();
     } else if (this.role === "target") {
@@ -641,10 +612,10 @@ class DialBase extends SingletonAction {
   override async onDialDown(ev: any): Promise<void> {
     const t = ensureTarget();
     if (this.role === "model" || this.role === "effort" || this.role === "mode") {
-      const p = profileForHandle();
+      const agent = agentForHandle();
       const kind = this.role as ControlKind;
-      if (!t || !supported(p, kind)) {
-        streamDeck.logger.info(`apply ${kind}: unsupported agent (${agentByHandle.get(t ?? "") ?? "?"}) — gated`);
+      if (!t || !agent.supports(kind)) {
+        streamDeck.logger.info(`apply ${kind}: unsupported in agent (${agent.label}) — gated`);
         ev.action.showAlert?.();
       } else {
         const value = this.role === "model" ? pendingModel : this.role === "effort" ? pendingEffort : pendingMode;
@@ -656,7 +627,7 @@ class DialBase extends SingletonAction {
         else if (this.role === "effort") effortByHandle.set(t, value);
         else modeByHandle.set(t, value);
         try {
-          await applyAgentSteps(t, stepsFor(p, kind, value));
+          await applyAgentSteps(t, agent.getApplySteps(kind, value));
         } catch (e) {
           streamDeck.logger.error(`apply ${kind}: ${e}`);
           ev.action.showAlert?.();
