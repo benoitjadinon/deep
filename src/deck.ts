@@ -28,10 +28,15 @@ export interface OrcaWorktree {
   agents?: Array<{ paneKey: string; state?: AgentState; agentType?: string }>;
 }
 
+export interface HookInfo {
+  hookEventName?: string;
+  agentType?: string;
+}
+
 export interface DeckInput {
   terminals: OrcaTerminal[];
   worktrees: OrcaWorktree[];
-  hookEventsByPane?: Map<string, string> | Record<string, string>;
+  hookEventsByPane?: Map<string, string | HookInfo> | Record<string, string | HookInfo>;
 }
 
 export interface DeckOptions {
@@ -117,10 +122,15 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   const page = opts.page ?? 0;
   const perPage = opts.perPage ?? 8;
 
-  const getHookEvent = (pane: string): string | undefined => {
+  const getHook = (pane: string): HookInfo | undefined => {
     if (!input.hookEventsByPane) return undefined;
-    if (input.hookEventsByPane instanceof Map) return input.hookEventsByPane.get(pane);
-    return (input.hookEventsByPane as Record<string, string>)[pane];
+    const raw =
+      input.hookEventsByPane instanceof Map
+        ? input.hookEventsByPane.get(pane)
+        : (input.hookEventsByPane as Record<string, string | HookInfo>)[pane];
+    if (!raw) return undefined;
+    if (typeof raw === "string") return { hookEventName: raw };
+    return raw;
   };
 
   // paneKey → state 맵 + 폴백 에이전트 타입 + worktreeId → {repo, branch} 메타
@@ -149,14 +159,21 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       const pane = `${t.tabId}:${t.leafId}`;
       const hasWt = stateByPane.has(pane);
       const idFromWt = agentByPane.get(pane);
-      const agent = t.agentIdentity || idFromWt || "";
+      const hook = getHook(pane);
+      // 우선순위: worktree ps 등록 에이전트 > 훅 원본 에이전트 > 터미널 프로세스 추정치
+      const agent = idFromWt || hook?.agentType || t.agentIdentity || "";
       const wtState = hasWt ? stateByPane.get(pane) : "waiting";
-      const hookEvent = getHookEvent(pane);
+      const hookEvent = hook?.hookEventName;
 
       let state = wtState;
       // agy/antigravity: PreToolUse 단계는 도구 실행 승인/응답 대기 중이므로 waiting(amber)으로 표시
       const isAgy =
-        agent === "agy" || agent === "antigravity" || idFromWt === "agy" || idFromWt === "antigravity";
+        agent === "agy" ||
+        agent === "antigravity" ||
+        idFromWt === "agy" ||
+        idFromWt === "antigravity" ||
+        hook?.agentType === "agy" ||
+        hook?.agentType === "antigravity";
       if (isAgy && hookEvent === "PreToolUse") {
         state = "waiting";
       }
@@ -167,7 +184,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
         hasWt,
         agent,
         state,
-        agentType: idFromWt || agent,
+        agentType: agent,
       };
     })
     .filter((x) => x.hasWt || Boolean(x.agent))

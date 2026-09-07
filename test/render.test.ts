@@ -172,4 +172,20 @@ describe("dialImage — 다이얼 렌더", () => {
     expect(svg).toContain('fill="#4a4a52"'); // 흐린 라벨 및 값
     expect(svg).toContain('<g opacity="0.38">'); // 투명도 딤
   });
+  it("badge를 주면 우상단에 에이전트 알약이 그려진다(대상 다이얼)", () => {
+    const svg = Buffer.from(dialImage("target", "TARGET", "svd", 0, false, "opencode", "main").split(",")[1], "base64").toString("utf8");
+    expect(svg).toContain('fill="#10b981"'); // opencode 초록
+    expect(svg).toContain(">OC</text>");
+    expect(svg).toContain('x="166" y="6"');
+  });
+  it("sub(브랜치)를 주면 값 아래 작은 줄로 그린다", () => {
+    const svg = Buffer.from(dialImage("target", "TARGET", "svd", 0, false, "opencode", "main").split(",")[1], "base64").toString("utf8");
+    expect(svg).toContain('fill="#b8b8be"'); // 브랜치 흐린 회색
+    expect(svg).toContain(">main</text>");
+    expect(svg).toContain('font-size="13" font-weight="600"');
+  });
+  it("badge 없으면 우상단 알약 없음", () => {
+    const svg = Buffer.from(dialImage("target", "TARGET", "svd", 0).split(",")[1], "base64").toString("utf8");
+    expect(svg).not.toContain('x="166" y="6"');
+  });
 });

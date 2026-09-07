@@ -153,6 +153,14 @@ describe("buildDeck — 열려 있는 에이전트(agentIdentity)가 worktree ps
     expect(a.state).toBe("working");
     expect(a.color).toBe("blue");
   });
+
+  it("terminal.agentIdentity가 claude로 잘못 추정되어도 hookEventsByPane의 agentType(antigravity)을 우선한다", () => {
+    const ts = [{ handle: "term_agy", tabId: "t1", leafId: "l1", title: "Agy", worktreePath: "/x", worktreeId: "wt1", agentIdentity: "claude" }];
+    const wts = [{ worktreeId: "wt1", repo: "x" }]; // worktree ps agent 아직 없음
+    const hookEvents = new Map([["t1:l1", { hookEventName: "PreInvocation", agentType: "antigravity" }]]);
+    const a = buildDeck({ terminals: ts, worktrees: wts, hookEventsByPane: hookEvents }).slots[0] as any;
+    expect(a.agentType).toBe("antigravity");
+  });
 });
 
 describe("buildDeck — orca 두 소스를 8칸 버튼 모델로", () => {

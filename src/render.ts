@@ -126,8 +126,10 @@ const DIAL_ACCENT: Record<string, string> = {
 };
 
 /** 다이얼 터치스크린(200×100) 커스텀 렌더 — 좌측 색 레일 + 상단 작은 라벨 + 값(가득 채운 3줄 래핑, 위로 정렬).
- *  disabled인 경우 시각적으로 비활성화(어둡고 흐린 레일/라벨/값 + 투명도 딤). */
-export function dialImage(role: string, label: string, value: string, tick = 0, disabled = false): string {
+ *  disabled인 경우 시각적으로 비활성화(어둡고 흐린 레일/라벨/값 + 투명도 딤).
+ *  badge가 주어지면 우상단에 에이전트 알약(2글자)을 겹쳐 보여준다(대상 세션 다이얼용).
+ *  sub가 주어지면 값 아래에 작은 보조 줄(브랜치 등)을 그린다 — 키(세션 슬롯)와 같은 문법. */
+export function dialImage(role: string, label: string, value: string, tick = 0, disabled = false, badge?: string | null, sub?: string | null): string {
   const accent = disabled ? "#2e2e34" : (DIAL_ACCENT[role] ?? "#8a8a90");
   const labelColor = disabled ? "#4a4a52" : accent;
   const valueColor = disabled ? "#4a4a52" : "#ffffff";
@@ -153,10 +155,20 @@ export function dialImage(role: string, label: string, value: string, tick = 0, 
     ? `<text x="${textX}" y="20" fill="${labelColor}" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="2">${esc(label)}</text>`
     : `<text x="${textX}" y="24" fill="${labelColor}" font-family="sans-serif" font-size="13" font-weight="800" letter-spacing="1">${esc(label)}</text>`;
 
-  // 3줄 렌더(위로 정렬) — 100px 다이얼에서 top부터 lineH 간격
+  // 3줄 렌더(위로 정렬) — 100px 다이얼에서 top부터 lineH 간격. sub(브랜치)가 있으면 값은 위로 올려 여백 확보.
+  const hasSub = Boolean(sub && !disabled);
+  const valueY = hasSub ? 48 : 56;
   const valueSvg = lines.length > 1
-    ? lines.map((ln, i) => `<text x="${textX}" y="${top + i * lineH}" fill="${valueColor}" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc(ln)}</text>`).join("")
-    : `<text x="${textX}" y="56" fill="${valueColor}" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc(lines[0])}</text>`;
+    ? lines.map((ln, i) => `<text x="${textX}" y="${(hasSub ? 40 : top) + i * lineH}" fill="${valueColor}" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc(ln)}</text>`).join("")
+    : `<text x="${textX}" y="${valueY}" fill="${valueColor}" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc(lines[0])}</text>`;
+
+  // 보조 줄(브랜치) — 세션 키의 브랜치와 같은 문법(작고 흐린 회색, 600 weight).
+  const subSvg = hasSub
+    ? `<text x="${textX}" y="${valueY + 18}" fill="${disabled ? "#4a4a52" : "#b8b8be"}" font-family="sans-serif" font-size="13" font-weight="600">${esc(sub || "")}</text>`
+    : "";
+
+  // 에이전트 알약(우상단) — 세션 버튼의 agentBadge와 같은 색/글자, 다이얼(200×100)에 맞게 배치.
+  const badgeSvg = badge ? agentBadgeForDial(badge) : "";
 
   const dimG0 = disabled ? '<g opacity="0.38">' : "";
   const dimG1 = disabled ? "</g>" : "";
@@ -165,9 +177,19 @@ export function dialImage(role: string, label: string, value: string, tick = 0, 
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
   ${dimG0}<rect width="7" height="100" fill="${accent}"/>
   ${labelSvg}
-  ${valueSvg}${dimG1}
+  ${valueSvg}${subSvg}${dimG1}
+  ${badgeSvg}
 </svg>`;
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
+}
+
+// 다이얼 우상단용 에이전트 알약 — agentBadge와 같은 팔레트, 위치만 다이얼(200×100)에 맞게.
+function agentBadgeForDial(agentType?: string | null): string {
+  const a = (agentType || "").toLowerCase();
+  const known = AGENT_BADGE[a];
+  const bg = known?.bg ?? "#4b5563";
+  const label = known?.label ?? (a ? [...a].slice(0, 2).join("").toUpperCase() : "?");
+  return `<rect x="166" y="6" width="28" height="16" rx="8" fill="${bg}"/><text x="180" y="18" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
 }
 
 // 값이 한 줄에 안 들어가면 "/"(provider/model 등) 경계에서 줄을 나눈다.

@@ -86,6 +86,11 @@ export abstract class AbstractAgent {
   readCurrentState(): AgentStateSnapshot {
     return {};
   }
+
+  /** 모델 선택 시 해당 모델에 귀속되거나 내포된 effort(변형)가 있다면 반환 */
+  getEffortForModel(_model: string): string | undefined {
+    return undefined;
+  }
 }
 
 const slash = (cmd: string, value: string): ApplyStep[] => [
@@ -290,10 +295,25 @@ export class OpenCodeAgent extends AbstractAgent {
       favoriteModels: st.favorites,
     };
   }
+
+  override getEffortForModel(model: string): string | undefined {
+    const st = readOpenCodeState();
+    return st.variant ? st.variant[model] : undefined;
+  }
 }
 
 // Agy 설정 경로
 export const AGY_SETTINGS = join(homedir(), ".gemini", "antigravity-cli", "settings.json");
+
+export function extractEffortFromModel(modelName?: string): string | undefined {
+  if (!modelName) return undefined;
+  const s = modelName.trim().toLowerCase();
+  const parenMatch = s.match(/\((low|medium|high|max|thinking)\)/);
+  if (parenMatch) return parenMatch[1];
+  const hyphenMatch = s.match(/-(low|medium|high|max|thinking)$/);
+  if (hyphenMatch) return hyphenMatch[1];
+  return undefined;
+}
 
 export function parseAgySettings(text: string): { model?: string; mode?: string } {
   try {
@@ -345,7 +365,8 @@ export function readAgyState(): AgentStateSnapshot {
   try {
     if (existsSync(AGY_SETTINGS)) {
       const cfg = parseAgySettings(readFileSync(AGY_SETTINGS, "utf8"));
-      return { model: cfg.model, mode: cfg.mode ?? "default" };
+      const effort = extractEffortFromModel(cfg.model);
+      return { model: cfg.model, effort, mode: cfg.mode ?? "default" };
     }
   } catch {}
   return { mode: "default" };
@@ -410,6 +431,10 @@ export class AgyAgent extends AbstractAgent {
 
   override readCurrentState(): AgentStateSnapshot {
     return readAgyState();
+  }
+
+  override getEffortForModel(model: string): string | undefined {
+    return extractEffortFromModel(model);
   }
 }
 

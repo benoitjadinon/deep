@@ -19,6 +19,7 @@ import {
   parseAgyModels,
   parseAgyAgents,
   parseAgySettings,
+  extractEffortFromModel,
   ClaudeAgent,
   CodexAgent,
   OpenCodeAgent,
@@ -290,5 +291,27 @@ flutter_a11y_agent
 `;
     expect(parseAgyAgents(stdout)).toEqual(["default", "flutter_a11y_agent"]);
     expect(parseAgyAgents("")).toEqual(["default"]);
+  });
+
+  it("extractEffortFromModel: 모델명 또는 슬러그에서 내포된 effort 추출", () => {
+    expect(extractEffortFromModel("Gemini 3.8 Flash (High)")).toBe("high");
+    expect(extractEffortFromModel("Gemini 3.8 Flash (Medium)")).toBe("medium");
+    expect(extractEffortFromModel("Gemini 3.8 Flash (Low)")).toBe("low");
+    expect(extractEffortFromModel("gemini-3.8-flash-high")).toBe("high");
+    expect(extractEffortFromModel("gemini-3.8-flash-medium")).toBe("medium");
+    expect(extractEffortFromModel("gemini-3.8-flash-low")).toBe("low");
+    expect(extractEffortFromModel("claude-opus-4-6-thinking")).toBe("thinking");
+    expect(extractEffortFromModel("Claude Opus 4.6 (Thinking)")).toBe("thinking");
+    expect(extractEffortFromModel("gpt-oss-120b-medium")).toBe("medium");
+    expect(extractEffortFromModel("claude-sonnet-4-6")).toBeUndefined();
+    expect(extractEffortFromModel("")).toBeUndefined();
+    expect(extractEffortFromModel(undefined)).toBeUndefined();
+  });
+
+  it("AgyAgent.getEffortForModel: 모델명에 내포된 effort 반환", () => {
+    const agy = agentFor("agy");
+    expect(agy.getEffortForModel("gemini-3.8-flash-high")).toBe("high");
+    expect(agy.getEffortForModel("Gemini 3.8 Flash (Medium)")).toBe("medium");
+    expect(agy.getEffortForModel("claude-sonnet-4-6")).toBeUndefined();
   });
 });

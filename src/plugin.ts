@@ -206,9 +206,12 @@ async function stopAndSend(target?: string): Promise<void> {
 // 대상 변경 시 pending을 그 세션의 적용값/프로파일 목록으로 리셋
 function noteHandle(h: string): void {
   const b = sessionByHandle.get(h);
-  if (b && !agentByHandle.has(h)) {
-    agentByHandle.set(h, b.agentType ?? "");
-    agentInstanceByHandle.set(h, agentFor(b.agentType ?? ""));
+  if (b) {
+    const nextType = b.agentType ?? "";
+    if (agentByHandle.get(h) !== nextType) {
+      agentByHandle.set(h, nextType);
+      agentInstanceByHandle.set(h, agentFor(nextType));
+    }
   }
 }
 function setTarget(h?: string): void {
@@ -349,15 +352,26 @@ function refreshCurrentState(): void {
   if (!t) return;
   const agent = agentForHandle();
   const state = agent.readCurrentState();
-  let changed = false;
+  let modelChanged = false;
   if (state.model) {
     if (currentModelByHandle.get(t) !== state.model) {
       currentModelByHandle.set(t, state.model);
-      changed = true;
+      modelChanged = true;
     }
   }
-  if (state.effort) {
-    currentEffortByHandle.set(t, state.effort);
+  let effortToSet = state.effort;
+  if (!effortToSet && state.model) {
+    effortToSet = agent.getEffortForModel(state.model);
+  }
+  if (effortToSet) {
+    if (currentEffortByHandle.get(t) !== effortToSet || modelChanged) {
+      currentEffortByHandle.set(t, effortToSet);
+      if (modelChanged) {
+        effortByHandle.set(t, effortToSet);
+        pendingEffort = effortToSet;
+        pickAt.effort = 0;
+      }
+    }
   }
   if (state.mode) {
     currentModeByHandle.set(t, state.mode);
@@ -371,8 +385,9 @@ function refreshCurrentState(): void {
       }
     }
   }
-  if (changed) {
+  if (modelChanged) {
     lastEffortDiscoverAt = 0;
+    refreshEfforts().catch(() => {});
     renderAll();
   }
   adoptPending("model");
@@ -439,7 +454,11 @@ function dialFeedback(role: string): { full: string } {
   if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick, !isSupported) };
   if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported) };
   if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
-  return { full: dialImage("target", "TARGET", v, tick) };
+  // 대상 다이얼: 대상 세션의 에이전트 알약 + 값(레포) 아래 작은 브랜치 줄
+  const tb = sessionByHandle.get(targetHandle ?? "");
+  const badge = tb ? (tb as any).agentType : undefined;
+  const branch = tb ? (tb as any).branch : undefined;
+  return { full: dialImage("target", "TARGET", v, tick, false, badge, branch) };
 }
 
 function renderAll(): void {
@@ -478,9 +497,9 @@ function anyAttention(): boolean {
   return false;
 }
 
-// orca agent-hooks의 최신 훅 상태(last-status.json)를 읽어 paneKey별 훅 이벤트명을 반환
-function getHookEvents(): Map<string, string> {
-  const map = new Map<string, string>();
+// orca agent-hooks의 최신 훅 상태(last-status.json)를 읽어 paneKey별 훅 정보 반환
+function getHookEvents(): Map<string, { hookEventName?: string; agentType?: string }> {
+  const map = new Map<string, { hookEventName?: string; agentType?: string }>();
   try {
     const filePath = join(homedir(), "Library/Application Support/orca/agent-hooks/last-status.json");
     if (existsSync(filePath)) {
@@ -488,8 +507,11 @@ function getHookEvents(): Map<string, string> {
       const data = JSON.parse(content);
       if (data && typeof data.entries === "object") {
         for (const [paneKey, entry] of Object.entries(data.entries as Record<string, any>)) {
-          if (entry && typeof entry.hookEventName === "string") {
-            map.set(paneKey, entry.hookEventName);
+          if (entry) {
+            map.set(paneKey, {
+              hookEventName: entry.hookEventName,
+              agentType: entry.source || entry.payload?.agentType,
+            });
           }
         }
       }
@@ -519,12 +541,17 @@ async function poll(): Promise<void> {
     sessionByHandle.clear();
     for (const s of full.slots) {
       if (!s.empty) {
-        allHandles.push((s as any).handle);
-        sessionByHandle.set((s as any).handle, s);
-        // 에이전트 타입 → 게이트 에이전트 인스턴스 저장(없던 세션만)
-        if (!agentByHandle.has((s as any).handle)) {
-          agentByHandle.set((s as any).handle, (s as any).agentType ?? "");
-          agentInstanceByHandle.set((s as any).handle, agentFor((s as any).agentType ?? ""));
+        const h = (s as any).handle;
+        allHandles.push(h);
+        sessionByHandle.set(h, s);
+        const nextType = (s as any).agentType ?? "";
+        if (agentByHandle.get(h) !== nextType) {
+          agentByHandle.set(h, nextType);
+          agentInstanceByHandle.set(h, agentFor(nextType));
+          if (h === targetHandle) {
+            lastDiscoverAt = 0;
+            applyPending();
+          }
         }
       }
     }
@@ -653,11 +680,26 @@ class DialBase extends SingletonAction {
           ev.action.showAlert?.();
           return;
         }
-        if (this.role === "model") modelByHandle.set(t, value);
-        else if (this.role === "effort") effortByHandle.set(t, value);
-        else modeByHandle.set(t, value);
+        if (this.role === "model") {
+          modelByHandle.set(t, value);
+          currentModelByHandle.set(t, value);
+          const inferred = agent.getEffortForModel(value);
+          if (inferred) {
+            effortByHandle.set(t, inferred);
+            currentEffortByHandle.set(t, inferred);
+            pendingEffort = inferred;
+            pickAt.effort = 0;
+          }
+          lastEffortDiscoverAt = 0;
+          refreshEfforts().catch(() => {});
+        } else if (this.role === "effort") {
+          effortByHandle.set(t, value);
+        } else {
+          modeByHandle.set(t, value);
+        }
         try {
           await applyAgentSteps(t, agent.getApplySteps(kind, value));
+          refreshCurrentState();
         } catch (e) {
           streamDeck.logger.error(`apply ${kind}: ${e}`);
           ev.action.showAlert?.();

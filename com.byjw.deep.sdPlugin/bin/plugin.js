@@ -17302,10 +17302,12 @@ var EMPTY = { empty: true };
 function buildDeck(input, opts = {}) {
   const page = opts.page ?? 0;
   const perPage = opts.perPage ?? 8;
-  const getHookEvent = (pane) => {
+  const getHook = (pane) => {
     if (!input.hookEventsByPane) return void 0;
-    if (input.hookEventsByPane instanceof Map) return input.hookEventsByPane.get(pane);
-    return input.hookEventsByPane[pane];
+    const raw = input.hookEventsByPane instanceof Map ? input.hookEventsByPane.get(pane) : input.hookEventsByPane[pane];
+    if (!raw) return void 0;
+    if (typeof raw === "string") return { hookEventName: raw };
+    return raw;
   };
   const stateByPane = /* @__PURE__ */ new Map();
   const agentByPane = /* @__PURE__ */ new Map();
@@ -17324,11 +17326,12 @@ function buildDeck(input, opts = {}) {
     const pane = `${t.tabId}:${t.leafId}`;
     const hasWt = stateByPane.has(pane);
     const idFromWt = agentByPane.get(pane);
-    const agent = t.agentIdentity || idFromWt || "";
+    const hook = getHook(pane);
+    const agent = idFromWt || hook?.agentType || t.agentIdentity || "";
     const wtState = hasWt ? stateByPane.get(pane) : "waiting";
-    const hookEvent = getHookEvent(pane);
+    const hookEvent = hook?.hookEventName;
     let state = wtState;
-    const isAgy = agent === "agy" || agent === "antigravity" || idFromWt === "agy" || idFromWt === "antigravity";
+    const isAgy = agent === "agy" || agent === "antigravity" || idFromWt === "agy" || idFromWt === "antigravity" || hook?.agentType === "agy" || hook?.agentType === "antigravity";
     if (isAgy && hookEvent === "PreToolUse") {
       state = "waiting";
     }
@@ -17338,7 +17341,7 @@ function buildDeck(input, opts = {}) {
       hasWt,
       agent,
       state,
-      agentType: idFromWt || agent
+      agentType: agent
     };
   }).filter((x) => x.hasWt || Boolean(x.agent)).sort((a, b) => a.t.handle.localeCompare(b.t.handle));
   const dupCount = /* @__PURE__ */ new Map();
@@ -17528,7 +17531,7 @@ var DIAL_ACCENT = {
   target: "#f59e0b"
   // 앰버
 };
-function dialImage(role, label, value, tick2 = 0, disabled = false) {
+function dialImage(role, label, value, tick2 = 0, disabled = false, badge, sub) {
   const accent = disabled ? "#2e2e34" : DIAL_ACCENT[role] ?? "#8a8a90";
   const labelColor = disabled ? "#4a4a52" : accent;
   const valueColor = disabled ? "#4a4a52" : "#ffffff";
@@ -17543,16 +17546,28 @@ function dialImage(role, label, value, tick2 = 0, disabled = false) {
   const lines = oneLineFits ? [val] : splitSlash(val, perLine);
   const singleSize = oneLineFits ? Math.min(28, Math.max(16, Math.floor((avail - 4) / units(val)))) : lineFont;
   const labelSvg = role === "model" ? `<text x="${textX}" y="20" fill="${labelColor}" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="2">${esc2(label)}</text>` : `<text x="${textX}" y="24" fill="${labelColor}" font-family="sans-serif" font-size="13" font-weight="800" letter-spacing="1">${esc2(label)}</text>`;
-  const valueSvg = lines.length > 1 ? lines.map((ln, i) => `<text x="${textX}" y="${top + i * lineH}" fill="${valueColor}" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc2(ln)}</text>`).join("") : `<text x="${textX}" y="56" fill="${valueColor}" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc2(lines[0])}</text>`;
+  const hasSub = Boolean(sub && !disabled);
+  const valueY = hasSub ? 48 : 56;
+  const valueSvg = lines.length > 1 ? lines.map((ln, i) => `<text x="${textX}" y="${(hasSub ? 40 : top) + i * lineH}" fill="${valueColor}" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc2(ln)}</text>`).join("") : `<text x="${textX}" y="${valueY}" fill="${valueColor}" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc2(lines[0])}</text>`;
+  const subSvg = hasSub ? `<text x="${textX}" y="${valueY + 18}" fill="${disabled ? "#4a4a52" : "#b8b8be"}" font-family="sans-serif" font-size="13" font-weight="600">${esc2(sub || "")}</text>` : "";
+  const badgeSvg = badge ? agentBadgeForDial(badge) : "";
   const dimG0 = disabled ? '<g opacity="0.38">' : "";
   const dimG1 = disabled ? "</g>" : "";
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
   ${dimG0}<rect width="7" height="100" fill="${accent}"/>
   ${labelSvg}
-  ${valueSvg}${dimG1}
+  ${valueSvg}${subSvg}${dimG1}
+  ${badgeSvg}
 </svg>`;
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
+}
+function agentBadgeForDial(agentType) {
+  const a = (agentType || "").toLowerCase();
+  const known = AGENT_BADGE[a];
+  const bg = known?.bg ?? "#4b5563";
+  const label = known?.label ?? (a ? [...a].slice(0, 2).join("").toUpperCase() : "?");
+  return `<rect x="166" y="6" width="28" height="16" rx="8" fill="${bg}"/><text x="180" y="18" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
 }
 function splitSlash(value, perLine) {
   const parts = (value || " ").split("/").filter((p) => p !== "");
@@ -17606,6 +17621,10 @@ var AbstractAgent = class {
   /** 로컬 상태 파일/설정에서 현재 선택된 상태 읽기 */
   readCurrentState() {
     return {};
+  }
+  /** 모델 선택 시 해당 모델에 귀속되거나 내포된 effort(변형)가 있다면 반환 */
+  getEffortForModel(_model) {
+    return void 0;
   }
 };
 var slash = (cmd, value) => [
@@ -17784,8 +17803,21 @@ var OpenCodeAgent = class extends AbstractAgent {
       favoriteModels: st.favorites
     };
   }
+  getEffortForModel(model) {
+    const st = readOpenCodeState();
+    return st.variant ? st.variant[model] : void 0;
+  }
 };
 var AGY_SETTINGS = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "settings.json");
+function extractEffortFromModel(modelName) {
+  if (!modelName) return void 0;
+  const s = modelName.trim().toLowerCase();
+  const parenMatch = s.match(/\((low|medium|high|max|thinking)\)/);
+  if (parenMatch) return parenMatch[1];
+  const hyphenMatch = s.match(/-(low|medium|high|max|thinking)$/);
+  if (hyphenMatch) return hyphenMatch[1];
+  return void 0;
+}
 function parseAgySettings(text) {
   try {
     const data = JSON.parse(text);
@@ -17834,7 +17866,8 @@ function readAgyState() {
   try {
     if ((0, import_node_fs4.existsSync)(AGY_SETTINGS)) {
       const cfg = parseAgySettings((0, import_node_fs4.readFileSync)(AGY_SETTINGS, "utf8"));
-      return { model: cfg.model, mode: cfg.mode ?? "default" };
+      const effort = extractEffortFromModel(cfg.model);
+      return { model: cfg.model, effort, mode: cfg.mode ?? "default" };
     }
   } catch {
   }
@@ -17891,6 +17924,9 @@ var AgyAgent = class extends AbstractAgent {
   }
   readCurrentState() {
     return readAgyState();
+  }
+  getEffortForModel(model) {
+    return extractEffortFromModel(model);
   }
 };
 var UnsupportedAgent = class extends AbstractAgent {
@@ -18207,9 +18243,12 @@ async function stopAndSend(target) {
 }
 function noteHandle(h) {
   const b = sessionByHandle.get(h);
-  if (b && !agentByHandle.has(h)) {
-    agentByHandle.set(h, b.agentType ?? "");
-    agentInstanceByHandle.set(h, agentFor(b.agentType ?? ""));
+  if (b) {
+    const nextType = b.agentType ?? "";
+    if (agentByHandle.get(h) !== nextType) {
+      agentByHandle.set(h, nextType);
+      agentInstanceByHandle.set(h, agentFor(nextType));
+    }
   }
 }
 function setTarget(h) {
@@ -18338,15 +18377,26 @@ function refreshCurrentState() {
   if (!t) return;
   const agent = agentForHandle();
   const state = agent.readCurrentState();
-  let changed = false;
+  let modelChanged = false;
   if (state.model) {
     if (currentModelByHandle.get(t) !== state.model) {
       currentModelByHandle.set(t, state.model);
-      changed = true;
+      modelChanged = true;
     }
   }
-  if (state.effort) {
-    currentEffortByHandle.set(t, state.effort);
+  let effortToSet = state.effort;
+  if (!effortToSet && state.model) {
+    effortToSet = agent.getEffortForModel(state.model);
+  }
+  if (effortToSet) {
+    if (currentEffortByHandle.get(t) !== effortToSet || modelChanged) {
+      currentEffortByHandle.set(t, effortToSet);
+      if (modelChanged) {
+        effortByHandle.set(t, effortToSet);
+        pendingEffort = effortToSet;
+        pickAt.effort = 0;
+      }
+    }
   }
   if (state.mode) {
     currentModeByHandle.set(t, state.mode);
@@ -18360,8 +18410,10 @@ function refreshCurrentState() {
       }
     }
   }
-  if (changed) {
+  if (modelChanged) {
     lastEffortDiscoverAt = 0;
+    refreshEfforts().catch(() => {
+    });
     renderAll();
   }
   adoptPending("model");
@@ -18421,7 +18473,10 @@ function dialFeedback(role) {
   if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick, !isSupported) };
   if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported) };
   if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
-  return { full: dialImage("target", "TARGET", v, tick) };
+  const tb = sessionByHandle.get(targetHandle ?? "");
+  const badge = tb ? tb.agentType : void 0;
+  const branch = tb ? tb.branch : void 0;
+  return { full: dialImage("target", "TARGET", v, tick, false, badge, branch) };
 }
 function renderAll() {
   renderKeys();
@@ -18463,8 +18518,11 @@ function getHookEvents() {
       const data = JSON.parse(content);
       if (data && typeof data.entries === "object") {
         for (const [paneKey, entry] of Object.entries(data.entries)) {
-          if (entry && typeof entry.hookEventName === "string") {
-            map2.set(paneKey, entry.hookEventName);
+          if (entry) {
+            map2.set(paneKey, {
+              hookEventName: entry.hookEventName,
+              agentType: entry.source || entry.payload?.agentType
+            });
           }
         }
       }
@@ -18493,11 +18551,17 @@ async function poll() {
     sessionByHandle.clear();
     for (const s of full.slots) {
       if (!s.empty) {
-        allHandles.push(s.handle);
-        sessionByHandle.set(s.handle, s);
-        if (!agentByHandle.has(s.handle)) {
-          agentByHandle.set(s.handle, s.agentType ?? "");
-          agentInstanceByHandle.set(s.handle, agentFor(s.agentType ?? ""));
+        const h = s.handle;
+        allHandles.push(h);
+        sessionByHandle.set(h, s);
+        const nextType = s.agentType ?? "";
+        if (agentByHandle.get(h) !== nextType) {
+          agentByHandle.set(h, nextType);
+          agentInstanceByHandle.set(h, agentFor(nextType));
+          if (h === targetHandle) {
+            lastDiscoverAt = 0;
+            applyPending();
+          }
         }
       }
     }
@@ -18624,11 +18688,27 @@ var DialBase = class extends SingletonAction {
           ev.action.showAlert?.();
           return;
         }
-        if (this.role === "model") modelByHandle.set(t, value);
-        else if (this.role === "effort") effortByHandle.set(t, value);
-        else modeByHandle.set(t, value);
+        if (this.role === "model") {
+          modelByHandle.set(t, value);
+          currentModelByHandle.set(t, value);
+          const inferred = agent.getEffortForModel(value);
+          if (inferred) {
+            effortByHandle.set(t, inferred);
+            currentEffortByHandle.set(t, inferred);
+            pendingEffort = inferred;
+            pickAt.effort = 0;
+          }
+          lastEffortDiscoverAt = 0;
+          refreshEfforts().catch(() => {
+          });
+        } else if (this.role === "effort") {
+          effortByHandle.set(t, value);
+        } else {
+          modeByHandle.set(t, value);
+        }
         try {
           await applyAgentSteps(t, agent.getApplySteps(kind, value));
+          refreshCurrentState();
         } catch (e) {
           plugin_default.logger.error(`apply ${kind}: ${e}`);
           ev.action.showAlert?.();
