@@ -60,20 +60,20 @@ describe("keySvg", () => {
   });
 });
 
-describe("agentBadge — 타일마다 에이전트 뱃지(2글자 알약)", () => {
-  it("알려진 타입은 2글자 + 컬러 배경", () => {
-    expect(agentBadge("claude")).toContain('fill="#d97757"'); // CL 오렌지
-    expect(agentBadge("claude")).toContain(">CL</text>");
-    expect(agentBadge("opencode")).toContain('fill="#10b981"');
-    expect(agentBadge("opencode")).toContain(">OC</text>");
-    expect(agentBadge("codex")).toContain('fill="#a78bfa"');
-    expect(agentBadge("codex")).toContain(">CX</text>");
-    expect(agentBadge("agy")).toContain('fill="#3b82f6"');
-    expect(agentBadge("agy")).toContain(">AG</text>");
+describe("agentBadge — 타일마다 에이전트 뱃지(Orca 로고 아이콘 / 폴백)", () => {
+  it("알려진 타입은 Orca 로고 아이콘", () => {
+    expect(agentBadge("claude")).toContain('fill="#D97757"'); // Claude terracotta
+    expect(agentBadge("claude")).toContain("M4.709");
+    expect(agentBadge("opencode")).toContain('fill="#F1ECEC"');
+    expect(agentBadge("opencode")).toContain("M180 240H60V120H180V240Z");
+    expect(agentBadge("codex")).toContain('fill="#A78BFA"');
+    expect(agentBadge("codex")).toContain("M9.205");
+    expect(agentBadge("agy")).toContain("<image href=\"data:image/png;base64,");
+    expect(agentBadge("antigravity")).toContain("<image href=\"data:image/png;base64,");
   });
   it("대소문자 무시", () => {
-    expect(agentBadge("OpenCode")).toContain(">OC</text>");
-    expect(agentBadge("Claude")).toContain(">CL</text>");
+    expect(agentBadge("OpenCode")).toContain('fill="#F1ECEC"');
+    expect(agentBadge("Claude")).toContain('fill="#D97757"');
   });
   it("모르는 타입은 회색 알약 + 앞 2글자, 없으면 물음표", () => {
     const g = agentBadge("grok");
@@ -82,10 +82,10 @@ describe("agentBadge — 타일마다 에이전트 뱃지(2글자 알약)", () =
     expect(agentBadge(undefined)).toContain(">?</text>");
     expect(agentBadge(null)).toContain(">?</text>");
   });
-  it("keySvg에 타일마다 뱃지가 들어간다", () => {
+  it("keySvg에 타일마다 에이전트 아이콘 뱃지가 들어간다", () => {
     const svg = keySvg({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main", agentType: "opencode" });
-    expect(svg).toContain(">OC</text>");
-    expect(svg).toContain('fill="#10b981"');
+    expect(svg).toContain("M180 240H60V120H180V240Z");
+    expect(svg).toContain('fill="#F1ECEC"');
   });
   it("빈 칸은 뱃지 없음", () => {
     expect(keySvg({ empty: true })).not.toContain("</text>");
@@ -126,13 +126,14 @@ describe("keySvg dim — 주의 없는 키 죽여 대비 만들기", () => {
   });
 });
 
-describe("keyImage — 키는 SVG data URI로 내보낸다(글자 뱃지라 PNG/raster 불필요)", () => {
+describe("keyImage — 키는 SVG data URI로 내보낸다", () => {
   it("SVG를 base64 data URI로 반환", () => {
     const img = keyImage({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main", agentType: "opencode" });
     expect(img.startsWith("data:image/svg+xml;base64,")).toBe(true);
     const svg = Buffer.from(img.split(",")[1], "base64").toString("utf8");
     expect(svg).toContain("<svg");
-    expect(svg).toContain(">OC</text>");
+    expect(svg).toContain("M180 240H60V120H180V240Z");
+    expect(svg).toContain('fill="#F1ECEC"');
   });
   it("빈 칸도 SVG data URI", () => {
     expect(keyImage({ empty: true })).toMatch(/^data:image\/svg\+xml;base64,/);
@@ -172,11 +173,11 @@ describe("dialImage — 다이얼 렌더", () => {
     expect(svg).toContain('fill="#4a4a52"'); // 흐린 라벨 및 값
     expect(svg).toContain('<g opacity="0.38">'); // 투명도 딤
   });
-  it("badge를 주면 우상단에 에이전트 알약이 그려진다(대상 다이얼)", () => {
+  it("badge를 주면 우상단에 에이전트 아이콘 뱃지가 그려진다(대상 다이얼)", () => {
     const svg = Buffer.from(dialImage("target", "TARGET", "svd", 0, false, "opencode", "main").split(",")[1], "base64").toString("utf8");
-    expect(svg).toContain('fill="#10b981"'); // opencode 초록
-    expect(svg).toContain(">OC</text>");
-    expect(svg).toContain('x="166" y="6"');
+    expect(svg).toContain('fill="#F1ECEC"');
+    expect(svg).toContain("M180 240H60V120H180V240Z");
+    expect(svg).toContain('x="172" y="6"');
   });
   it("sub(브랜치)를 주면 값 아래 작은 줄로 그린다", () => {
     const svg = Buffer.from(dialImage("target", "TARGET", "svd", 0, false, "opencode", "main").split(",")[1], "base64").toString("utf8");
@@ -186,6 +187,6 @@ describe("dialImage — 다이얼 렌더", () => {
   });
   it("badge 없으면 우상단 알약 없음", () => {
     const svg = Buffer.from(dialImage("target", "TARGET", "svd", 0).split(",")[1], "base64").toString("utf8");
-    expect(svg).not.toContain('x="166" y="6"');
+    expect(svg).not.toContain('x="172" y="6"');
   });
 });

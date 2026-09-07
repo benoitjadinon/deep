@@ -36,23 +36,50 @@ export function marqueeWindow(s: string, win: number, tick: number): string {
   return out.join("");
 }
 
-// 에이전트 타입 → 타이틀 우측 하단에 2글자 컬러 뱃지(알약). 이미지 없이 SVG 글자로 가볍고
-// 선명하게 — Elgato SVG 렌더러에서 이미지-in-SVG와 무관하게 항상 렌더링된다.
-const AGENT_BADGE: Record<string, { bg: string; label: string }> = {
-  claude: { bg: "#d97757", label: "CL" },
-  opencode: { bg: "#10b981", label: "OC" },
-  codex: { bg: "#a78bfa", label: "CX" },
-  code: { bg: "#a78bfa", label: "CX" },
-  agy: { bg: "#3b82f6", label: "AG" },
-  antigravity: { bg: "#3b82f6", label: "AG" },
-};
+// 에이전트 아이콘 정의 — Orca UI 번들(agent-catalog, icons)에서 직접 추출.
+// Claude, OpenCode, Codex는 순수 벡터 SVG 패스, Antigravity는 64x64 PNG 데이터 URI.
+const CLAUDE_SVG_PATH =
+  "M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z";
 
+const CODEX_SVG_PATH =
+  "M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z";
+
+const ANTIGRAVITY_PNG_DATA =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAABYlBMVEVHcEw5iPw2i/IziPztaDo3ifeJwGA6iPhkhug3ifjtVEg6ivgujO00h/8wivRztHQ0iftrgdLrhy41ifA0iPs+mMJNrp7rWEgwifjgryrcVmJ4wXDiUlmPeMCGxWK3w0FhprPZVmJato0pktxVjflCqKqjbqeLxWKQeL/opSZBp6z1Uj3Xuy01ifwwiPg1h/87if8wh/wvivRCiv4vi+8zktxNjPsvjek1ltEwj+Q5nMTwV0BDpK9Rg+hZifJ5e8tMq6C7ZHk+h/k2h/nOW2lXsJBAn7mGdrx1vG9dgd1Jh/SebZ3lU07meDlitoKuZo1kfszdWlOgvlBWk69wgttBhe/Ia14/iOTaZ01Cj87gpSxzfbOHdqeVcaxMh9O7uz90loxwiKFah77GelWfrVdToKGSe4uud2+kcIXlky6Sm22+qENyp37Mh0iHq2pfpo6tmVeuh2LSszGJhonJlkKWi3VeO12PAAAALXRSTlMARBro/o/8f/1lxVMt8q79vAf6/cv6i23YVBo4QcePmg6TzuC5S3QaM6re4bufpM1dAAADxklEQVRYhZ2X+T9iURTAXz2VVIQYxowxY4wxM7wShWwVSrIvlchStopR+P/n3O0t3tqcH933/d5zzj339sFxBjE40dOz3dbxwegbI/z09AEE221tsf9STJyC4IEIYh2t83+aTVEAht+t8l+aRPC4TVJoNYfBi4tms3b6+voIhjw2fG1JcAFRq9WwoJxv2wdB7GMrBcgE5e18Pr8fy7ZSxPgBRKVSe35+fmyUy2VsiMU+WU8A85UKCBpIcAKCbDZrOYURkkDlqfpcbSDDyUl+HxmspjB84HQ6nyCq1epbo3F3d0INVlNwyniIO2RYW0OGbkv8kNOZTnd1ddXr9cvLt5e3WzDEicHanRjGfB3zl5cvL7e39/fxeBwMFmvA/E79LwQIrmSGtX0rwzSUTqd3dtYBv7k5PLyCOEOGXWywUEP3MObXAUcCMBSvzs62qMFKDV0if4ji+rpYLIJhaxcbzPlxzK+uLi5ubBz2AS8z7MbXzGepX+L7+gqFAjLsIcM5TsL8Un9T8oVSqbS3t7dSTFGDqYDxCwtzc8DnmCGVOscGs4MckvjC3OzsbC6XWyqVNsFAFLs/zFog7Y/w+RwyLG1Khs9mLZDx8/PRaDSHFZugoAZjvlvOR6Mzvb29x8fHS0s4CWRInf80FIwp+RlqOMaGoxWkMG5Cv5Kfnp5KJpMJ0QCKlHETfsl5wKeQIJkARYYYQGHEj0j8DOGxAAyZDBja25HAqAlj8v0RHgqFiAAZlrHhyGXUAjUPIYiG5XZQGDWhT1F/iPKCMCk3tOs/rXbF/qGQz+9wu12dvDAZDCbCCSRACpuuwE3nj/C8h/3dFhCCwWA4HIlEkMGhK+iU56/4zI0F4Qwx6AogAbw/4t3KJRsxkBzsOrxXxqvOSm5wa9EQDjpAwHeqV11YgAyR7zqCUfEAfFrLAZZCJKJ9kHapgZoHZReLiHi01jmX2AC/doYu0aBdwyi7QSG9LvvENmiterUnQB50GsLaNTjEG6A/6zwzaBXJTlA9AlLYBGYYUa15WAJJfZ7jBphBvcsAK0BvzHB4BWRACtUKK4A34jnOzwzv9/GzBPQvOw67QA3vNvIyPmDMw2ERQTCsPMkA8NPoDdObISl8NAdFCh46gkZHyMImCEQh/7aX8gPmPLxbzCBl20l+RKwUwIpACrFfbsZr31JVeAVqoJfGy34E9F/bd+GhBgEPg53xGs+YXriYAU0NT/PXeUW0w8EM3Zyr9f3lOTg4fqq1+lm4icDHEd7kBmiFF58mz9n40IDL2r8yqiQCvN/+D+aPcPZ+RgT3AAAAAElFTkSuQmCC";
+
+// 에이전트 뱃지: 지원 에이전트는 Orca의 원본 로고 아이콘, 모르는 에이전트는 2글자 텍스트 알약 폴백.
 export function agentBadge(agentType?: string | null): string {
   const a = (agentType || "").toLowerCase();
-  const known = AGENT_BADGE[a];
-  const bg = known?.bg ?? "#4b5563";
-  const label = known?.label ?? (a ? [...a].slice(0, 2).join("").toUpperCase() : "?");
-  return `<rect x="104" y="118" width="32" height="18" rx="9" fill="${bg}"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
+  const boxX = 108;
+  const boxY = 110;
+  const boxSize = 26;
+  const iconPad = 4;
+  const ix = boxX + iconPad;
+  const iy = boxY + iconPad;
+  const isize = boxSize - iconPad * 2; // 18px
+
+  const bg = `<rect x="${boxX}" y="${boxY}" width="${boxSize}" height="${boxSize}" rx="6" fill="#222225" stroke="#38383e" stroke-width="1"/>`;
+
+  if (a === "claude" || a === "claude-agent-teams") {
+    const s = (isize / 24).toFixed(4);
+    return `${bg}<g transform="translate(${ix}, ${iy}) scale(${s})"><path d="${CLAUDE_SVG_PATH}" fill="#D97757"/></g>`;
+  }
+  if (a === "opencode") {
+    const s = isize / 300;
+    const ox = (ix + (isize - 240 * s) / 2).toFixed(2);
+    return `${bg}<g transform="translate(${ox}, ${iy}) scale(${s.toFixed(4)})"><path d="M180 240H60V120H180V240Z" fill="#F1ECEC" fill-opacity="0.35"/><path fill-rule="evenodd" clip-rule="evenodd" d="M240 300H0V0H240V300ZM180 60H60V240H180V60Z" fill="#F1ECEC"/></g>`;
+  }
+  if (a === "codex" || a === "code") {
+    const s = (isize / 24).toFixed(4);
+    return `${bg}<g transform="translate(${ix}, ${iy}) scale(${s})"><path fill-rule="evenodd" d="${CODEX_SVG_PATH}" fill="#A78BFA"/></g>`;
+  }
+  if (a === "antigravity" || a === "agy") {
+    return `${bg}<image href="${ANTIGRAVITY_PNG_DATA}" xlink:href="${ANTIGRAVITY_PNG_DATA}" x="${ix}" y="${iy}" width="${isize}" height="${isize}"/>`;
+  }
+
+  // 폴백: 미지원 또는 미확인 에이전트는 2글자 텍스트 알약
+  const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
+  return `<rect x="104" y="118" width="32" height="18" rx="9" fill="#4b5563"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
 }
 
 // 대략적 글자 폭(단위). ASCII는 좁게, 한글/CJK는 넓게 잡아 자동 크기 계산에 사용.
@@ -173,7 +200,7 @@ export function dialImage(role: string, label: string, value: string, tick = 0, 
   const dimG0 = disabled ? '<g opacity="0.38">' : "";
   const dimG1 = disabled ? "</g>" : "";
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="200" height="100">
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
   ${dimG0}<rect width="7" height="100" fill="${accent}"/>
   ${labelSvg}
@@ -183,13 +210,39 @@ export function dialImage(role: string, label: string, value: string, tick = 0, 
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
 }
 
-// 다이얼 우상단용 에이전트 알약 — agentBadge와 같은 팔레트, 위치만 다이얼(200×100)에 맞게.
+// 다이얼 우상단용 에이전트 뱃지 — 세션 버튼의 agentBadge와 같은 로고 아이콘, 다이얼(200×100)에 맞게 20x20으로 배치.
 function agentBadgeForDial(agentType?: string | null): string {
   const a = (agentType || "").toLowerCase();
-  const known = AGENT_BADGE[a];
-  const bg = known?.bg ?? "#4b5563";
-  const label = known?.label ?? (a ? [...a].slice(0, 2).join("").toUpperCase() : "?");
-  return `<rect x="166" y="6" width="28" height="16" rx="8" fill="${bg}"/><text x="180" y="18" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
+  const boxX = 172;
+  const boxY = 6;
+  const boxSize = 20;
+  const iconPad = 3;
+  const ix = boxX + iconPad;
+  const iy = boxY + iconPad;
+  const isize = boxSize - iconPad * 2;
+
+  const bg = `<rect x="${boxX}" y="${boxY}" width="${boxSize}" height="${boxSize}" rx="5" fill="#222225" stroke="#38383e" stroke-width="1"/>`;
+
+  if (a === "claude" || a === "claude-agent-teams") {
+    const s = (isize / 24).toFixed(4);
+    return `${bg}<g transform="translate(${ix}, ${iy}) scale(${s})"><path d="${CLAUDE_SVG_PATH}" fill="#D97757"/></g>`;
+  }
+  if (a === "opencode") {
+    const s = isize / 300;
+    const ox = (ix + (isize - 240 * s) / 2).toFixed(2);
+    return `${bg}<g transform="translate(${ox}, ${iy}) scale(${s.toFixed(4)})"><path d="M180 240H60V120H180V240Z" fill="#F1ECEC" fill-opacity="0.35"/><path fill-rule="evenodd" clip-rule="evenodd" d="M240 300H0V0H240V300ZM180 60H60V240H180V60Z" fill="#F1ECEC"/></g>`;
+  }
+  if (a === "codex" || a === "code") {
+    const s = (isize / 24).toFixed(4);
+    return `${bg}<g transform="translate(${ix}, ${iy}) scale(${s})"><path fill-rule="evenodd" d="${CODEX_SVG_PATH}" fill="#A78BFA"/></g>`;
+  }
+  if (a === "antigravity" || a === "agy") {
+    return `${bg}<image href="${ANTIGRAVITY_PNG_DATA}" xlink:href="${ANTIGRAVITY_PNG_DATA}" x="${ix}" y="${iy}" width="${isize}" height="${isize}"/>`;
+  }
+
+  // 폴백: 미지원 또는 미확인 에이전트는 2글자 텍스트 알약
+  const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
+  return `<rect x="166" y="6" width="28" height="16" rx="8" fill="#4b5563"/><text x="180" y="18" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
 }
 
 // 값이 한 줄에 안 들어가면 "/"(provider/model 등) 경계에서 줄을 나눈다.

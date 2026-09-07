@@ -449,15 +449,14 @@ function dialFeedback(role: string): { full: string } {
   ensureTarget();
   const agent = agentForHandle();
   const isSupported = role === "target" || role === "talk" ? true : agent.supports(role as ControlKind);
-  const v = dialValue(role);
-  if (role === "model") return { full: dialImage("model", "MODEL", v, tick, !isSupported) };
-  if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick, !isSupported) };
-  if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported) };
-  if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
-  // 대상 다이얼: 대상 세션의 에이전트 알약 + 값(레포) 아래 작은 브랜치 줄
   const tb = sessionByHandle.get(targetHandle ?? "");
   const badge = tb ? (tb as any).agentType : undefined;
   const branch = tb ? (tb as any).branch : undefined;
+  const v = dialValue(role);
+  if (role === "model") return { full: dialImage("model", "MODEL", v, tick, !isSupported, badge) };
+  if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick, !isSupported, badge) };
+  if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported, badge) };
+  if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
   return { full: dialImage("target", "TARGET", v, tick, false, badge, branch) };
 }
 
