@@ -17293,6 +17293,17 @@ function colorFor(state) {
   if (state && STATE_COLOR[state]) return STATE_COLOR[state];
   return "white";
 }
+function nextWorktreeName(repo, existingNames) {
+  const prefix = `${repo}-`;
+  let maxN = 1;
+  for (const n of existingNames ?? []) {
+    if (n && n.startsWith(prefix)) {
+      const num = Number(n.slice(prefix.length));
+      if (Number.isInteger(num) && num > maxN) maxN = num;
+    }
+  }
+  return `${prefix}${maxN + 1}`;
+}
 function needsAttention(b, isTarget) {
   if (b.empty) return false;
   if (isTarget && b.color === "green") return false;
@@ -17373,6 +17384,7 @@ function buildDeck(input, opts = {}) {
       state: e.item.state,
       color: reviewed ? "white" : colorFor(e.item.state),
       worktreePath: e.item.t.worktreePath,
+      worktreeId: e.item.t.worktreeId,
       lastOutputAt: e.item.t.lastOutputAt,
       repo: e.project,
       branch: e.branch,
@@ -18262,6 +18274,11 @@ function firstExisting(candidates, fallback) {
   return fallback;
 }
 var ORCA = firstExisting(["/usr/local/bin/orca", "/opt/homebrew/bin/orca"], "orca");
+var OPENCODE_CMD = firstExisting([
+  "/opt/homebrew/bin/opencode",
+  "/usr/local/bin/opencode",
+  "/opt/local/bin/opencode"
+], "opencode");
 var STT_APP = (0, import_node_path7.join)(__dirname, "SttHelper.app");
 var STT_TXT = "/tmp/agentdeck-stt.txt";
 var STT_PID = "/tmp/agentdeck-stt.pid";
@@ -18771,6 +18788,67 @@ async function poll() {
     plugin_default.logger.error(`poll failed: ${e}`);
   }
 }
+async function spawnSession(ev) {
+  const t = ensureTarget();
+  const b = t ? sessionByHandle.get(t) : void 0;
+  const wtId = b ? b.worktreeId : void 0;
+  if (!b || !wtId) {
+    plugin_default.logger.info("spawn: \uB300\uC0C1 \uC6CC\uD06C\uD2B8\uB9AC\uB97C \uC54C \uC218 \uC5C6\uC74C(\uD504\uB85C\uC81D\uD2B8 \uC5C6\uC74C) \u2014 \uC0DD\uC131 \uBD88\uAC00");
+    ev.action.showAlert?.();
+    return;
+  }
+  const repoId = String(wtId).split("::")[0];
+  const repo = b.repo || repoId;
+  const agent = agentByHandle.get(t) || "";
+  if (!agent) {
+    plugin_default.logger.info("spawn: \uB300\uC0C1 \uC5D0\uC774\uC804\uD2B8\uB97C \uC54C \uC218 \uC5C6\uC74C \u2014 \uC0DD\uC131 \uBD88\uAC00");
+    ev.action.showAlert?.();
+    return;
+  }
+  try {
+    const list = await orcaJson(["worktree", "list"]);
+    const same = (list?.result?.worktrees ?? []).filter((w) => w.repoId === repoId);
+    const name = nextWorktreeName(repo, same.map((w) => w.displayName || ""));
+    const createArgs = ["worktree", "create", "--repo", `id:${repoId}`, "--name", name];
+    const isOpenCode = agent === "opencode";
+    if (!isOpenCode) createArgs.push("--agent", agent);
+    const res = await orcaJson(createArgs);
+    const wt = res?.result?.worktree?.id ?? (res?.result ?? res)?.worktreeId;
+    const createdWt = wt || (res?.result ?? res)?.id;
+    let handle;
+    if (isOpenCode) {
+      if (createdWt) {
+        const created = await orcaJson(["terminal", "create", "--worktree", createdWt, "--command", OPENCODE_CMD, "--focus"]);
+        handle = created?.result?.terminal?.handle ?? created?.result?.handle?.handle;
+      }
+      if (!handle) {
+        const terms = await orcaJson(["terminal", "list"]);
+        const wtTerm = (terms?.result?.terminals ?? []).find((x) => x.worktreeId === createdWt || (x.worktreePath ?? "").includes(name));
+        if (wtTerm?.handle) {
+          await orcaRun(["terminal", "switch", "--terminal", wtTerm.handle]);
+          handle = wtTerm.handle;
+        }
+      }
+    } else {
+      const r = res?.result ?? res ?? {};
+      handle = r.agentTerminalHandle ?? r.startupTerminal?.handle;
+    }
+    if (handle) {
+      lastNav = Date.now();
+      setTarget(handle);
+      try {
+        await orcaRun(["terminal", "switch", "--terminal", handle]);
+        await focusOrca();
+      } catch (e) {
+        plugin_default.logger.error(`spawn switch: ${e}`);
+      }
+    }
+    renderAll();
+  } catch (e) {
+    plugin_default.logger.error(`spawn session: ${e}`);
+    ev.action.showAlert?.();
+  }
+}
 var SlotAction = class extends SingletonAction {
   onWillAppear(ev) {
     slotViews.set(ev.action.id, { action: ev.action, coordinates: ev.payload?.coordinates });
@@ -18794,7 +18872,7 @@ var SlotAction = class extends SingletonAction {
       }
       renderAll();
     } else {
-      ev.action.showAlert?.();
+      await spawnSession(ev);
     }
   }
 };

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildDeck, colorFor, projectOf, needsAttention, findActivePaneInLayout, resolveActiveTerminal } from "../src/deck.js";
+import { buildDeck, colorFor, projectOf, needsAttention, findActivePaneInLayout, resolveActiveTerminal, nextWorktreeName } from "../src/deck.js";
 
 describe("needsAttention — 주의 필요 세션 판정(애니메이션 트리거)", () => {
   const b = (color: any, unread?: boolean) => ({ empty: false as const, handle: "t", label: "x", state: "s" as any, color, unread });
@@ -275,5 +275,22 @@ describe("findActivePaneInLayout & resolveActiveTerminal — 활성 터미널 �
   it("활성 워크트리가 없으면 undefined를 반환한다", () => {
     const inactiveWts = [{ worktreeId: "wt_1", isActive: false }];
     expect(resolveActiveTerminal(inactiveWts, terms, undefined, "term_1")).toBeUndefined();
+  });
+});
+
+describe("nextWorktreeName — 빈 슬롯 새 워크트리 이름 생성", () => {
+  it("repo만 있으면 repo-2부터 시작", () => {
+    expect(nextWorktreeName("deep", ["main"])).toBe("deep-2");
+    expect(nextWorktreeName("deep", [])).toBe("deep-2");
+  });
+  it("기존 repo-N 번호의 최대값 + 1", () => {
+    expect(nextWorktreeName("deep", ["main", "deep-2", "deep-3"])).toBe("deep-4");
+    expect(nextWorktreeName("deep", ["deep-2", "deep-5", "deep-3"])).toBe("deep-6");
+  });
+  it("repo-N 패턴이 아닌 이름은 무시하고 repo-2부터", () => {
+    expect(nextWorktreeName("deep", ["algo width", "desktop app"])).toBe("deep-2");
+  });
+  it("다른 repo의 이름은 세지 않는다", () => {
+    expect(nextWorktreeName("deep", ["main", "other-2", "deep-7"])).toBe("deep-8");
   });
 });

@@ -53,6 +53,7 @@ export type Button =
       state: AgentState;
       color: Color;
       worktreePath?: string;
+      worktreeId?: string; // `<repoId>::<path>` — 빈 슬롯에서 같은 repo에 새 워크트리를 만들 때 repoId 추출용
       lastOutputAt?: number | null;
       repo?: string;
       branch?: string;
@@ -95,6 +96,22 @@ export function projectOf(path?: string, repo?: string): string | undefined {
 export function colorFor(state: AgentState): Color {
   if (state && STATE_COLOR[state]) return STATE_COLOR[state];
   return "white";
+}
+
+/**
+ * 같은 repo에 이미 있는 워크트리 이름들 중 `repo-N` 번호 최대값 + 1로 새 워크트리 이름을 만든다.
+ * repo 자체가 1번이라고 보고 첫 새 워크트리는 `repo-2`가 된다. 이름은 곧 브랜치/표시명이 된다.
+ */
+export function nextWorktreeName(repo: string, existingNames: string[]): string {
+  const prefix = `${repo}-`;
+  let maxN = 1;
+  for (const n of existingNames ?? []) {
+    if (n && n.startsWith(prefix)) {
+      const num = Number(n.slice(prefix.length));
+      if (Number.isInteger(num) && num > maxN) maxN = num;
+    }
+  }
+  return `${prefix}${maxN + 1}`;
 }
 
 /**
@@ -223,6 +240,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       state: e.item.state,
       color: reviewed ? "white" : colorFor(e.item.state),
       worktreePath: e.item.t.worktreePath,
+      worktreeId: e.item.t.worktreeId,
       lastOutputAt: e.item.t.lastOutputAt,
       repo: e.project,
       branch: e.branch,

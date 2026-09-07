@@ -7,7 +7,7 @@ import { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
-import { buildDeck, needsAttention, resolveActiveTerminal, type Deck } from "./deck";
+import { buildDeck, needsAttention, resolveActiveTerminal, nextWorktreeName, type Deck } from "./deck";
 import { keyImage, dialImage } from "./render";
 import {
   agentFor,
@@ -39,6 +39,13 @@ function firstExisting(candidates: string[], fallback: string): string {
   return fallback;
 }
 const ORCA = firstExisting(["/usr/local/bin/orca", "/opt/homebrew/bin/orca"], "orca");
+// opencode 전체 경로 — Orca의 opencode 런처가 못 쓰는 --permissions 인자를 주입하므로
+// 전체 경로로 직접 띄워 그 주입을 우회한다 (조건: bare `opencode`일 때만 Orca가 주입).
+const OPENCODE_CMD = firstExisting([
+  "/opt/homebrew/bin/opencode",
+  "/usr/local/bin/opencode",
+  "/opt/local/bin/opencode",
+], "opencode");
 // Apple Speech STT 헬퍼 — plugin.js와 같은 bin/ 폴더에 동봉(상대 경로)
 const STT_APP = join(__dirname, "SttHelper.app");
 const STT_TXT = "/tmp/agentdeck-stt.txt";
@@ -589,6 +596,76 @@ async function poll(): Promise<void> {
   }
 }
 
+// 빈 슬롯 탭 → 현재 대상 세션의 프로젝트(repo)에 새 워크트리를 만들고
+// 대상 세션과 같은 에이전트(agentType)를 첫 터미널에 띄운 뒤 그 세션으로 전환한다.
+async function spawnSession(ev: any): Promise<void> {
+  const t = ensureTarget();
+  const b = t ? sessionByHandle.get(t) : undefined;
+  const wtId = b ? (b as any).worktreeId : undefined;
+  if (!b || !wtId) {
+    streamDeck.logger.info("spawn: 대상 워크트리를 알 수 없음(프로젝트 없음) — 생성 불가");
+    ev.action.showAlert?.();
+    return;
+  }
+  const repoId = String(wtId).split("::")[0];
+  const repo = (b as any).repo || repoId;
+  const agent = agentByHandle.get(t!) || "";
+  if (!agent) {
+    streamDeck.logger.info("spawn: 대상 에이전트를 알 수 없음 — 생성 불가");
+    ev.action.showAlert?.();
+    return;
+  }
+  try {
+    // 같은 repo의 기존 워크트리 이름에서 다음 번호를 정한다(이름 = 브랜치/표시명).
+    const list = await orcaJson(["worktree", "list"]);
+    const same = (list?.result?.worktrees ?? []).filter((w: any) => w.repoId === repoId);
+    const name = nextWorktreeName(repo, same.map((w: any) => w.displayName || ""));
+    const createArgs: string[] = ["worktree", "create", "--repo", `id:${repoId}`, "--name", name];
+    // opencode는 Orca의 agent 런처가 못 쓰는 `--permissions=...` 인자를 주입해
+    // (opencode 1.18엔 없는 플래그라 도움말이 뜨고 TUI가 안 뜬다) 우회:
+    // 작업트리를 먼저 만든 뒤, 전체 경로로 직접 opencode를 띄운다. 그러면 주입이 안 되고,
+    // 터미널 agentIdentity는 여전히 opencode로 잡혀 데크/다이얼 게이팅이 그대로 동작한다.
+    const isOpenCode = agent === "opencode";
+    if (!isOpenCode) createArgs.push("--agent", agent);
+    const res = await orcaJson(createArgs);
+    const wt = res?.result?.worktree?.id ?? (res?.result ?? res)?.worktreeId;
+    const createdWt = wt || (res?.result ?? res)?.id;
+    let handle: string | undefined;
+    if (isOpenCode) {
+      if (createdWt) {
+        const created = await orcaJson(["terminal", "create", "--worktree", createdWt, "--command", OPENCODE_CMD, "--focus"]);
+        handle = created?.result?.terminal?.handle ?? created?.result?.handle?.handle;
+      }
+      // fallback: 활성 워크트리에 아직 에이전트가 안 떠 있으면 그걸 대상으로
+      if (!handle) {
+        const terms = await orcaJson(["terminal", "list"]);
+        const wtTerm = (terms?.result?.terminals ?? []).find((x: any) => x.worktreeId === createdWt || (x.worktreePath ?? "").includes(name));
+        if (wtTerm?.handle) {
+          await orcaRun(["terminal", "switch", "--terminal", wtTerm.handle]);
+          handle = wtTerm.handle;
+        }
+      }
+    } else {
+      const r = res?.result ?? res ?? {};
+      handle = r.agentTerminalHandle ?? r.startupTerminal?.handle;
+    }
+    if (handle) {
+      lastNav = Date.now();
+      setTarget(handle);
+      try {
+        await orcaRun(["terminal", "switch", "--terminal", handle]);
+        await focusOrca();
+      } catch (e) {
+        streamDeck.logger.error(`spawn switch: ${e}`);
+      }
+    }
+    renderAll();
+  } catch (e) {
+    streamDeck.logger.error(`spawn session: ${e}`);
+    ev.action.showAlert?.();
+  }
+}
+
 @action({ UUID: "com.byjw.deep.slot" })
 class SlotAction extends SingletonAction {
   override onWillAppear(ev: any): void {
@@ -613,7 +690,8 @@ class SlotAction extends SingletonAction {
       }
       renderAll();
     } else {
-      ev.action.showAlert?.();
+      // 빈 슬롯 탭 = 대상 프로젝트에 새 워크트리 + 에이전트 생성
+      await spawnSession(ev);
     }
   }
 }
