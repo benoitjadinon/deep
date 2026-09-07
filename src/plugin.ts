@@ -7,7 +7,7 @@ import { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
-import { buildDeck, needsAttention, type Deck } from "./deck";
+import { buildDeck, needsAttention, resolveActiveTerminal, type Deck } from "./deck";
 import { keyImage, dialImage } from "./render";
 import {
   agentFor,
@@ -480,7 +480,10 @@ function anyAttention(): boolean {
 
 async function poll(): Promise<void> {
   try {
-    const [tl, wp] = await Promise.all([orcaJson(["terminal", "list"]), orcaJson(["worktree", "ps"])]);
+    const [tl, wp] = await Promise.all([
+      orcaJson(["terminal", "list", "--include-visual-layouts"]),
+      orcaJson(["worktree", "ps"]),
+    ]);
     deck = buildDeck(
       { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [] },
       { page: currentPage, perPage: 8 },
@@ -505,12 +508,18 @@ async function poll(): Promise<void> {
       }
     }
     // 현재 포커스(활성) 세션을 대상으로 자동 지정 → 말하면 지금 보는 세션으로 감
-    const activeWtId = (wp.result?.worktrees ?? []).find((w: any) => w.isActive)?.worktreeId;
-    // 방금(1.8s 내) 다이얼/키로 수동 이동했으면 자동추적 억제 — 수동 선택이 poll에 밀리지 않게
-    if (activeWtId && Date.now() - lastNav > 1800) {
-      const terms = (tl.result?.terminals ?? []).filter((t: any) => t.worktreeId === activeWtId);
-      const h = terms.sort((a: any, b: any) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0))[0]?.handle;
-      if (h && h !== targetHandle) setTarget(h);
+    const activeHandle = resolveActiveTerminal(
+      wp.result?.worktrees ?? [],
+      tl.result?.terminals ?? [],
+      tl.result?.visualLayouts,
+      targetHandle,
+    );
+    if (activeHandle && sessionByHandle.has(activeHandle)) {
+      if (!targetHandle) {
+        setTarget(activeHandle);
+      } else if (Date.now() - lastNav > 1800 && activeHandle !== targetHandle) {
+        setTarget(activeHandle);
+      }
     }
     refreshDiscovery(); // 지원 에이전트의 모델 목록 주기 로드(스로틀)
     refreshCurrentState(); // 지금 선택된 상태(모델/effort/모드)를 에이전트 인터페이스에서 추적해 다이얼에 반영(매 폴)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildDeck, colorFor, projectOf, needsAttention } from "../src/deck.js";
+import { buildDeck, colorFor, projectOf, needsAttention, findActivePaneInLayout, resolveActiveTerminal } from "../src/deck.js";
 
 describe("needsAttention — 주의 필요 세션 판정(애니메이션 트리거)", () => {
   const b = (color: any, unread?: boolean) => ({ empty: false as const, handle: "t", label: "x", state: "s" as any, color, unread });
@@ -197,5 +197,52 @@ describe("buildDeck — orca 두 소스를 8칸 버튼 모델로", () => {
 
     const p2 = buildDeck({ terminals: many, worktrees: wts }, { page: 1, perPage: 2 });
     expect(p2.slots.filter((s) => !s.empty)).toHaveLength(1);
+  });
+});
+
+describe("findActivePaneInLayout & resolveActiveTerminal — 활성 터미널 감지 및 타깃 유지", () => {
+  const terms = [
+    { handle: "term_1", tabId: "tab_1", leafId: "leaf_1", title: "T1", worktreeId: "wt_1", lastOutputAt: 9999 },
+    { handle: "term_2", tabId: "tab_2", leafId: "leaf_2", title: "T2", worktreeId: "wt_1", lastOutputAt: 1000 },
+  ];
+  const wts = [
+    { worktreeId: "wt_1", isActive: true },
+    { worktreeId: "wt_2", isActive: false },
+  ];
+
+  it("visualLayouts에서 activeTabId가 지정된 터미널을 정확히 반환한다", () => {
+    const visualLayouts = [
+      {
+        worktreeId: "wt_1",
+        root: {
+          type: "group",
+          activeTabId: "tab_2",
+          tabs: [
+            { tabId: "tab_1", activeLeafId: "leaf_1", panes: { type: "terminal", handle: "term_1", active: true } },
+            { tabId: "tab_2", activeLeafId: "leaf_2", panes: { type: "terminal", handle: "term_2", active: true } },
+          ],
+        },
+      },
+    ];
+
+    // term_1의 lastOutputAt이 더 크더라도, activeTabId가 tab_2면 term_2가 선택되어야 한다 (1번 세션으로 튕기지 않음)
+    const active = resolveActiveTerminal(wts, terms, visualLayouts, "term_2");
+    expect(active).toBe("term_2");
+  });
+
+  it("visualLayouts가 없더라도 현재 타깃이 활성 워크트리에 있으면 유지한다", () => {
+    // visualLayouts가 없는 환경에서도 term_1의 출력시간이 더 높다는 이유로 term_2에서 튕기면 안 됨
+    const active = resolveActiveTerminal(wts, terms, undefined, "term_2");
+    expect(active).toBe("term_2");
+  });
+
+  it("현재 타깃이 다른 워크트리에 있으면 활성 워크트리의 최신 터미널을 선택한다", () => {
+    const active = resolveActiveTerminal(wts, terms, undefined, "term_other");
+    expect(active).toBe("term_1");
+  });
+
+  it("활성 워크트리가 없으면 undefined를 반환한다", () => {
+    const inactiveWts = [{ worktreeId: "wt_1", isActive: false }];
+    expect(resolveActiveTerminal(inactiveWts, terms, undefined, "term_1")).toBeUndefined();
   });
 });

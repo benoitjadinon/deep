@@ -196,3 +196,74 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
 
   return { slots, page, pageCount, total };
 }
+
+/** visualLayouts의 pane/tab 트리에서 활성 터미널 정보(tabId, leafId, handle)를 재귀 탐색 */
+export function findActivePaneInLayout(node: any): { tabId?: string; leafId?: string; handle?: string } | undefined {
+  if (!node) return undefined;
+  if (node.type === "terminal" && node.active) {
+    return { tabId: node.tabId, leafId: node.leafId, handle: node.handle };
+  }
+  if (node.type === "group" && Array.isArray(node.tabs)) {
+    const activeTab = node.tabs.find((t: any) => t.tabId === node.activeTabId) || node.tabs[0];
+    if (activeTab) {
+      if (activeTab.panes) {
+        const found = findActivePaneInLayout(activeTab.panes);
+        if (found) return { tabId: activeTab.tabId, leafId: activeTab.activeLeafId, ...found };
+      }
+      return { tabId: activeTab.tabId, leafId: activeTab.activeLeafId };
+    }
+  }
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      const found = findActivePaneInLayout(child);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Orca의 worktrees, terminals, visualLayouts 정보를 종합하여
+ * 현재 사용자가 보고 있는(활성화된) 터미널 handle을 찾아낸다.
+ * - visualLayouts에서 활성 탭/터미널을 최우선으로 반영.
+ * - visualLayouts가 없더라도 현재 타깃이 이미 활성 워크트리에 있다면 튕기지 않고 유지.
+ */
+export function resolveActiveTerminal(
+  worktrees: OrcaWorktree[],
+  terminals: OrcaTerminal[],
+  visualLayouts?: any[],
+  currentTargetHandle?: string,
+): string | undefined {
+  const activeWt = (worktrees ?? []).find((w: any) => (w as any).isActive);
+  const activeWtId = activeWt?.worktreeId;
+  if (!activeWtId) return undefined;
+
+  // 1. visualLayouts가 있으면 해당 워크트리의 실제 활성 탭/리프 터미널을 먼저 찾는다
+  if (visualLayouts && visualLayouts.length > 0) {
+    const vl = visualLayouts.find((v: any) => v.worktreeId === activeWtId);
+    if (vl?.root) {
+      const activePane = findActivePaneInLayout(vl.root);
+      if (activePane?.handle) return activePane.handle;
+      if (activePane?.tabId) {
+        const termsInTab = terminals.filter((t) => t.worktreeId === activeWtId && t.tabId === activePane.tabId);
+        if (activePane.leafId) {
+          const matchLeaf = termsInTab.find((t) => t.leafId === activePane.leafId);
+          if (matchLeaf) return matchLeaf.handle;
+        }
+        if (termsInTab.length > 0) return termsInTab[0].handle;
+      }
+    }
+  }
+
+  // 2. visualLayouts가 없거나 판별 불가인 경우:
+  // 현재 타깃이 이미 활성 워크트리에 속해 있다면 유지 (불필요하게 1번째 세션으로 튕기지 않음)
+  const termsInWt = terminals.filter((t) => t.worktreeId === activeWtId);
+  if (currentTargetHandle && termsInWt.some((t) => t.handle === currentTargetHandle)) {
+    return currentTargetHandle;
+  }
+
+  // 3. 현재 타깃이 다른 워크트리에 있는 경우에만 최신 출력 또는 첫 번째 터미널 선택
+  const sorted = termsInWt.slice().sort((a, b) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0));
+  return sorted[0]?.handle;
+}
+

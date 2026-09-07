@@ -17,6 +17,7 @@ import {
   parseCodexConfig,
   parseCodexModelsCache,
   parseAgyModels,
+  parseAgyAgents,
   parseAgySettings,
   ClaudeAgent,
   CodexAgent,
@@ -75,11 +76,11 @@ describe("supported — 에이전트별 기능 게이팅", () => {
     expect(a.supports("effort")).toBe(true);
     expect(a.supports("mode")).toBe(true);
   });
-  it("agy: 모델·effort 지원, 모드는 미지원", () => {
+  it("agy: 모델·effort·모드(/agents) 모두 지원", () => {
     const a = agentFor("agy");
     expect(a.supports("model")).toBe(true);
     expect(a.supports("effort")).toBe(true);
-    expect(a.supports("mode")).toBe(false);
+    expect(a.supports("mode")).toBe(true);
   });
   it("미지원 에이전트는 전부 차단", () => {
     const a = agentFor("grok");
@@ -123,13 +124,17 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
       { text: "plan", enter: true },
     ]);
   });
-  it("agy: 슬래시 명령(/model <m>, /effort <e>)", () => {
+  it("agy: 슬래시 명령(/model <m>, /effort <e>, /agents 픽커)", () => {
     const a = agentFor("agy");
     expect(stepsFor(a, "model", "gemini-3.8-flash-medium")).toEqual([
       { text: "/model gemini-3.8-flash-medium", enter: true, delayMs: 120 },
     ]);
     expect(stepsFor(a, "effort", "high")).toEqual([
       { text: "/effort high", enter: true, delayMs: 120 },
+    ]);
+    expect(stepsFor(a, "mode", "flutter_a11y_agent")).toEqual([
+      { text: "/agents", enter: true, delayMs: 450 },
+      { text: "flutter_a11y_agent", enter: true },
     ]);
   });
   it("미지원 에이전트는 빈 시퀀스", () => {
@@ -202,8 +207,9 @@ agent = "plan"
   it("parsePrimaryAgents: ANSI/공백/빈 줄 방어, subagent 제외", () => {
     expect(parsePrimaryAgents("\x1b[32mbuild (primary)\x1b[0m\n\ncustom (primary)\nexplore (subagent)\n")).toEqual(["build", "custom"]);
   });
-  it("discoverAgentCmd: opencode는 CLI 보유, claude/미지원은 없음", () => {
+  it("discoverAgentCmd: opencode와 agy는 CLI 보유, claude/미지원은 없음", () => {
     expect(discoverAgentCmd("opencode")).toEqual(["opencode", "agent", "list"]);
+    expect(discoverAgentCmd("agy")).toEqual(["agy", "agents"]);
     expect(discoverAgentCmd("claude")).toBeUndefined();
     expect(discoverAgentCmd(undefined)).toBeUndefined();
   });
@@ -271,7 +277,18 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
     expect(parseAgySettings(JSON.stringify({ model: "Gemini 3.8 Flash (Medium)" }))).toEqual({
       model: "Gemini 3.8 Flash (Medium)",
     });
+    expect(parseAgySettings(JSON.stringify({ model: "Gemini 3.8 Flash (Medium)", agent: "flutter_a11y_agent" }))).toEqual({
+      model: "Gemini 3.8 Flash (Medium)",
+      mode: "flutter_a11y_agent",
+    });
     expect(parseAgySettings("{}")).toEqual({});
     expect(parseAgySettings("invalid")).toEqual({});
+  });
+  it("parseAgyAgents: 'Available agents:' 헤더 무시하고 default + 에이전트 목록 반환", () => {
+    const stdout = `Available agents:
+flutter_a11y_agent
+`;
+    expect(parseAgyAgents(stdout)).toEqual(["default", "flutter_a11y_agent"]);
+    expect(parseAgyAgents("")).toEqual(["default"]);
   });
 });

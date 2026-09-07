@@ -295,12 +295,17 @@ export class OpenCodeAgent extends AbstractAgent {
 // Agy 설정 경로
 export const AGY_SETTINGS = join(homedir(), ".gemini", "antigravity-cli", "settings.json");
 
-export function parseAgySettings(text: string): { model?: string } {
+export function parseAgySettings(text: string): { model?: string; mode?: string } {
   try {
     const data = JSON.parse(text);
+    const out: { model?: string; mode?: string } = {};
     if (typeof data?.model === "string" && data.model) {
-      return { model: data.model };
+      out.model = data.model;
     }
+    if (typeof data?.agent === "string" && data.agent) {
+      out.mode = data.agent;
+    }
+    return out;
   } catch {}
   return {};
 }
@@ -321,14 +326,29 @@ export function parseAgyModels(stdout: string): string[] {
   return out;
 }
 
+export function parseAgyAgents(stdout: string): string[] {
+  const seen = new Set<string>(["default"]);
+  const out: string[] = ["default"];
+  for (const raw of (stdout || "").split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!line || line.toLowerCase().startsWith("available agents:") || line.startsWith("Fetching")) continue;
+    const name = line.split(/\s+/)[0]?.trim();
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
+}
+
 export function readAgyState(): AgentStateSnapshot {
   try {
     if (existsSync(AGY_SETTINGS)) {
       const cfg = parseAgySettings(readFileSync(AGY_SETTINGS, "utf8"));
-      return { model: cfg.model };
+      return { model: cfg.model, mode: cfg.mode ?? "default" };
     }
   } catch {}
-  return {};
+  return { mode: "default" };
 }
 
 // Agy 구현체
@@ -337,7 +357,7 @@ export class AgyAgent extends AbstractAgent {
   readonly label = "Agy";
 
   supports(kind: ControlKind): boolean {
-    return kind === "model" || kind === "effort";
+    return kind === "model" || kind === "effort" || kind === "mode";
   }
 
   override getModels(): string[] {
@@ -356,7 +376,7 @@ export class AgyAgent extends AbstractAgent {
   }
 
   override getModes(): string[] {
-    return [];
+    return ["default"];
   }
 
   getApplySteps(kind: ControlKind, value: string): ApplyStep[] {
@@ -366,6 +386,9 @@ export class AgyAgent extends AbstractAgent {
     if (kind === "effort") {
       return slash("/effort", value);
     }
+    if (kind === "mode") {
+      return picker("/agents", value);
+    }
     return [];
   }
 
@@ -373,8 +396,16 @@ export class AgyAgent extends AbstractAgent {
     return ["agy", "models"];
   }
 
+  override getDiscoverAgentCmd(): string[] | undefined {
+    return ["agy", "agents"];
+  }
+
   override parseDiscoveredModels(stdout: string): string[] {
     return parseAgyModels(stdout);
+  }
+
+  override parseDiscoveredModes(stdout: string): string[] {
+    return parseAgyAgents(stdout);
   }
 
   override readCurrentState(): AgentStateSnapshot {

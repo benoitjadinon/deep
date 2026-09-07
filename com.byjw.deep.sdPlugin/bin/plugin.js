@@ -17366,6 +17366,55 @@ function buildDeck(input, opts = {}) {
   }
   return { slots, page, pageCount, total };
 }
+function findActivePaneInLayout(node) {
+  if (!node) return void 0;
+  if (node.type === "terminal" && node.active) {
+    return { tabId: node.tabId, leafId: node.leafId, handle: node.handle };
+  }
+  if (node.type === "group" && Array.isArray(node.tabs)) {
+    const activeTab = node.tabs.find((t) => t.tabId === node.activeTabId) || node.tabs[0];
+    if (activeTab) {
+      if (activeTab.panes) {
+        const found = findActivePaneInLayout(activeTab.panes);
+        if (found) return { tabId: activeTab.tabId, leafId: activeTab.activeLeafId, ...found };
+      }
+      return { tabId: activeTab.tabId, leafId: activeTab.activeLeafId };
+    }
+  }
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      const found = findActivePaneInLayout(child);
+      if (found) return found;
+    }
+  }
+  return void 0;
+}
+function resolveActiveTerminal(worktrees, terminals, visualLayouts, currentTargetHandle) {
+  const activeWt = (worktrees ?? []).find((w) => w.isActive);
+  const activeWtId = activeWt?.worktreeId;
+  if (!activeWtId) return void 0;
+  if (visualLayouts && visualLayouts.length > 0) {
+    const vl = visualLayouts.find((v) => v.worktreeId === activeWtId);
+    if (vl?.root) {
+      const activePane = findActivePaneInLayout(vl.root);
+      if (activePane?.handle) return activePane.handle;
+      if (activePane?.tabId) {
+        const termsInTab = terminals.filter((t) => t.worktreeId === activeWtId && t.tabId === activePane.tabId);
+        if (activePane.leafId) {
+          const matchLeaf = termsInTab.find((t) => t.leafId === activePane.leafId);
+          if (matchLeaf) return matchLeaf.handle;
+        }
+        if (termsInTab.length > 0) return termsInTab[0].handle;
+      }
+    }
+  }
+  const termsInWt = terminals.filter((t) => t.worktreeId === activeWtId);
+  if (currentTargetHandle && termsInWt.some((t) => t.handle === currentTargetHandle)) {
+    return currentTargetHandle;
+  }
+  const sorted = termsInWt.slice().sort((a, b) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0));
+  return sorted[0]?.handle;
+}
 
 // src/render.ts
 var HEX = {
@@ -17726,9 +17775,14 @@ var AGY_SETTINGS = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".
 function parseAgySettings(text) {
   try {
     const data = JSON.parse(text);
+    const out = {};
     if (typeof data?.model === "string" && data.model) {
-      return { model: data.model };
+      out.model = data.model;
     }
+    if (typeof data?.agent === "string" && data.agent) {
+      out.mode = data.agent;
+    }
+    return out;
   } catch {
   }
   return {};
@@ -17748,15 +17802,29 @@ function parseAgyModels(stdout) {
   }
   return out;
 }
+function parseAgyAgents(stdout) {
+  const seen = /* @__PURE__ */ new Set(["default"]);
+  const out = ["default"];
+  for (const raw of (stdout || "").split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!line || line.toLowerCase().startsWith("available agents:") || line.startsWith("Fetching")) continue;
+    const name = line.split(/\s+/)[0]?.trim();
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
+}
 function readAgyState() {
   try {
     if ((0, import_node_fs4.existsSync)(AGY_SETTINGS)) {
       const cfg = parseAgySettings((0, import_node_fs4.readFileSync)(AGY_SETTINGS, "utf8"));
-      return { model: cfg.model };
+      return { model: cfg.model, mode: cfg.mode ?? "default" };
     }
   } catch {
   }
-  return {};
+  return { mode: "default" };
 }
 var AgyAgent = class extends AbstractAgent {
   constructor() {
@@ -17765,7 +17833,7 @@ var AgyAgent = class extends AbstractAgent {
     this.label = "Agy";
   }
   supports(kind) {
-    return kind === "model" || kind === "effort";
+    return kind === "model" || kind === "effort" || kind === "mode";
   }
   getModels() {
     return [
@@ -17781,7 +17849,7 @@ var AgyAgent = class extends AbstractAgent {
     return ["low", "medium", "high"];
   }
   getModes() {
-    return [];
+    return ["default"];
   }
   getApplySteps(kind, value) {
     if (kind === "model") {
@@ -17790,13 +17858,22 @@ var AgyAgent = class extends AbstractAgent {
     if (kind === "effort") {
       return slash("/effort", value);
     }
+    if (kind === "mode") {
+      return picker("/agents", value);
+    }
     return [];
   }
   getDiscoverModelCmd() {
     return ["agy", "models"];
   }
+  getDiscoverAgentCmd() {
+    return ["agy", "agents"];
+  }
   parseDiscoveredModels(stdout) {
     return parseAgyModels(stdout);
+  }
+  parseDiscoveredModes(stdout) {
+    return parseAgyAgents(stdout);
   }
   readCurrentState() {
     return readAgyState();
@@ -18365,7 +18442,10 @@ function anyAttention() {
 }
 async function poll() {
   try {
-    const [tl, wp] = await Promise.all([orcaJson(["terminal", "list"]), orcaJson(["worktree", "ps"])]);
+    const [tl, wp] = await Promise.all([
+      orcaJson(["terminal", "list", "--include-visual-layouts"]),
+      orcaJson(["worktree", "ps"])
+    ]);
     deck = buildDeck(
       { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [] },
       { page: currentPage, perPage: 8 }
@@ -18387,11 +18467,18 @@ async function poll() {
         }
       }
     }
-    const activeWtId = (wp.result?.worktrees ?? []).find((w) => w.isActive)?.worktreeId;
-    if (activeWtId && Date.now() - lastNav > 1800) {
-      const terms = (tl.result?.terminals ?? []).filter((t) => t.worktreeId === activeWtId);
-      const h = terms.sort((a, b) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0))[0]?.handle;
-      if (h && h !== targetHandle) setTarget(h);
+    const activeHandle = resolveActiveTerminal(
+      wp.result?.worktrees ?? [],
+      tl.result?.terminals ?? [],
+      tl.result?.visualLayouts,
+      targetHandle
+    );
+    if (activeHandle && sessionByHandle.has(activeHandle)) {
+      if (!targetHandle) {
+        setTarget(activeHandle);
+      } else if (Date.now() - lastNav > 1800 && activeHandle !== targetHandle) {
+        setTarget(activeHandle);
+      }
     }
     refreshDiscovery();
     refreshCurrentState();
