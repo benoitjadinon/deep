@@ -20,6 +20,8 @@ import {
   parseAgyAgents,
   parseAgySettings,
   parseAgyHelpModes,
+  parseAgyLogMode,
+  readAgyState,
   extractEffortFromModel,
   AGY_MODES,
   normalizeAgyMode,
@@ -361,5 +363,24 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
     expect(agy.getEffortForModel("gemini-3.8-flash-high")).toBe("high");
     expect(agy.getEffortForModel("Gemini 3.8 Flash (Medium)")).toBe("medium");
     expect(agy.getEffortForModel("claude-sonnet-4-6")).toBeUndefined();
+  });
+
+  it("parseAgyLogMode: CLI 로그에서 SetCycleMode 파싱", () => {
+    const log1 = `ERROR: logging before google.Init: I0908 00:02:47.642897       1 manager.go:1341] SetCycleMode called: accept-edits`;
+    expect(parseAgyLogMode(log1)).toBe("accept-edits");
+
+    const log2 = `ERROR: logging before google.Init: I0908 00:00:46.158446       1 manager.go:1341] SetCycleMode called: plan
+ERROR: logging before google.Init: I0908 00:00:46.631352       1 manager.go:1341] SetCycleMode called: `;
+    expect(parseAgyLogMode(log2)).toBe("default");
+
+    expect(parseAgyLogMode("")).toBeUndefined();
+    expect(parseAgyLogMode("random log content")).toBeUndefined();
+  });
+
+  it("readAgyState: 현재 실행 중인 agy 세션의 라이브 상태 읽기", () => {
+    const st = readAgyState();
+    expect(st).toBeDefined();
+    // In our live session, agy is in accept-edits mode
+    expect(st.mode).toBe("accept-edits");
   });
 });

@@ -2,7 +2,7 @@
 // 순수 함수 및 객체 지향 모델(테스트 가능). orca worktree ps가 보고하는 agentType(claude/codex/opencode/…)과 연결된다.
 // 핵심: 지원하지 않는 에이전트 및 미구현 기능에 잘못된 명령을 보내지 않도록 게이팅. 모르는 에이전트 = 지원 안 함.
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -423,15 +423,62 @@ export function parseAgyAgents(stdout: string): string[] {
   return out;
 }
 
+export const AGY_LOG_DIR = join(homedir(), ".gemini", "antigravity-cli", "log");
+
+export function parseAgyLogMode(text: string): string | undefined {
+  if (!text) return undefined;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = /\]\s+SetCycleMode called:\s*([a-zA-Z0-9_\-]*)/.exec(lines[i]);
+    if (m) {
+      return normalizeAgyMode(m[1]);
+    }
+  }
+  return undefined;
+}
+
+export function readAgyLiveMode(): string | undefined {
+  try {
+    if (!existsSync(AGY_LOG_DIR)) return undefined;
+    const files = readdirSync(AGY_LOG_DIR)
+      .filter((f) => f.startsWith("cli-") && f.endsWith(".log"))
+      .map((f) => ({ path: join(AGY_LOG_DIR, f), mtime: statSync(join(AGY_LOG_DIR, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+
+    for (const file of files.slice(0, 3)) {
+      try {
+        const fd = openSync(file.path, "r");
+        const size = fstatSync(fd).size;
+        const readLen = Math.min(size, 128 * 1024);
+        const buf = Buffer.alloc(readLen);
+        readSync(fd, buf, 0, readLen, Math.max(0, size - readLen));
+        closeSync(fd);
+        const mode = parseAgyLogMode(buf.toString("utf8", 0, readLen));
+        if (mode) return mode;
+      } catch {}
+    }
+  } catch {}
+  return undefined;
+}
+
 export function readAgyState(): AgentStateSnapshot {
+  let model: string | undefined;
+  let effort: string | undefined;
+  let mode: string | undefined;
   try {
     if (existsSync(AGY_SETTINGS)) {
       const cfg = parseAgySettings(readFileSync(AGY_SETTINGS, "utf8"));
-      const effort = extractEffortFromModel(cfg.model);
-      return { model: cfg.model, effort, mode: cfg.mode ? normalizeAgyMode(cfg.mode) : undefined };
+      model = cfg.model;
+      effort = extractEffortFromModel(cfg.model);
+      if (cfg.mode) mode = normalizeAgyMode(cfg.mode);
     }
   } catch {}
-  return {};
+
+  const liveMode = readAgyLiveMode();
+  if (liveMode) {
+    mode = liveMode;
+  }
+  return { model, effort, mode };
 }
 
 // Agy 구현체

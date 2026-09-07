@@ -17942,16 +17942,57 @@ function parseAgyModels(stdout) {
   }
   return out;
 }
-function readAgyState() {
+var AGY_LOG_DIR = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "log");
+function parseAgyLogMode(text) {
+  if (!text) return void 0;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = /\]\s+SetCycleMode called:\s*([a-zA-Z0-9_\-]*)/.exec(lines[i]);
+    if (m) {
+      return normalizeAgyMode(m[1]);
+    }
+  }
+  return void 0;
+}
+function readAgyLiveMode() {
   try {
-    if ((0, import_node_fs4.existsSync)(AGY_SETTINGS)) {
-      const cfg = parseAgySettings((0, import_node_fs4.readFileSync)(AGY_SETTINGS, "utf8"));
-      const effort = extractEffortFromModel(cfg.model);
-      return { model: cfg.model, effort, mode: cfg.mode ? normalizeAgyMode(cfg.mode) : void 0 };
+    if (!(0, import_node_fs4.existsSync)(AGY_LOG_DIR)) return void 0;
+    const files = (0, import_node_fs4.readdirSync)(AGY_LOG_DIR).filter((f) => f.startsWith("cli-") && f.endsWith(".log")).map((f) => ({ path: (0, import_node_path6.join)(AGY_LOG_DIR, f), mtime: (0, import_node_fs4.statSync)((0, import_node_path6.join)(AGY_LOG_DIR, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
+    for (const file2 of files.slice(0, 3)) {
+      try {
+        const fd = (0, import_node_fs4.openSync)(file2.path, "r");
+        const size = (0, import_node_fs4.fstatSync)(fd).size;
+        const readLen = Math.min(size, 128 * 1024);
+        const buf = Buffer.alloc(readLen);
+        (0, import_node_fs4.readSync)(fd, buf, 0, readLen, Math.max(0, size - readLen));
+        (0, import_node_fs4.closeSync)(fd);
+        const mode = parseAgyLogMode(buf.toString("utf8", 0, readLen));
+        if (mode) return mode;
+      } catch {
+      }
     }
   } catch {
   }
-  return {};
+  return void 0;
+}
+function readAgyState() {
+  let model;
+  let effort;
+  let mode;
+  try {
+    if ((0, import_node_fs4.existsSync)(AGY_SETTINGS)) {
+      const cfg = parseAgySettings((0, import_node_fs4.readFileSync)(AGY_SETTINGS, "utf8"));
+      model = cfg.model;
+      effort = extractEffortFromModel(cfg.model);
+      if (cfg.mode) mode = normalizeAgyMode(cfg.mode);
+    }
+  } catch {
+  }
+  const liveMode = readAgyLiveMode();
+  if (liveMode) {
+    mode = liveMode;
+  }
+  return { model, effort, mode };
 }
 var AgyAgent = class extends AbstractAgent {
   constructor() {
