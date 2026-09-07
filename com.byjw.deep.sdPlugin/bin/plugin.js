@@ -17665,6 +17665,13 @@ var AbstractAgent = class {
   getEffortForModel(_model) {
     return void 0;
   }
+  /** 발견된 모델 id→표시이름 맵 설정 (opencode 등 — 픽커 필터 텍스트에 사용) */
+  setModelNames(_names) {
+  }
+  /** 발견 출력에서 모델 id→표시이름 맵 추출 */
+  parseDiscoveredModelNames(_stdout) {
+    return {};
+  }
 };
 var slash = (cmd, value) => [
   { text: `${cmd} ${value}`, enter: true, delayMs: 120 }
@@ -17679,6 +17686,13 @@ var modePicker = (value) => [
   { text: "a", enter: false, delayMs: 450 },
   // agent list dialog
   { text: value, enter: true }
+];
+var openCodeModelPicker = (value, name) => [
+  { text: "", enter: false, delayMs: 300 },
+  // ctrl+x (leader)
+  { text: "m", enter: false, delayMs: 450 },
+  // model list dialog
+  { text: modelFilterText(value, name), enter: false }
 ];
 var ClaudeAgent = class extends AbstractAgent {
   constructor() {
@@ -17795,6 +17809,7 @@ var OpenCodeAgent = class extends AbstractAgent {
     super(...arguments);
     this.agentType = "opencode";
     this.label = "OpenCode";
+    this.modelNames = {};
   }
   supports(kind) {
     return kind === "model" || kind === "effort" || kind === "mode";
@@ -17808,9 +17823,12 @@ var OpenCodeAgent = class extends AbstractAgent {
   getModes() {
     return ["build", "plan"];
   }
+  setModelNames(names) {
+    this.modelNames = names;
+  }
   getApplySteps(kind, value) {
     if (kind === "model") {
-      return picker("/models", providerShort(value));
+      return openCodeModelPicker(value, this.modelNames[value]);
     }
     if (kind === "effort") {
       return picker("/variants", value);
@@ -17821,7 +17839,13 @@ var OpenCodeAgent = class extends AbstractAgent {
     return [];
   }
   getDiscoverModelCmd() {
-    return ["opencode", "models"];
+    return ["opencode", "models", "--verbose"];
+  }
+  parseDiscoveredModels(stdout) {
+    return parseModelIdLines(stdout);
+  }
+  parseDiscoveredModelNames(stdout) {
+    return parseOpenCodeModelNames(stdout);
   }
   getDiscoverAgentCmd() {
     return ["opencode", "agent", "list"];
@@ -18160,9 +18184,35 @@ function parseModels(stdout) {
   }
   return out;
 }
-function providerShort(id) {
-  const i = id.indexOf("/");
-  return i >= 0 ? id.slice(i + 1) : id;
+function parseModelIdLines(stdout) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const raw of (stdout || "").split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!line) continue;
+    if (/^[A-Za-z0-9_~.:-]+\/[A-Za-z0-9_~./:-]+$/.test(line) && !seen.has(line)) {
+      seen.add(line);
+      out.push(line);
+    }
+  }
+  return out;
+}
+function parseOpenCodeModelNames(stdout) {
+  const names = {};
+  for (const block of splitJsonBlocks(stdout || "")) {
+    const pid = block.providerID;
+    const id = block.id;
+    const name = block.name;
+    if (typeof pid === "string" && typeof id === "string" && typeof name === "string" && name) {
+      names[`${pid}/${id}`] = name;
+    }
+  }
+  return names;
+}
+function modelFilterText(id, name) {
+  const provider = id.split("/")[0] ?? "";
+  const display = name?.trim();
+  return display ? `${provider} ${display}` : provider;
 }
 function fullIds(entries) {
   if (!Array.isArray(entries)) return void 0;
@@ -18436,7 +18486,7 @@ function dialValue(role) {
   const agent = agentForHandle();
   if (role === "model") {
     if (!agent.supports("model")) return "-";
-    return pendingModel ? providerShort(pendingModel) : "\u2026";
+    return pendingModel ? pendingModel : "\u2026";
   }
   if (role === "effort") {
     if (!agent.supports("effort")) return "-";
@@ -18472,6 +18522,7 @@ async function refreshDiscovery() {
       const { stdout } = await execFileP(modelCmd[0], modelCmd.slice(1), EXEC);
       const list = agent.parseDiscoveredModels(stdout);
       if (list.length) {
+        agent.setModelNames(agent.parseDiscoveredModelNames(stdout));
         const st = agent.readCurrentState();
         modelsByHandle.set(t, sortModels(list, st.recentModels ?? [], st.favoriteModels ?? []));
       }

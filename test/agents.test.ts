@@ -6,7 +6,9 @@ import {
   stepsFor,
   discoverModelCmd,
   parseModels,
-  providerShort,
+  parseModelIdLines,
+  parseOpenCodeModelNames,
+  modelFilterText,
   parseOpenCodeState,
   parseTuiAgent,
   parsePrimaryAgents,
@@ -112,10 +114,21 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
     ]);
     expect(stepsFor(a, "effort", "high")).toEqual([]);
   });
-  it("opencode: /models 픽커 열기 → 필터어(프로바이더 제거) → Enter", () => {
-    expect(stepsFor(agentFor("opencode"), "model", "opencode/claude-opus-4-7")).toEqual([
-      { text: "/models", enter: true, delayMs: 450 },
-      { text: "claude-opus-4-7", enter: true },
+  it("opencode: 모델 픽커(리더+m) → 프로바이더 포함 필터 입력, Enter는 사용자가 확인", () => {
+    const a = agentFor("opencode");
+    a.setModelNames({ "openrouter/minimax/minimax-m3": "MiniMax-M3" });
+    expect(stepsFor(a, "model", "openrouter/minimax/minimax-m3")).toEqual([
+      { text: "\x18", enter: false, delayMs: 300 },
+      { text: "m", enter: false, delayMs: 450 },
+      { text: "openrouter MiniMax-M3", enter: false },
+    ]);
+    a.setModelNames({});
+  });
+  it("opencode: 이름을 모르는 모델이면 프로바이더만 필터로 남긴다", () => {
+    expect(stepsFor(new OpenCodeAgent(), "model", "openrouter/minimax/minimax-m3")).toEqual([
+      { text: "\x18", enter: false, delayMs: 300 },
+      { text: "m", enter: false, delayMs: 450 },
+      { text: "openrouter", enter: false },
     ]);
   });
   it("opencode effort: /variants 픽커", () => {
@@ -163,7 +176,7 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
 
 describe("discoverModelCmd / parseModels — 라이브 모델 발견", () => {
   it("opencode와 agy는 발견 CLI 보유, claude/codex/미지원은 없음", () => {
-    expect(discoverModelCmd("opencode")).toEqual(["opencode", "models"]);
+    expect(discoverModelCmd("opencode")).toEqual(["opencode", "models", "--verbose"]);
     expect(discoverModelCmd("agy")).toEqual(["agy", "models"]);
     expect(discoverModelCmd("claude")).toBeUndefined();
     expect(discoverModelCmd("codex")).toBeUndefined();
@@ -177,9 +190,51 @@ describe("discoverModelCmd / parseModels — 라이브 모델 발견", () => {
       "opencode/gpt-5",
     ]);
   });
-  it("providerShort: provider 접두어 제거", () => {
-    expect(providerShort("opencode/claude-opus-4-7")).toBe("claude-opus-4-7");
-    expect(providerShort("gpt-5")).toBe("gpt-5");
+  it("parseModelIdLines: --verbose 출력에서 provider/model 줄만 추출(JSON 본문 제외)", () => {
+    const stdout = `opencode/claude-opus-4-7
+{
+  "id": "claude-opus-4-7",
+  "providerID": "opencode",
+  "name": "Claude Opus 4.7"
+}
+openrouter/~anthropic/claude-sonnet-latest
+{
+  "id": "~anthropic/claude-sonnet-latest",
+  "providerID": "openrouter",
+  "name": "Claude Sonnet Latest"
+}
+openrouter/nvidia/nemotron-3.5-lightning:free
+`;
+    expect(parseModelIdLines(stdout)).toEqual([
+      "opencode/claude-opus-4-7",
+      "openrouter/~anthropic/claude-sonnet-latest",
+      "openrouter/nvidia/nemotron-3.5-lightning:free",
+    ]);
+  });
+  it("parseOpenCodeModelNames: --verbose JSON 블록에서 id→표시이름 추출", () => {
+    const stdout = `opencode/claude-opus-4-7
+{
+  "id": "claude-opus-4-7",
+  "providerID": "opencode",
+  "name": "Claude Opus 4.7"
+}
+openrouter/minimax/minimax-m3
+{
+  "id": "minimax/minimax-m3",
+  "providerID": "openrouter",
+  "name": "MiniMax-M3"
+}
+`;
+    expect(parseOpenCodeModelNames(stdout)).toEqual({
+      "opencode/claude-opus-4-7": "Claude Opus 4.7",
+      "openrouter/minimax/minimax-m3": "MiniMax-M3",
+    });
+  });
+  it("modelFilterText: 프로바이더 + 표시이름, 이름 없으면 프로바이더만", () => {
+    expect(modelFilterText("openrouter/minimax/minimax-m3", "MiniMax-M3")).toBe("openrouter MiniMax-M3");
+    expect(modelFilterText("opencode/minimax-m3", "MiniMax-M3")).toBe("opencode MiniMax-M3");
+    expect(modelFilterText("openrouter/minimax/minimax-m3")).toBe("openrouter");
+    expect(modelFilterText("gpt-5", "GPT-5")).toBe("gpt-5 GPT-5");
   });
   it("parseOpenCodeState: 최근 모델 + variant 추출", () => {
     const s = parseOpenCodeState(JSON.stringify({

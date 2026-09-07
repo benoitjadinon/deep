@@ -91,6 +91,14 @@ export abstract class AbstractAgent {
   getEffortForModel(_model: string): string | undefined {
     return undefined;
   }
+
+  /** 발견된 모델 id→표시이름 맵 설정 (opencode 등 — 픽커 필터 텍스트에 사용) */
+  setModelNames(_names: Record<string, string>): void {}
+
+  /** 발견 출력에서 모델 id→표시이름 맵 추출 */
+  parseDiscoveredModelNames(_stdout: string): Record<string, string> {
+    return {};
+  }
 }
 
 const slash = (cmd: string, value: string): ApplyStep[] => [
@@ -106,6 +114,15 @@ const modePicker = (value: string): ApplyStep[] => [
   { text: "\x18", enter: false, delayMs: 300 }, // ctrl+x (leader)
   { text: "a", enter: false, delayMs: 450 }, // agent list dialog
   { text: value, enter: true },
+];
+
+// opencode 모델 픽커: 리더(ctrl+x)+m으로 다이얼로그를 확정적으로 열고, 필터에
+// '프로바이더 표시이름'을 입력한다. Enter는 보내지 않는다 — 사용자가 픽커에서 확인한다.
+// 필터 텍스트에 프로바이더가 들어가야 opencode/openrouter처럼 같은 이름의 모델을 구분할 수 있다.
+const openCodeModelPicker = (value: string, name?: string): ApplyStep[] => [
+  { text: "\x18", enter: false, delayMs: 300 }, // ctrl+x (leader)
+  { text: "m", enter: false, delayMs: 450 }, // model list dialog
+  { text: modelFilterText(value, name), enter: false },
 ];
 
 // Claude 구현체
@@ -241,6 +258,8 @@ export class OpenCodeAgent extends AbstractAgent {
   readonly agentType = "opencode";
   readonly label = "OpenCode";
 
+  private modelNames: Record<string, string> = {};
+
   supports(kind: ControlKind): boolean {
     return kind === "model" || kind === "effort" || kind === "mode";
   }
@@ -257,9 +276,13 @@ export class OpenCodeAgent extends AbstractAgent {
     return ["build", "plan"];
   }
 
+  override setModelNames(names: Record<string, string>): void {
+    this.modelNames = names;
+  }
+
   getApplySteps(kind: ControlKind, value: string): ApplyStep[] {
     if (kind === "model") {
-      return picker("/models", providerShort(value));
+      return openCodeModelPicker(value, this.modelNames[value]);
     }
     if (kind === "effort") {
       return picker("/variants", value);
@@ -271,7 +294,15 @@ export class OpenCodeAgent extends AbstractAgent {
   }
 
   override getDiscoverModelCmd(): string[] | undefined {
-    return ["opencode", "models"];
+    return ["opencode", "models", "--verbose"];
+  }
+
+  override parseDiscoveredModels(stdout: string): string[] {
+    return parseModelIdLines(stdout);
+  }
+
+  override parseDiscoveredModelNames(stdout: string): Record<string, string> {
+    return parseOpenCodeModelNames(stdout);
   }
 
   override getDiscoverAgentCmd(): string[] | undefined {
@@ -640,7 +671,7 @@ export function stepsFor(agent: AbstractAgent | AgentProfile, kind: ControlKind,
 }
 
 export const DISCOVER_MODEL_CMD: Record<string, string[]> = {
-  opencode: ["opencode", "models"],
+  opencode: ["opencode", "models", "--verbose"],
   agy: ["agy", "models"],
   antigravity: ["agy", "models"],
 };
@@ -719,9 +750,40 @@ export function parseModels(stdout: string): string[] {
   return out;
 }
 
-export function providerShort(id: string): string {
-  const i = id.indexOf("/");
-  return i >= 0 ? id.slice(i + 1) : id;
+// 모델 발견 출력(--verbose)에서 'providerID/modelID' 줄만 추출 — JSON 본문/기타 라인 제외.
+export function parseModelIdLines(stdout: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of (stdout || "").split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!line) continue;
+    if (/^[A-Za-z0-9_~.:-]+\/[A-Za-z0-9_~./:-]+$/.test(line) && !seen.has(line)) {
+      seen.add(line);
+      out.push(line);
+    }
+  }
+  return out;
+}
+
+// --verbose JSON 블록에서 모델 id→표시이름 맵 추출 (픽커 필터 텍스트에 사용).
+export function parseOpenCodeModelNames(stdout: string): Record<string, string> {
+  const names: Record<string, string> = {};
+  for (const block of splitJsonBlocks(stdout || "")) {
+    const pid = block.providerID;
+    const id = block.id;
+    const name = block.name;
+    if (typeof pid === "string" && typeof id === "string" && typeof name === "string" && name) {
+      names[`${pid}/${id}`] = name;
+    }
+  }
+  return names;
+}
+
+// 픽커 필터 텍스트: '프로바이더 표시이름'. 이름을 모르면 프로바이더만 남겨 사용자가 그 안에서 고른다.
+export function modelFilterText(id: string, name?: string): string {
+  const provider = id.split("/")[0] ?? "";
+  const display = name?.trim();
+  return display ? `${provider} ${display}` : provider;
 }
 
 export interface OpenCodeModelState {

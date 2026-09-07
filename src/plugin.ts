@@ -20,7 +20,6 @@ import {
   parseModels,
   parsePrimaryAgents,
   parseModelVariants,
-  providerShort,
   parseOpenCodeState,
   parseTuiAgent,
   sortModels,
@@ -286,7 +285,7 @@ function dialValue(role: string): string {
   const agent = agentForHandle();
   if (role === "model") {
     if (!agent.supports("model")) return "-";
-    return pendingModel ? providerShort(pendingModel) : "…";
+    return pendingModel ? pendingModel : "…";
   }
   if (role === "effort") {
     if (!agent.supports("effort")) return "-";
@@ -324,6 +323,7 @@ async function refreshDiscovery(): Promise<void> {
       const { stdout } = await execFileP(modelCmd[0], modelCmd.slice(1), EXEC);
       const list = agent.parseDiscoveredModels(stdout);
       if (list.length) {
+        agent.setModelNames(agent.parseDiscoveredModelNames(stdout));
         const st = agent.readCurrentState();
         modelsByHandle.set(t, sortModels(list, st.recentModels ?? [], st.favoriteModels ?? []));
       }
