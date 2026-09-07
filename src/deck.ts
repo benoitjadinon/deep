@@ -31,6 +31,7 @@ export interface OrcaWorktree {
 export interface DeckInput {
   terminals: OrcaTerminal[];
   worktrees: OrcaWorktree[];
+  hookEventsByPane?: Map<string, string> | Record<string, string>;
 }
 
 export interface DeckOptions {
@@ -65,6 +66,7 @@ export interface Deck {
 const STATE_COLOR: Record<string, Color> = {
   working: "blue",
   waiting: "amber",
+  blocked: "amber",
   done: "green",
   error: "red",
 };
@@ -93,10 +95,12 @@ export function colorFor(state: AgentState): Color {
 /**
  * 주의(애니메이션)가 필요한 세션인지 — orca가 "다 됐다/대답 필요"를 알릴 때 키가 확 띄게.
  * 대상 = 입력대기(amber)·완료 미확인(green)·에러(red). 작업중(blue)·idle(white)은 조용히.
- * 지금 보는 세션(target)은 이미 눈앞이라 제외.
+ * 현재 보고 있는 세션(target)이라도 대답/승인 필요(amber)나 에러(red)는 행동이 필요하므로 펄스 유지.
+ * 완료 미확인(green)은 이미 보고 있으므로 제외.
  */
 export function needsAttention(b: Button, isTarget: boolean): boolean {
-  if (b.empty || isTarget) return false;
+  if (b.empty) return false;
+  if (isTarget && b.color === "green") return false;
   return b.color === "amber" || b.color === "green" || b.color === "red";
 }
 
@@ -112,6 +116,12 @@ const EMPTY: Button = { empty: true };
 export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   const page = opts.page ?? 0;
   const perPage = opts.perPage ?? 8;
+
+  const getHookEvent = (pane: string): string | undefined => {
+    if (!input.hookEventsByPane) return undefined;
+    if (input.hookEventsByPane instanceof Map) return input.hookEventsByPane.get(pane);
+    return (input.hookEventsByPane as Record<string, string>)[pane];
+  };
 
   // paneKey → state 맵 + 폴백 에이전트 타입 + worktreeId → {repo, branch} 메타
   const stateByPane = new Map<string, AgentState>();
@@ -140,12 +150,23 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       const hasWt = stateByPane.has(pane);
       const idFromWt = agentByPane.get(pane);
       const agent = t.agentIdentity || idFromWt || "";
+      const wtState = hasWt ? stateByPane.get(pane) : "waiting";
+      const hookEvent = getHookEvent(pane);
+
+      let state = wtState;
+      // agy/antigravity: PreToolUse 단계는 도구 실행 승인/응답 대기 중이므로 waiting(amber)으로 표시
+      const isAgy =
+        agent === "agy" || agent === "antigravity" || idFromWt === "agy" || idFromWt === "antigravity";
+      if (isAgy && hookEvent === "PreToolUse") {
+        state = "waiting";
+      }
+
       return {
         t,
         pane,
         hasWt,
         agent,
-        state: hasWt ? stateByPane.get(pane) : "waiting",
+        state,
         agentType: idFromWt || agent,
       };
     })

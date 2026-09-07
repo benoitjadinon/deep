@@ -478,20 +478,41 @@ function anyAttention(): boolean {
   return false;
 }
 
+// orca agent-hooks의 최신 훅 상태(last-status.json)를 읽어 paneKey별 훅 이벤트명을 반환
+function getHookEvents(): Map<string, string> {
+  const map = new Map<string, string>();
+  try {
+    const filePath = join(homedir(), "Library/Application Support/orca/agent-hooks/last-status.json");
+    if (existsSync(filePath)) {
+      const content = readFileSync(filePath, "utf-8");
+      const data = JSON.parse(content);
+      if (data && typeof data.entries === "object") {
+        for (const [paneKey, entry] of Object.entries(data.entries as Record<string, any>)) {
+          if (entry && typeof entry.hookEventName === "string") {
+            map.set(paneKey, entry.hookEventName);
+          }
+        }
+      }
+    }
+  } catch {}
+  return map;
+}
+
 async function poll(): Promise<void> {
   try {
     const [tl, wp] = await Promise.all([
       orcaJson(["terminal", "list", "--include-visual-layouts"]),
       orcaJson(["worktree", "ps"]),
     ]);
+    const hookEvents = getHookEvents();
     deck = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [] },
+      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
       { page: currentPage, perPage: 8 },
     );
     if (currentPage >= deck.pageCount) currentPage = deck.pageCount - 1;
     // 전체 세션(사이드바 전부) 목록 유지 — 대상 다이얼이 8키 넘어서도 순회
     const full = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [] },
+      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
       { page: 0, perPage: 9999 },
     );
     allHandles = [];

@@ -101,8 +101,12 @@ describe("keySvg 주의 애니메이션(펄스 링)", () => {
   it("정적(작업중) 키는 nowMs 무관하게 동일(캐시 안정)", () => {
     expect(keySvg(calm, 0, false, 0)).toBe(keySvg(calm, 0, false, 999));
   });
-  it("현재 보는 세션(target)은 애니메이션 안 함(정적)", () => {
-    expect(keySvg(attn, 0, true, 0)).toBe(keySvg(attn, 0, true, 500));
+  it("현재 보는 세션(target)의 완료(green)는 이미 보고 있어 애니메이션 안 함(정적)", () => {
+    const done = { empty: false as const, handle: "t", label: "x", state: "done", color: "green" as const, repo: "svd", branch: "main" };
+    expect(keySvg(done, 0, true, 0)).toBe(keySvg(done, 0, true, 500));
+  });
+  it("현재 보는 세션(target)이라도 입력대기(amber)는 승인/입력 필요로 애니메이션 유지", () => {
+    expect(keySvg(attn, 0, true, 0)).not.toBe(keySvg(attn, 0, true, 320));
   });
   it("주의 키는 배경이 상태색으로 펄스(글로우 오버레이 — 상태띠 포함 최소 2개 fill)", () => {
     // amber 주의 키: 배경 글로우 + 상태띠 = #f59e0b fill 2개 이상

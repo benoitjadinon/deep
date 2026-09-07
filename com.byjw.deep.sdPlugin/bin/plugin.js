@@ -17276,6 +17276,7 @@ var import_node_util = require("node:util");
 var STATE_COLOR = {
   working: "blue",
   waiting: "amber",
+  blocked: "amber",
   done: "green",
   error: "red"
 };
@@ -17293,13 +17294,19 @@ function colorFor(state) {
   return "white";
 }
 function needsAttention(b, isTarget) {
-  if (b.empty || isTarget) return false;
+  if (b.empty) return false;
+  if (isTarget && b.color === "green") return false;
   return b.color === "amber" || b.color === "green" || b.color === "red";
 }
 var EMPTY = { empty: true };
 function buildDeck(input, opts = {}) {
   const page = opts.page ?? 0;
   const perPage = opts.perPage ?? 8;
+  const getHookEvent = (pane) => {
+    if (!input.hookEventsByPane) return void 0;
+    if (input.hookEventsByPane instanceof Map) return input.hookEventsByPane.get(pane);
+    return input.hookEventsByPane[pane];
+  };
   const stateByPane = /* @__PURE__ */ new Map();
   const agentByPane = /* @__PURE__ */ new Map();
   const metaByWt = /* @__PURE__ */ new Map();
@@ -17318,12 +17325,19 @@ function buildDeck(input, opts = {}) {
     const hasWt = stateByPane.has(pane);
     const idFromWt = agentByPane.get(pane);
     const agent = t.agentIdentity || idFromWt || "";
+    const wtState = hasWt ? stateByPane.get(pane) : "waiting";
+    const hookEvent = getHookEvent(pane);
+    let state = wtState;
+    const isAgy = agent === "agy" || agent === "antigravity" || idFromWt === "agy" || idFromWt === "antigravity";
+    if (isAgy && hookEvent === "PreToolUse") {
+      state = "waiting";
+    }
     return {
       t,
       pane,
       hasWt,
       agent,
-      state: hasWt ? stateByPane.get(pane) : "waiting",
+      state,
       agentType: idFromWt || agent
     };
   }).filter((x) => x.hasWt || Boolean(x.agent)).sort((a, b) => a.t.handle.localeCompare(b.t.handle));
@@ -18440,19 +18454,39 @@ function anyAttention() {
   }
   return false;
 }
+function getHookEvents() {
+  const map2 = /* @__PURE__ */ new Map();
+  try {
+    const filePath = (0, import_node_path7.join)((0, import_node_os2.homedir)(), "Library/Application Support/orca/agent-hooks/last-status.json");
+    if ((0, import_node_fs5.existsSync)(filePath)) {
+      const content = (0, import_node_fs5.readFileSync)(filePath, "utf-8");
+      const data = JSON.parse(content);
+      if (data && typeof data.entries === "object") {
+        for (const [paneKey, entry] of Object.entries(data.entries)) {
+          if (entry && typeof entry.hookEventName === "string") {
+            map2.set(paneKey, entry.hookEventName);
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  return map2;
+}
 async function poll() {
   try {
     const [tl, wp] = await Promise.all([
       orcaJson(["terminal", "list", "--include-visual-layouts"]),
       orcaJson(["worktree", "ps"])
     ]);
+    const hookEvents = getHookEvents();
     deck = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [] },
+      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
       { page: currentPage, perPage: 8 }
     );
     if (currentPage >= deck.pageCount) currentPage = deck.pageCount - 1;
     const full = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [] },
+      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
       { page: 0, perPage: 9999 }
     );
     allHandles = [];

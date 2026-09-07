@@ -3,7 +3,7 @@ import { buildDeck, colorFor, projectOf, needsAttention, findActivePaneInLayout,
 
 describe("needsAttention — 주의 필요 세션 판정(애니메이션 트리거)", () => {
   const b = (color: any, unread?: boolean) => ({ empty: false as const, handle: "t", label: "x", state: "s" as any, color, unread });
-  it("입력대기(amber)·완료미확인(green)·에러(red)는 주의 필요", () => {
+  it("입력대기(amber)·완료미확인(green)·에러(red)는 다른 세션일 때 주의 필요", () => {
     expect(needsAttention(b("amber"), false)).toBe(true);
     expect(needsAttention(b("green", true), false)).toBe(true);
     expect(needsAttention(b("red"), false)).toBe(true);
@@ -13,9 +13,13 @@ describe("needsAttention — 주의 필요 세션 판정(애니메이션 트리�
     expect(needsAttention(b("white"), false)).toBe(false);
     expect(needsAttention({ empty: true }, false)).toBe(false);
   });
-  it("현재 보는 세션(target)은 이미 보고 있어 애니메이션 안 함", () => {
-    expect(needsAttention(b("amber"), true)).toBe(false);
+  it("현재 보는 세션(target)이라도 입력대기(amber)나 에러(red)는 행동이 필요하므로 주의 필요", () => {
+    expect(needsAttention(b("amber"), true)).toBe(true);
+    expect(needsAttention(b("red"), true)).toBe(true);
+  });
+  it("현재 보는 세션(target)의 완료(green)는 이미 보고 있으므로 주의 불필요", () => {
     expect(needsAttention(b("green", true), true)).toBe(false);
+    expect(needsAttention(b("blue"), true)).toBe(false);
   });
 });
 
@@ -47,8 +51,9 @@ describe("colorFor — 상태→색 매핑", () => {
     expect(colorFor("waiting")).toBe("amber");
     expect(colorFor("done")).toBe("green");
   });
-  it("error는 방어적으로 빨강", () => {
+  it("error는 방어적으로 빨강, blocked는 주황(amber)", () => {
     expect(colorFor("error")).toBe("red");
+    expect(colorFor("blocked")).toBe("amber");
   });
   it("모르는/빈 상태는 기본 흰색", () => {
     expect(colorFor("weird")).toBe("white");
@@ -129,6 +134,24 @@ describe("buildDeck — 열려 있는 에이전트(agentIdentity)가 worktree ps
     const wts = [{ worktreeId: "wt1", repo: "x", agents: [{ paneKey: "t1:l1", state: "done", agentType: "claude" }] }];
     const a = buildDeck({ terminals: ts, worktrees: wts }).slots[0] as any;
     expect(a).toMatchObject({ state: "done", agentType: "claude" });
+  });
+
+  it("agy/antigravity가 working 상태라도 PreToolUse 훅 이벤트가 있으면 waiting(amber)으로 전환", () => {
+    const ts = [{ handle: "term_agy", tabId: "t1", leafId: "l1", title: "Agy", worktreePath: "/x", worktreeId: "wt1", agentIdentity: "agy" }];
+    const wts = [{ worktreeId: "wt1", repo: "x", agents: [{ paneKey: "t1:l1", state: "working", agentType: "antigravity" }] }];
+    const hookEvents = new Map([["t1:l1", "PreToolUse"]]);
+    const a = buildDeck({ terminals: ts, worktrees: wts, hookEventsByPane: hookEvents }).slots[0] as any;
+    expect(a.state).toBe("waiting");
+    expect(a.color).toBe("amber");
+  });
+
+  it("agy/antigravity 훅 이벤트가 PostToolUse면 원래의 working(blue) 유지", () => {
+    const ts = [{ handle: "term_agy", tabId: "t1", leafId: "l1", title: "Agy", worktreePath: "/x", worktreeId: "wt1", agentIdentity: "agy" }];
+    const wts = [{ worktreeId: "wt1", repo: "x", agents: [{ paneKey: "t1:l1", state: "working", agentType: "antigravity" }] }];
+    const hookEvents = new Map([["t1:l1", "PostToolUse"]]);
+    const a = buildDeck({ terminals: ts, worktrees: wts, hookEventsByPane: hookEvents }).slots[0] as any;
+    expect(a.state).toBe("working");
+    expect(a.color).toBe("blue");
   });
 });
 
