@@ -71,6 +71,24 @@
       }
     },
     {
+      "Name": "모드 (Mode)",
+      "UUID": "com.byjw.deep.mode",
+      "Icon": "imgs/actions/model/icon",
+      "Tooltip": "돌려서 모드/에이전트 고르고 눌러 적용 (빌드·플랜 등)",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/slot/key"
+        }
+      ],
+      "Encoder": {
+        "Icon": "imgs/actions/slot/icon",
+        "layout": "layouts/dial.json"
+      }
+    },
+    {
       "Name": "Talk (말하기)",
       "UUID": "com.byjw.deep.talk",
       "Icon": "imgs/actions/talk/icon",

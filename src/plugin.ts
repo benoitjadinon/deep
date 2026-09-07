@@ -14,9 +14,14 @@ import {
   supported,
   stepsFor,
   discoverModelCmd,
+  discoverAgentCmd,
+  discoverVariantCmd,
   parseModels,
+  parsePrimaryAgents,
+  parseModelVariants,
   providerShort,
   parseOpenCodeState,
+  parseTuiAgent,
   sortModels,
   UNSUPPORTED_PROFILE,
   type AgentProfile,
@@ -41,6 +46,8 @@ const STT_STATUS = "/tmp/agentdeck-stt.status"; // 실패 원인 코드
 // opencode가 마지막에 기록한 현재 선택 모델/변형(ef) — TUI에서 바꾸면 이 파일에 반영됨.
 // 최신 순(recent[0]) = 가장 최근 선택 모델. variant[모델ID] = 그 모델의 현재 effort.
 const OPENCODE_STATE = join(homedir(), ".local", "state", "opencode", "model.json");
+// opencode 현재 에이전트/모드 — TUI TOML(agent = "build" 등). 세션에서 바꾸면 갱신된다.
+const OPENCODE_TUI = join(homedir(), ".local", "state", "opencode", "tui");
 // 실패 코드 → 다이얼에 띄울 한글 안내
 const TALK_HINT: Record<string, string> = {
   MIC_DENIED: "마이크 권한 켜기",
@@ -89,18 +96,23 @@ let tick = 0;
 let targetHandle: string | undefined; // 다이얼이 작용할 세션(키 탭 or 4번 다이얼로 선택)
 let pendingEffort = ""; // 2번 다이얼로 '고른' effort(누르기 전엔 미적용) — 에이전트 프로파일에서 채움
 let pendingModel = ""; // 1번 다이얼로 '고른' 모델(누르기 전엔 미적용)
+let pendingMode = ""; // 모드 다이얼로 '고른' 모드(빌드/플랜 등, 누르기 전엔 미적용)
 const modelByHandle = new Map<string, string>(); // 세션별 마지막 '적용'된 모델
 const effortByHandle = new Map<string, string>(); // 세션별 마지막 '적용'된 effort
-// 세션별 '현재 선택' 모델/effort — 디스크(opencode model.json)에서 정기 리드한 값(TUI 변경 추적용)
+const modeByHandle = new Map<string, string>(); // 세션별 마지막 '적용'된 모드
+// 세션별 '현재 선택' 모델/effort/모드 — 디스크(opencode model.json/tui)에서 정기 리드한 값(TUI 변경 추적용)
 const currentModelByHandle = new Map<string, string>();
 const currentEffortByHandle = new Map<string, string>();
+const currentModeByHandle = new Map<string, string>();
 // 다이얼을 방금 돌려 '고른' 시각 — 이 구간엔 자동 동기화가 사용자 선택을 덮어쓰지 않도록 유예
-const pickAt = { model: 0, effort: 0 };
+const pickAt = { model: 0, effort: 0, mode: 0 };
 const PICK_GRACE = 2500;
 // 에이전트 타입별 게이팅/발견 상태: agentType → 프로파일 · 발견된 라이브 목록
 const agentByHandle = new Map<string, string>(); // 세션 → agentType (orca worktree ps)
 const profileByHandle = new Map<string, AgentProfile>(); // 세션 → 게이트에 쓸 프로파일
 const modelsByHandle = new Map<string, string[]>(); // 세션 → 발견된 모델 목록(opencode 등)
+const modesByHandle = new Map<string, string[]>(); // 세션 → 발견된 모드/에이전트 목록(opencode hidden 제외)
+const effortsByHandle = new Map<string, string[]>(); // 세션 → 발견된 effort(변형) 목록(모델별)
 let allHandles: string[] = []; // 모든 세션(최근순) 핸들 — 8키 페이지와 무관, 사이드바 전체
 const sessionByHandle = new Map<string, any>(); // 핸들 → 버튼(라벨 조회용)
 
@@ -202,6 +214,7 @@ function setTarget(h?: string): void {
   profileForHandle();
   pickAt.model = 0; // 대상이 바뀌면 이전 유예 무효 → 새 세션의 실제 상태부터 채움
   pickAt.effort = 0;
+  pickAt.mode = 0;
   applyPending();
 }
 // 게이트용: 대상 세션의 프로파일(모르는 에이전트 = 미지원)
@@ -211,35 +224,52 @@ function profileForHandle(): AgentProfile {
   noteHandle(t);
   return profileByHandle.get(t) ?? UNSUPPORTED_PROFILE;
 }
-// 대상 세션이 다이얼에 쓸 모델/effort 목록: 발견분 우선, 없으면 프로파일 정적 목록
+// 대상 세션이 다이얼에 쓸 모델/effort/모드 목록: 발견분 우선, 없으면 프로파일 정적 목록
 function dialList(kind: ControlKind): string[] {
   const t = ensureTarget();
   if (!t) return [];
-  const live = kind === "model" ? modelsByHandle.get(t) : undefined;
-  if (live && live.length) return live;
+  if (kind === "model") {
+    const live = modelsByHandle.get(t);
+    if (live && live.length) return live;
+  }
+  if (kind === "effort") {
+    const live = effortsByHandle.get(t);
+    if (live && live.length) return live;
+  }
+  if (kind === "mode") {
+    const live = modesByHandle.get(t);
+    if (live && live.length) return live;
+  }
   const p = profileByHandle.get(t);
-  return p ? (kind === "model" ? p.models : p.efforts) : [];
+  if (!p) return [];
+  if (kind === "model") return p.models;
+  if (kind === "effort") return p.efforts;
+  return p.modes;
 }
 function applyPending(): void {
   adoptPending("model");
   adoptPending("effort");
+  adoptPending("mode");
 }
-// 다이얼에 표시할 모델/effort를 '현재 읽은 값' 우선으로 채운다.
+// 다이얼에 표시할 모델/effort/모드를 '현재 읽은 값' 우선으로 채운다.
 // 사용자가 방금(2.5s 내) 다이얼을 돌렸으면 그 선택을 존중해 건너뛴다.
 function adoptPending(role: ControlKind): void {
   const t = targetHandle;
   if (!t) return;
   if (Date.now() - pickAt[role] < PICK_GRACE) return;
+  const first = dialList(role)[0] || "";
   if (role === "model") {
     const current = currentModelByHandle.get(t);
     const applied = modelByHandle.get(t);
-    const first = dialList("model")[0] || "";
     pendingModel = current || applied || first;
-  } else {
+  } else if (role === "effort") {
     const current = currentEffortByHandle.get(t);
     const applied = effortByHandle.get(t);
-    const first = dialList("effort")[0] || "";
     pendingEffort = current || applied || first;
+  } else {
+    const current = currentModeByHandle.get(t);
+    const applied = modeByHandle.get(t);
+    pendingMode = current || applied || first;
   }
 }
 // 다이얼에 보여줄 값 — 미지원/빈 목록이면 안내 글자
@@ -252,6 +282,10 @@ function dialValue(role: string): string {
   if (role === "effort") {
     if (!supported(p, "effort")) return "-";
     return pendingEffort || "…";
+  }
+  if (role === "mode") {
+    if (!supported(p, "mode")) return "-";
+    return pendingMode || "…";
   }
   if (role === "target") return targetLabel();
   return talkState;
@@ -272,18 +306,29 @@ async function refreshDiscovery(): Promise<void> {
   const t = ensureTarget();
   if (!t) return;
   const agentType = agentByHandle.get(t);
-  const cmd = discoverModelCmd(agentType);
-  if (!cmd) return; // 발견 불가한 에이전트(정적 목록 사용)
   if (discoverBusy || Date.now() - lastDiscoverAt < 30000) return;
   discoverBusy = true;
   try {
     lastDiscoverAt = Date.now();
-    const { stdout } = await execFileP(cmd[0], cmd.slice(1), EXEC);
-    const list = parseModels(stdout);
-    if (list.length) {
-      // 발견 첫 로드에도 즐겨찾기/최근 순 정렬 적용
-      const st = readOpenCodeState();
-      modelsByHandle.set(t, sortModels(list, st.recent ?? [], st.favorites ?? []));
+    const modelCmd = discoverModelCmd(agentType);
+    if (modelCmd) {
+      const { stdout } = await execFileP(modelCmd[0], modelCmd.slice(1), EXEC);
+      const list = parseModels(stdout);
+      if (list.length) {
+        // 발견 첫 로드에도 즐겨찾기/최근 순 정렬 적용
+        const st = readOpenCodeState();
+        modelsByHandle.set(t, sortModels(list, st.recent ?? [], st.favorites ?? []));
+      }
+    }
+    const agentCmd = discoverAgentCmd(agentType);
+    if (agentCmd) {
+      try {
+        const { stdout } = await execFileP(agentCmd[0], agentCmd.slice(1), EXEC);
+        const modes = parsePrimaryAgents(stdout);
+        if (modes.length) modesByHandle.set(t, modes);
+      } catch (e) {
+        streamDeck.logger.error(`discover agents: ${e}`);
+      }
     }
   } catch (e) {
     streamDeck.logger.error(`discover models: ${e}`);
@@ -317,7 +362,7 @@ function refreshCurrentModel(): void {
   currentModelByHandle.set(t, id);
   // 그 모델의 현재 effort(variant)를 추적해 effort 다이얼에 반영
   const v = state.variant && state.variant[id];
-  if (v && v !== "default") currentEffortByHandle.set(t, v);
+  if (v) currentEffortByHandle.set(t, v); // "default"도 유효한 선택값
   // 모델 목록을 즐겨찾기/최근 우선으로 재정렬(발견 목록이 이미 있을 때)
   const list = modelsByHandle.get(t);
   if (list && list.length) {
@@ -327,9 +372,72 @@ function refreshCurrentModel(): void {
       modelsByHandle.set(t, sorted);
     }
   }
-  if (changed) renderAll();
+  if (changed) {
+    // 모델이 바뀌면 effort(변형) 목록도 모델별로 달라진다 → 다음 폴에서 즉시 재발견하도록 스로틀 해제
+    lastEffortDiscoverAt = 0;
+    renderAll();
+  }
   adoptPending("model");
   adoptPending("effort");
+}
+
+// 대상 세션의 현재 모델에 대한 effort(변형) 목록을 주기적(스로틀)으로 로드.
+// opencode: `opencode models <provider> --verbose`에서 그 모델의 variants 키를 뽑는다(모델별로 다름).
+// 상태파일을 못 읽거나 발견이 실패하면 정적 폴백 목록을 쓴다.
+let lastEffortDiscoverAt = 0;
+let effortDiscoverBusy = false;
+async function refreshEfforts(): Promise<void> {
+  const t = ensureTarget();
+  if (!t) return;
+  const agentType = agentByHandle.get(t);
+  const cmd = discoverVariantCmd(agentType);
+  if (!cmd) return; // 발견 불가한 에이전트(정적 목록 사용)
+  const state = readOpenCodeState();
+  if (!state.model) return;
+  const id = `${state.model.providerID}/${state.model.modelID}`;
+  if (effortDiscoverBusy || Date.now() - lastEffortDiscoverAt < 30000) return;
+  effortDiscoverBusy = true;
+  try {
+    lastEffortDiscoverAt = Date.now();
+    // 모델 ID에서 provider 접두어 추출: "provider/model" → "provider"
+    const provider = id.split("/")[0];
+    const { stdout } = await execFileP(cmd[0], [...cmd.slice(1), provider], EXEC);
+    const efforts = parseModelVariants(stdout, id);
+    if (efforts.length) {
+      effortsByHandle.set(t, efforts);
+      adoptPending("effort"); // 발견 첫 로드 시 현재값과 목록 정합
+    }
+  } catch (e) {
+    streamDeck.logger.error(`discover efforts: ${e}`);
+  } finally {
+    effortDiscoverBusy = false;
+  }
+}
+
+// opencode TUI 상태(TOML)에서 현재 에이전트/모드를 읽어 모드 다이얼의 '현재 값'으로 추적.
+// TUI에서 모드를 바꾸면(탭/에이전트 리스트) tui 파일이 갱신된다 → 다이얼도 자동으로 맞춤.
+function readTuiAgent(): string | undefined {
+  try {
+    return parseTuiAgent(readFileSync(OPENCODE_TUI, "utf8"));
+  } catch (e) {
+    if (!(e instanceof Error && "code" in e && (e as any).code === "ENOENT")) {
+      streamDeck.logger.error(`read tui agent: ${e}`);
+    }
+    return undefined;
+  }
+}
+function refreshCurrentMode(): void {
+  const t = ensureTarget();
+  const agentType = t && agentByHandle.get(t);
+  if (!agentType || !discoverModelCmd(agentType)) return; // opencode 전용(정적 모드 목록 사용)
+  const agent = readTuiAgent();
+  if (agent) {
+    if (currentModeByHandle.get(t) !== agent) {
+      currentModeByHandle.set(t, agent);
+    }
+  }
+  // 매 폴 adopt — 사용자가 방금(2.5s) 다이얼 돌렸으면 유예로 선택 보존, 아니면 현재 모드로 동기화.
+  adoptPending("mode");
 }
 
 type Coords = { column: number; row: number };
@@ -358,6 +466,7 @@ function dialFeedback(role: string): { full: string } {
   const v = dialValue(role);
   if (role === "model") return { full: dialImage("model", "MODEL", v, tick) };
   if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick) };
+  if (role === "mode") return { full: dialImage("mode", "MODE", v, tick) };
   if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
   return { full: dialImage("target", "TARGET", v, tick) };
 }
@@ -434,6 +543,8 @@ async function poll(): Promise<void> {
     }
     refreshDiscovery(); // 지원 에이전트의 모델 목록 주기 로드(스로틀)
     refreshCurrentModel(); // 지금 선택된 모델/effort를 TUI에서 추적해 다이얼에 반영(매 폴)
+    refreshCurrentMode(); // 지금 선택된 모드(에이전트)를 TUI에서 추적해 다이얼에 반영(매 폴)
+    refreshEfforts(); // 현재 모델의 effort(변형) 목록을 주기 로드(스로틀)
     renderAll();
     try {
       writeFileSync(
@@ -489,7 +600,7 @@ class DialBase extends SingletonAction {
     const dir = (ev.payload?.ticks ?? 0) > 0 ? 1 : (ev.payload?.ticks ?? 0) < 0 ? -1 : 0;
     if (!dir) return;
     const t = ensureTarget();
-    if (this.role === "model" || this.role === "effort") {
+    if (this.role === "model" || this.role === "effort" || this.role === "mode") {
       // 게이트: 미지원 에이전트/빈 목록이면 회전 no-op + 빨간 불
       const p = profileForHandle();
       if (!t || !supported(p, this.role as ControlKind)) {
@@ -501,14 +612,15 @@ class DialBase extends SingletonAction {
         ev.action.showAlert?.(); // 아직 로드 전(발견 대기)
         return;
       }
-      const cur = (this.role === "model" ? pendingModel : pendingEffort);
+      const cur = this.role === "model" ? pendingModel : this.role === "effort" ? pendingEffort : pendingMode;
       const idx = cur ? list.indexOf(cur) : -1;
       const start = idx < 0 ? (dir > 0 ? -1 : 0) : idx;
       const next = list[(start + dir + list.length) % list.length];
       if (this.role === "model") pendingModel = next;
-      else pendingEffort = next;
+      else if (this.role === "effort") pendingEffort = next;
+      else pendingMode = next;
       pickAt[this.role as ControlKind] = Date.now(); // 자동 동기화가 이 선택을 덮지 않게 유예 시작
-      // 모델/effort 회전은 키를 안 건드림 — 다이얼만 즉시 갱신 (렌더 비용/랙 없이 즉시 반영)
+      // 모델/effort/모드 회전은 키를 안 건드림 — 다이얼만 즉시 갱신 (렌더 비용/랙 없이 즉시 반영)
       renderDials();
     } else if (this.role === "target") {
       // 모든 세션 순회. 데크 코랄 점은 즉시 이동(setTarget+renderAll), 실제 Orca 전환은 디바운스(밀림 방지).
@@ -528,20 +640,21 @@ class DialBase extends SingletonAction {
   }
   override async onDialDown(ev: any): Promise<void> {
     const t = ensureTarget();
-    if (this.role === "model" || this.role === "effort") {
+    if (this.role === "model" || this.role === "effort" || this.role === "mode") {
       const p = profileForHandle();
       const kind = this.role as ControlKind;
       if (!t || !supported(p, kind)) {
         streamDeck.logger.info(`apply ${kind}: unsupported agent (${agentByHandle.get(t ?? "") ?? "?"}) — gated`);
         ev.action.showAlert?.();
       } else {
-        const value = this.role === "model" ? pendingModel : pendingEffort;
+        const value = this.role === "model" ? pendingModel : this.role === "effort" ? pendingEffort : pendingMode;
         if (!value) {
           ev.action.showAlert?.();
           return;
         }
         if (this.role === "model") modelByHandle.set(t, value);
-        else effortByHandle.set(t, value);
+        else if (this.role === "effort") effortByHandle.set(t, value);
+        else modeByHandle.set(t, value);
         try {
           await applyAgentSteps(t, stepsFor(p, kind, value));
         } catch (e) {
@@ -571,6 +684,10 @@ class ModelDial extends DialBase {
 class EffortDial extends DialBase {
   role = "effort";
 }
+@action({ UUID: "com.byjw.deep.mode" })
+class ModeDial extends DialBase {
+  role = "mode";
+}
 @action({ UUID: "com.byjw.deep.talk" })
 class TalkDial extends DialBase {
   role = "talk";
@@ -583,6 +700,7 @@ class TargetDial extends DialBase {
 streamDeck.actions.registerAction(new SlotAction());
 streamDeck.actions.registerAction(new ModelDial());
 streamDeck.actions.registerAction(new EffortDial());
+streamDeck.actions.registerAction(new ModeDial());
 streamDeck.actions.registerAction(new TalkDial());
 streamDeck.actions.registerAction(new TargetDial());
 streamDeck.connect();

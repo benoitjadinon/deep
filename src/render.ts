@@ -117,6 +117,7 @@ export function keyImage(b: Button, tick = 0, isTarget = false, nowMs = 0, dim =
 const DIAL_ACCENT: Record<string, string> = {
   model: "#3b82f6", // 파랑
   effort: "#a855f7", // 보라
+  mode: "#f43f5e", // 로즈
   talk: "#14b8a6", // 청록
   target: "#f59e0b", // 앰버
 };

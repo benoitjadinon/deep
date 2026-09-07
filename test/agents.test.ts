@@ -7,6 +7,11 @@ import {
   parseModels,
   providerShort,
   parseOpenCodeState,
+  parseTuiAgent,
+  parsePrimaryAgents,
+  parseModelVariants,
+  discoverAgentCmd,
+  discoverVariantCmd,
   sortModels,
   UNSUPPORTED_PROFILE,
 } from "../src/agents.js";
@@ -26,20 +31,23 @@ describe("profileFor — 에이전트 타입 → 프로파일", () => {
 });
 
 describe("supported — 게이팅", () => {
-  it("claude: 모델·effort 둘 다 지원", () => {
+  it("claude: 모델·effort 둘 다 지원, 모드는 미지원(안전 명령 없음)", () => {
     const p = profileFor("claude");
     expect(supported(p, "model")).toBe(true);
     expect(supported(p, "effort")).toBe(true);
+    expect(supported(p, "mode")).toBe(false);
   });
-  it("opencode: 모델·effort 지원(픽커)", () => {
+  it("opencode: 모델·effort·모드 지원(픽커)", () => {
     const p = profileFor("opencode");
     expect(supported(p, "model")).toBe(true);
     expect(supported(p, "effort")).toBe(true);
+    expect(supported(p, "mode")).toBe(true);
   });
-  it("미지원 프로파일은 둘 다 차단", () => {
+  it("미지원 프로파일은 전부 차단", () => {
     const p = profileFor("codex");
     expect(supported(p, "model")).toBe(false);
     expect(supported(p, "effort")).toBe(false);
+    expect(supported(p, "mode")).toBe(false);
   });
 });
 
@@ -66,8 +74,16 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
       { text: "high", enter: true },
     ]);
   });
+  it("opencode mode: 리더(ctrl+x)→a→모드명→Enter", () => {
+    expect(stepsFor(profileFor("opencode"), "mode", "plan")).toEqual([
+      { text: "\x18", enter: false, delayMs: 300 },
+      { text: "a", enter: false, delayMs: 450 },
+      { text: "plan", enter: true },
+    ]);
+  });
   it("미지원 프로파일은 빈 시퀀스", () => {
     expect(stepsFor(profileFor("codex"), "model", "x")).toEqual([]);
+    expect(stepsFor(profileFor("codex"), "mode", "plan")).toEqual([]);
   });
 });
 
@@ -111,6 +127,45 @@ describe("discoverModelCmd / parseModels — 라이브 모델 발견", () => {
     expect(s.recent?.[0]).toBe("openrouter/a/");
     expect(s.recent?.[1]).toBe("opencode/b");
     expect(s.favorites).toEqual(["openrouter/x"]);
+  });
+  it("parseTuiAgent: TOML에서 agent=… 뽑는다", () => {
+    const toml = `theme = "opencode"
+provider = "opencode"
+model = "grok-code"
+agent = "plan"
+`;
+    expect(parseTuiAgent(toml)).toBe("plan");
+  });
+  it("parseTuiAgent: agent 없거나 비어 있으면 undefined", () => {
+    expect(parseTuiAgent("")).toBeUndefined();
+    expect(parseTuiAgent("theme = \"x\"\nmodel = \"y\"")).toBeUndefined();
+  });
+  it("parsePrimaryAgents: 숨김 내부(compaction/summary/title) 제외한 프라이머리만", () => {
+    const out = parsePrimaryAgents(
+      "build (primary)\n  [\n  ...permissions...\ncompaction (primary)\n  [\nplan (primary)\n  [\nexplore (subagent)\n  [\nsummary (primary)\n  [\ntitle (primary)\n  [\n"
+    );
+    expect(out).toEqual(["build", "plan"]);
+  });
+  it("parsePrimaryAgents: ANSI/공백/빈 줄 방어, subagent 제외", () => {
+    expect(parsePrimaryAgents("\x1b[32mbuild (primary)\x1b[0m\n\ncustom (primary)\nexplore (subagent)\n")).toEqual(["build", "custom"]);
+  });
+  it("discoverAgentCmd: opencode는 CLI 보유, claude/미지원은 없음", () => {
+    expect(discoverAgentCmd("opencode")).toEqual(["opencode", "agent", "list"]);
+    expect(discoverAgentCmd("claude")).toBeUndefined();
+    expect(discoverAgentCmd(undefined)).toBeUndefined();
+  });
+  it("discoverVariantCmd: opencode는 verbose 모델 CLI 보유", () => {
+    expect(discoverVariantCmd("opencode")).toEqual(["opencode", "models", "--verbose"]);
+    expect(discoverVariantCmd("claude")).toBeUndefined();
+  });
+  it("parseModelVariants: 해당 모델의 variants 키 + 앞에 default", () => {
+    const stdout = `deepseek/deepseek-v4-flash-0731\n{\n  "id": "deepseek/deepseek-v4-flash-0731",\n  "variants": { "low": {"reasoning":{"effort":"low"}}, "high": {"reasoning":{"effort":"high"}}, "max": {"reasoning":{"effort":"max"}} }\n}\nsome-other\n{\n  "id": "x/y",\n  "variants": {}\n}\n`;
+    expect(parseModelVariants(stdout, "deepseek/deepseek-v4-flash-0731")).toEqual(["default", "low", "high", "max"]);
+  });
+  it("parseModelVariants: variants 없거나 모델 없으면 빈 배열", () => {
+    expect(parseModelVariants("", "a/b")).toEqual([]);
+    expect(parseModelVariants('{"id":"x","variants":{}}', "x")).toEqual([]);
+    expect(parseModelVariants('{"id":"x","variants":{"low":{}}}', "nope")).toEqual([]);
   });
   it("sortModels: 즐겨찾기 우선 → 최근 순 → 나머지, 중복·발견 외 제거", () => {
     const discovered = ["openrouter/a", "openrouter/b", "openrouter/c", "openrouter/d"];
