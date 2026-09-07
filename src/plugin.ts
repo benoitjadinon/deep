@@ -331,8 +331,14 @@ async function refreshDiscovery(): Promise<void> {
     const agentCmd = agent.getDiscoverAgentCmd();
     if (agentCmd) {
       try {
-        const { stdout } = await execFileP(agentCmd[0], agentCmd.slice(1), EXEC);
-        const modes = agent.parseDiscoveredModes(stdout);
+        let output = "";
+        try {
+          const res = await execFileP(agentCmd[0], agentCmd.slice(1), EXEC);
+          output = (res.stdout || "") + "\n" + (res.stderr || "");
+        } catch (err: any) {
+          output = (err?.stdout || "") + "\n" + (err?.stderr || "");
+        }
+        const modes = agent.parseDiscoveredModes(output);
         if (modes.length) modesByHandle.set(t, modes);
       } catch (e) {
         streamDeck.logger.error(`discover agents: ${e}`);
@@ -679,6 +685,13 @@ class DialBase extends SingletonAction {
           ev.action.showAlert?.();
           return;
         }
+        const prevValue =
+          this.role === "model"
+            ? (currentModelByHandle.get(t) || modelByHandle.get(t))
+            : this.role === "effort"
+            ? (currentEffortByHandle.get(t) || effortByHandle.get(t))
+            : (currentModeByHandle.get(t) || modeByHandle.get(t));
+
         if (this.role === "model") {
           modelByHandle.set(t, value);
           currentModelByHandle.set(t, value);
@@ -693,11 +706,13 @@ class DialBase extends SingletonAction {
           refreshEfforts().catch(() => {});
         } else if (this.role === "effort") {
           effortByHandle.set(t, value);
+          currentEffortByHandle.set(t, value);
         } else {
           modeByHandle.set(t, value);
+          currentModeByHandle.set(t, value);
         }
         try {
-          await applyAgentSteps(t, agent.getApplySteps(kind, value));
+          await applyAgentSteps(t, agent.getApplySteps(kind, value, prevValue));
           refreshCurrentState();
         } catch (e) {
           streamDeck.logger.error(`apply ${kind}: ${e}`);

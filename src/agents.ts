@@ -50,7 +50,7 @@ export abstract class AbstractAgent {
   }
 
   /** 변경 적용을 위한 터미널 전송 시퀀스 생성 */
-  abstract getApplySteps(kind: ControlKind, value: string): ApplyStep[];
+  abstract getApplySteps(kind: ControlKind, value: string, fromValue?: string): ApplyStep[];
 
   /** 모델 목록을 가져올 호스트 CLI (인자 배열) */
   getDiscoverModelCmd(): string[] | undefined {
@@ -315,6 +315,67 @@ export function extractEffortFromModel(modelName?: string): string | undefined {
   return undefined;
 }
 
+export const AGY_MODES = ["default", "plan", "accept-edits"] as const;
+
+export function normalizeAgyMode(mode?: string): string {
+  if (!mode) return "default";
+  const m = mode.trim().toLowerCase();
+  if (m === "nothing" || m === "none" || m === "normal" || m === "default" || m === "") return "default";
+  if (m === "plan") return "plan";
+  if (m === "accept-edits" || m === "acceptedits" || m === "accept_edits" || m === "yolo") return "accept-edits";
+  return m;
+}
+
+export function parseAgyHelpModes(text: string): string[] {
+  const match = /--mode\s+.*?\((\s*[\w\-_,\s]+\s*)\)/i.exec(text || "");
+  if (!match) return [];
+  const rawList = match[1]
+    .split(/[,|\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!rawList.length) return [];
+  const set = new Set<string>(["default"]);
+  const out: string[] = ["default"];
+  const preferredOrder = ["plan", "accept-edits"];
+  for (const p of preferredOrder) {
+    if (rawList.some((r) => normalizeAgyMode(r) === p)) {
+      set.add(p);
+      out.push(p);
+    }
+  }
+  for (const item of rawList) {
+    const normalized = normalizeAgyMode(item);
+    if (normalized && !set.has(normalized)) {
+      set.add(normalized);
+      out.push(normalized);
+    }
+  }
+  return out;
+}
+
+export function getAgyShiftTabSteps(toMode: string, fromMode?: string, modeList?: string[]): ApplyStep[] {
+  const list = modeList && modeList.length ? modeList : (AGY_MODES as unknown as string[]);
+  const target = normalizeAgyMode(toMode);
+  const current = normalizeAgyMode(fromMode);
+  const targetIdx = list.indexOf(target);
+  const currentIdx = list.indexOf(current);
+  if (targetIdx < 0) {
+    return [{ text: "\x1b[Z", enter: false }];
+  }
+  const fromIdx = currentIdx < 0 ? 0 : currentIdx;
+  const count = (targetIdx - fromIdx + list.length) % list.length;
+  if (count === 0) return [];
+  const steps: ApplyStep[] = [];
+  for (let i = 0; i < count; i++) {
+    steps.push({
+      text: "\x1b[Z",
+      enter: false,
+      ...(i > 0 ? { delayMs: 120 } : {}),
+    });
+  }
+  return steps;
+}
+
 export function parseAgySettings(text: string): { model?: string; mode?: string } {
   try {
     const data = JSON.parse(text);
@@ -322,8 +383,9 @@ export function parseAgySettings(text: string): { model?: string; mode?: string 
     if (typeof data?.model === "string" && data.model) {
       out.model = data.model;
     }
-    if (typeof data?.agent === "string" && data.agent) {
-      out.mode = data.agent;
+    const rawMode = typeof data?.mode === "string" ? data.mode : typeof data?.agent === "string" ? data.agent : undefined;
+    if (rawMode) {
+      out.mode = normalizeAgyMode(rawMode);
     }
     return out;
   } catch {}
@@ -366,7 +428,7 @@ export function readAgyState(): AgentStateSnapshot {
     if (existsSync(AGY_SETTINGS)) {
       const cfg = parseAgySettings(readFileSync(AGY_SETTINGS, "utf8"));
       const effort = extractEffortFromModel(cfg.model);
-      return { model: cfg.model, effort, mode: cfg.mode ?? "default" };
+      return { model: cfg.model, effort, mode: cfg.mode ? normalizeAgyMode(cfg.mode) : "default" };
     }
   } catch {}
   return { mode: "default" };
@@ -397,10 +459,10 @@ export class AgyAgent extends AbstractAgent {
   }
 
   override getModes(): string[] {
-    return ["default"];
+    return [...AGY_MODES];
   }
 
-  getApplySteps(kind: ControlKind, value: string): ApplyStep[] {
+  getApplySteps(kind: ControlKind, value: string, fromValue?: string): ApplyStep[] {
     if (kind === "model") {
       return slash("/model", value);
     }
@@ -408,7 +470,7 @@ export class AgyAgent extends AbstractAgent {
       return slash("/effort", value);
     }
     if (kind === "mode") {
-      return picker("/agents", value);
+      return getAgyShiftTabSteps(value, fromValue);
     }
     return [];
   }
@@ -418,7 +480,7 @@ export class AgyAgent extends AbstractAgent {
   }
 
   override getDiscoverAgentCmd(): string[] | undefined {
-    return ["agy", "agents"];
+    return ["agy", "--help"];
   }
 
   override parseDiscoveredModels(stdout: string): string[] {
@@ -426,7 +488,7 @@ export class AgyAgent extends AbstractAgent {
   }
 
   override parseDiscoveredModes(stdout: string): string[] {
-    return parseAgyAgents(stdout);
+    return parseAgyHelpModes(stdout);
   }
 
   override readCurrentState(): AgentStateSnapshot {
@@ -477,9 +539,9 @@ export interface AgentProfile {
   models: string[];
   efforts: string[];
   modes: string[];
-  model: { supported: boolean; steps: (value: string) => ApplyStep[] };
-  effort: { supported: boolean; steps: (value: string) => ApplyStep[] };
-  mode: { supported: boolean; steps: (value: string) => ApplyStep[] };
+  model: { supported: boolean; steps: (value: string, fromValue?: string) => ApplyStep[] };
+  effort: { supported: boolean; steps: (value: string, fromValue?: string) => ApplyStep[] };
+  mode: { supported: boolean; steps: (value: string, fromValue?: string) => ApplyStep[] };
 }
 
 export function profileFor(agentType: string | undefined | null): AgentProfile {
@@ -492,15 +554,15 @@ export function profileFor(agentType: string | undefined | null): AgentProfile {
     modes: agent.getModes(),
     model: {
       supported: agent.supports("model"),
-      steps: (v) => agent.getApplySteps("model", v),
+      steps: (v, from) => agent.getApplySteps("model", v, from),
     },
     effort: {
       supported: agent.supports("effort"),
-      steps: (v) => agent.getApplySteps("effort", v),
+      steps: (v, from) => agent.getApplySteps("effort", v, from),
     },
     mode: {
       supported: agent.supports("mode"),
-      steps: (v) => agent.getApplySteps("mode", v),
+      steps: (v, from) => agent.getApplySteps("mode", v, from),
     },
   };
 }
@@ -523,11 +585,11 @@ export function supported(agent: AbstractAgent | AgentProfile, kind: ControlKind
   return (agent as AgentProfile)[kind].supported;
 }
 
-export function stepsFor(agent: AbstractAgent | AgentProfile, kind: ControlKind, value: string): ApplyStep[] {
+export function stepsFor(agent: AbstractAgent | AgentProfile, kind: ControlKind, value: string, fromValue?: string): ApplyStep[] {
   if ("getApplySteps" in agent && typeof agent.getApplySteps === "function") {
-    return agent.getApplySteps(kind, value);
+    return agent.getApplySteps(kind, value, fromValue);
   }
-  return (agent as AgentProfile)[kind].steps(value);
+  return (agent as AgentProfile)[kind].steps(value, fromValue);
 }
 
 export const DISCOVER_MODEL_CMD: Record<string, string[]> = {
@@ -537,6 +599,8 @@ export const DISCOVER_MODEL_CMD: Record<string, string[]> = {
 };
 export const DISCOVER_AGENT_CMD: Record<string, string[]> = {
   opencode: ["opencode", "agent", "list"],
+  agy: ["agy", "--help"],
+  antigravity: ["agy", "--help"],
 };
 export const DISCOVER_VARIANT_CMD: Record<string, string[]> = {
   opencode: ["opencode", "models", "--verbose"],

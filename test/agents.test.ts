@@ -19,7 +19,11 @@ import {
   parseAgyModels,
   parseAgyAgents,
   parseAgySettings,
+  parseAgyHelpModes,
   extractEffortFromModel,
+  AGY_MODES,
+  normalizeAgyMode,
+  getAgyShiftTabSteps,
   ClaudeAgent,
   CodexAgent,
   OpenCodeAgent,
@@ -125,7 +129,7 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
       { text: "plan", enter: true },
     ]);
   });
-  it("agy: 슬래시 명령(/model <m>, /effort <e>, /agents 픽커)", () => {
+  it("agy: 슬래시 명령(/model <m>, /effort <e>) 및 Shift-Tab 모드 전환(default -> plan -> accept-edits)", () => {
     const a = agentFor("agy");
     expect(stepsFor(a, "model", "gemini-3.8-flash-medium")).toEqual([
       { text: "/model gemini-3.8-flash-medium", enter: true, delayMs: 120 },
@@ -133,10 +137,21 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
     expect(stepsFor(a, "effort", "high")).toEqual([
       { text: "/effort high", enter: true, delayMs: 120 },
     ]);
-    expect(stepsFor(a, "mode", "flutter_a11y_agent")).toEqual([
-      { text: "/agents", enter: true, delayMs: 450 },
-      { text: "flutter_a11y_agent", enter: true },
+    // default -> plan: 1x Shift-Tab
+    expect(stepsFor(a, "mode", "plan", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
     ]);
+    // default -> accept-edits: 2x Shift-Tab
+    expect(stepsFor(a, "mode", "accept-edits", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
+      { text: "\x1b[Z", enter: false, delayMs: 120 },
+    ]);
+    // accept-edits -> default: 1x Shift-Tab
+    expect(stepsFor(a, "mode", "default", "accept-edits")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // 동일 모드: 변경 없음
+    expect(stepsFor(a, "mode", "plan", "plan")).toEqual([]);
   });
   it("미지원 에이전트는 빈 시퀀스", () => {
     expect(stepsFor(agentFor("grok"), "model", "x")).toEqual([]);
@@ -210,7 +225,7 @@ agent = "plan"
   });
   it("discoverAgentCmd: opencode와 agy는 CLI 보유, claude/미지원은 없음", () => {
     expect(discoverAgentCmd("opencode")).toEqual(["opencode", "agent", "list"]);
-    expect(discoverAgentCmd("agy")).toEqual(["agy", "agents"]);
+    expect(discoverAgentCmd("agy")).toEqual(["agy", "--help"]);
     expect(discoverAgentCmd("claude")).toBeUndefined();
     expect(discoverAgentCmd(undefined)).toBeUndefined();
   });
@@ -274,23 +289,56 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
       "claude-sonnet-4-6",
     ]);
   });
-  it("parseAgySettings: settings.json에서 model 추출", () => {
+  it("parseAgySettings: settings.json에서 model 및 mode/agent 추출 및 정규화", () => {
     expect(parseAgySettings(JSON.stringify({ model: "Gemini 3.8 Flash (Medium)" }))).toEqual({
       model: "Gemini 3.8 Flash (Medium)",
     });
-    expect(parseAgySettings(JSON.stringify({ model: "Gemini 3.8 Flash (Medium)", agent: "flutter_a11y_agent" }))).toEqual({
+    expect(parseAgySettings(JSON.stringify({ model: "Gemini 3.8 Flash (Medium)", mode: "plan" }))).toEqual({
       model: "Gemini 3.8 Flash (Medium)",
-      mode: "flutter_a11y_agent",
+      mode: "plan",
+    });
+    expect(parseAgySettings(JSON.stringify({ model: "Gemini 3.8 Flash (Medium)", mode: "accept-edits" }))).toEqual({
+      model: "Gemini 3.8 Flash (Medium)",
+      mode: "accept-edits",
+    });
+    expect(parseAgySettings(JSON.stringify({ model: "Gemini 3.8 Flash (Medium)", mode: "nothing" }))).toEqual({
+      model: "Gemini 3.8 Flash (Medium)",
+      mode: "default",
+    });
+    expect(parseAgySettings(JSON.stringify({ model: "Gemini 3.8 Flash (Medium)", agent: "plan" }))).toEqual({
+      model: "Gemini 3.8 Flash (Medium)",
+      mode: "plan",
     });
     expect(parseAgySettings("{}")).toEqual({});
     expect(parseAgySettings("invalid")).toEqual({});
   });
-  it("parseAgyAgents: 'Available agents:' 헤더 무시하고 default + 에이전트 목록 반환", () => {
-    const stdout = `Available agents:
-flutter_a11y_agent
+
+  it("normalizeAgyMode: 모드 문자열을 default / plan / accept-edits로 정규화", () => {
+    expect(normalizeAgyMode("")).toBe("default");
+    expect(normalizeAgyMode(undefined)).toBe("default");
+    expect(normalizeAgyMode("nothing")).toBe("default");
+    expect(normalizeAgyMode("none")).toBe("default");
+    expect(normalizeAgyMode("normal")).toBe("default");
+    expect(normalizeAgyMode("default")).toBe("default");
+    expect(normalizeAgyMode("plan")).toBe("plan");
+    expect(normalizeAgyMode("accept-edits")).toBe("accept-edits");
+    expect(normalizeAgyMode("acceptedits")).toBe("accept-edits");
+  });
+
+  it("AgyAgent.getModes: default, plan, accept-edits 반환", () => {
+    expect(agentFor("agy").getModes()).toEqual(["default", "plan", "accept-edits"]);
+    expect(AGY_MODES).toEqual(["default", "plan", "accept-edits"]);
+  });
+
+  it("parseAgyHelpModes: agy --help 출력에서 모드 파싱", () => {
+    const helpText = `Usage of agy:
+  --add-dir                       Add a directory to the workspace (repeatable) (default [])
+  --mode                          Set the agent execution mode for this session (accept-edits, plan)
+  --model                         Model for the current CLI session
 `;
-    expect(parseAgyAgents(stdout)).toEqual(["default", "flutter_a11y_agent"]);
-    expect(parseAgyAgents("")).toEqual(["default"]);
+    expect(parseAgyHelpModes(helpText)).toEqual(["default", "plan", "accept-edits"]);
+    expect(parseAgyHelpModes("")).toEqual([]);
+    expect(parseAgyHelpModes("no mode flag here")).toEqual([]);
   });
 
   it("extractEffortFromModel: 모델명 또는 슬러그에서 내포된 effort 추출", () => {

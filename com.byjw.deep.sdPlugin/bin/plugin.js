@@ -17857,6 +17857,60 @@ function extractEffortFromModel(modelName) {
   if (hyphenMatch) return hyphenMatch[1];
   return void 0;
 }
+var AGY_MODES = ["default", "plan", "accept-edits"];
+function normalizeAgyMode(mode) {
+  if (!mode) return "default";
+  const m = mode.trim().toLowerCase();
+  if (m === "nothing" || m === "none" || m === "normal" || m === "default" || m === "") return "default";
+  if (m === "plan") return "plan";
+  if (m === "accept-edits" || m === "acceptedits" || m === "accept_edits" || m === "yolo") return "accept-edits";
+  return m;
+}
+function parseAgyHelpModes(text) {
+  const match = /--mode\s+.*?\((\s*[\w\-_,\s]+\s*)\)/i.exec(text || "");
+  if (!match) return [];
+  const rawList = match[1].split(/[,|\s]+/).map((s) => s.trim()).filter(Boolean);
+  if (!rawList.length) return [];
+  const set2 = /* @__PURE__ */ new Set(["default"]);
+  const out = ["default"];
+  const preferredOrder = ["plan", "accept-edits"];
+  for (const p of preferredOrder) {
+    if (rawList.some((r) => normalizeAgyMode(r) === p)) {
+      set2.add(p);
+      out.push(p);
+    }
+  }
+  for (const item of rawList) {
+    const normalized = normalizeAgyMode(item);
+    if (normalized && !set2.has(normalized)) {
+      set2.add(normalized);
+      out.push(normalized);
+    }
+  }
+  return out;
+}
+function getAgyShiftTabSteps(toMode, fromMode, modeList) {
+  const list = modeList && modeList.length ? modeList : AGY_MODES;
+  const target = normalizeAgyMode(toMode);
+  const current = normalizeAgyMode(fromMode);
+  const targetIdx = list.indexOf(target);
+  const currentIdx = list.indexOf(current);
+  if (targetIdx < 0) {
+    return [{ text: "\x1B[Z", enter: false }];
+  }
+  const fromIdx = currentIdx < 0 ? 0 : currentIdx;
+  const count = (targetIdx - fromIdx + list.length) % list.length;
+  if (count === 0) return [];
+  const steps = [];
+  for (let i = 0; i < count; i++) {
+    steps.push({
+      text: "\x1B[Z",
+      enter: false,
+      ...i > 0 ? { delayMs: 120 } : {}
+    });
+  }
+  return steps;
+}
 function parseAgySettings(text) {
   try {
     const data = JSON.parse(text);
@@ -17864,8 +17918,9 @@ function parseAgySettings(text) {
     if (typeof data?.model === "string" && data.model) {
       out.model = data.model;
     }
-    if (typeof data?.agent === "string" && data.agent) {
-      out.mode = data.agent;
+    const rawMode = typeof data?.mode === "string" ? data.mode : typeof data?.agent === "string" ? data.agent : void 0;
+    if (rawMode) {
+      out.mode = normalizeAgyMode(rawMode);
     }
     return out;
   } catch {
@@ -17887,26 +17942,12 @@ function parseAgyModels(stdout) {
   }
   return out;
 }
-function parseAgyAgents(stdout) {
-  const seen = /* @__PURE__ */ new Set(["default"]);
-  const out = ["default"];
-  for (const raw of (stdout || "").split("\n")) {
-    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
-    if (!line || line.toLowerCase().startsWith("available agents:") || line.startsWith("Fetching")) continue;
-    const name = line.split(/\s+/)[0]?.trim();
-    if (name && !seen.has(name)) {
-      seen.add(name);
-      out.push(name);
-    }
-  }
-  return out;
-}
 function readAgyState() {
   try {
     if ((0, import_node_fs4.existsSync)(AGY_SETTINGS)) {
       const cfg = parseAgySettings((0, import_node_fs4.readFileSync)(AGY_SETTINGS, "utf8"));
       const effort = extractEffortFromModel(cfg.model);
-      return { model: cfg.model, effort, mode: cfg.mode ?? "default" };
+      return { model: cfg.model, effort, mode: cfg.mode ? normalizeAgyMode(cfg.mode) : "default" };
     }
   } catch {
   }
@@ -17935,9 +17976,9 @@ var AgyAgent = class extends AbstractAgent {
     return ["low", "medium", "high"];
   }
   getModes() {
-    return ["default"];
+    return [...AGY_MODES];
   }
-  getApplySteps(kind, value) {
+  getApplySteps(kind, value, fromValue) {
     if (kind === "model") {
       return slash("/model", value);
     }
@@ -17945,7 +17986,7 @@ var AgyAgent = class extends AbstractAgent {
       return slash("/effort", value);
     }
     if (kind === "mode") {
-      return picker("/agents", value);
+      return getAgyShiftTabSteps(value, fromValue);
     }
     return [];
   }
@@ -17953,13 +17994,13 @@ var AgyAgent = class extends AbstractAgent {
     return ["agy", "models"];
   }
   getDiscoverAgentCmd() {
-    return ["agy", "agents"];
+    return ["agy", "--help"];
   }
   parseDiscoveredModels(stdout) {
     return parseAgyModels(stdout);
   }
   parseDiscoveredModes(stdout) {
-    return parseAgyAgents(stdout);
+    return parseAgyHelpModes(stdout);
   }
   readCurrentState() {
     return readAgyState();
@@ -18005,15 +18046,15 @@ function profileFor(agentType) {
     modes: agent.getModes(),
     model: {
       supported: agent.supports("model"),
-      steps: (v) => agent.getApplySteps("model", v)
+      steps: (v, from) => agent.getApplySteps("model", v, from)
     },
     effort: {
       supported: agent.supports("effort"),
-      steps: (v) => agent.getApplySteps("effort", v)
+      steps: (v, from) => agent.getApplySteps("effort", v, from)
     },
     mode: {
       supported: agent.supports("mode"),
-      steps: (v) => agent.getApplySteps("mode", v)
+      steps: (v, from) => agent.getApplySteps("mode", v, from)
     }
   };
 }
@@ -18397,8 +18438,14 @@ async function refreshDiscovery() {
     const agentCmd = agent.getDiscoverAgentCmd();
     if (agentCmd) {
       try {
-        const { stdout } = await execFileP(agentCmd[0], agentCmd.slice(1), EXEC);
-        const modes = agent.parseDiscoveredModes(stdout);
+        let output = "";
+        try {
+          const res = await execFileP(agentCmd[0], agentCmd.slice(1), EXEC);
+          output = (res.stdout || "") + "\n" + (res.stderr || "");
+        } catch (err) {
+          output = (err?.stdout || "") + "\n" + (err?.stderr || "");
+        }
+        const modes = agent.parseDiscoveredModes(output);
         if (modes.length) modesByHandle.set(t, modes);
       } catch (e) {
         plugin_default.logger.error(`discover agents: ${e}`);
@@ -18727,6 +18774,7 @@ var DialBase = class extends SingletonAction {
           ev.action.showAlert?.();
           return;
         }
+        const prevValue = this.role === "model" ? currentModelByHandle.get(t) || modelByHandle.get(t) : this.role === "effort" ? currentEffortByHandle.get(t) || effortByHandle.get(t) : currentModeByHandle.get(t) || modeByHandle.get(t);
         if (this.role === "model") {
           modelByHandle.set(t, value);
           currentModelByHandle.set(t, value);
@@ -18742,11 +18790,13 @@ var DialBase = class extends SingletonAction {
           });
         } else if (this.role === "effort") {
           effortByHandle.set(t, value);
+          currentEffortByHandle.set(t, value);
         } else {
           modeByHandle.set(t, value);
+          currentModeByHandle.set(t, value);
         }
         try {
-          await applyAgentSteps(t, agent.getApplySteps(kind, value));
+          await applyAgentSteps(t, agent.getApplySteps(kind, value, prevValue));
           refreshCurrentState();
         } catch (e) {
           plugin_default.logger.error(`apply ${kind}: ${e}`);
