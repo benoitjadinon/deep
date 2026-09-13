@@ -89,11 +89,60 @@ export function agentBadge(agentType?: string | null): string {
   return `<rect x="104" y="118" width="32" height="18" rx="9" fill="#4b5563"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
 }
 
+// 에이전트 세션 상태 아이콘 (Orca UI의 상태 뱃지 대응)
+// done = 녹색 체크마크, unverifiable = 주황색 점선 원("No recent update"), working = 파란 스피너 링, waiting = 앰버 물음표, error = 빨간 느낌표
+export function stateIcon(state?: string): string {
+  const s = (state || "").toLowerCase();
+  const x = 12;
+  const y = 22;
+  if (s === "done") {
+    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#22c55e" stroke-width="2"/><path d="M4.8 8.2 L7.2 10.4 L11.2 5.8" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`;
+  }
+  if (s === "unverifiable") {
+    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="2.8 2.2" stroke-linecap="round"/></g>`;
+  }
+  if (s === "working") {
+    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#3b82f6" stroke-width="2" stroke-dasharray="8 4" stroke-linecap="round"/></g>`;
+  }
+  if (s === "waiting") {
+    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#f59e0b" stroke-width="2"/><text x="8" y="11" text-anchor="middle" fill="#f59e0b" font-family="sans-serif" font-size="9" font-weight="800">?</text></g>`;
+  }
+  if (s === "error" || s === "blocked" || s === "failed") {
+    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#ef4444" stroke-width="2"/><text x="8" y="11" text-anchor="middle" fill="#ef4444" font-family="sans-serif" font-size="9" font-weight="800">!</text></g>`;
+  }
+  return "";
+}
+
 // 대략적 글자 폭(단위). ASCII는 좁게, 한글/CJK는 넓게 잡아 자동 크기 계산에 사용.
 function units(s: string): number {
   let u = 0;
   for (const ch of s) u += /[\x00-\x7F]/.test(ch) ? 0.56 : 1;
   return u || 1;
+}
+
+/**
+ * 프로젝트 배경 워터마크 아이콘 (144x144 타일 전체 채움/크롭, 투명도 0.25)
+ * - GitHub 아바타 / 로컬 icon.png (Data URI, preserveAspectRatio="xMidYMid slice")
+ * - Lucide 벡터 아이콘 (Rocket, Folder 등, viewBox 24x24 -> scale(6))
+ * - 이모지 (대형 텍스트)
+ */
+export function renderBgIcon(b: Button): string {
+  if (b.empty) return "";
+
+  if (b.bgIconUri) {
+    return `<image href="${esc(b.bgIconUri)}" xlink:href="${esc(b.bgIconUri)}" x="0" y="0" width="144" height="144" opacity="0.25" preserveAspectRatio="xMidYMid slice" clip-path="url(#r)"/>`;
+  }
+
+  if (b.bgIconLucide) {
+    const stroke = b.badgeColor && b.badgeColor !== "#737373" ? b.badgeColor : "#ffffff";
+    return `<g transform="scale(6)" opacity="0.25" stroke="${stroke}" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round" clip-path="url(#r)">${b.bgIconLucide}</g>`;
+  }
+
+  if (b.bgIconEmoji) {
+    return `<text x="72" y="108" text-anchor="middle" font-size="108" opacity="0.25" clip-path="url(#r)">${esc(b.bgIconEmoji)}</text>`;
+  }
+
+  return "";
 }
 
 export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = false): string {
@@ -136,12 +185,14 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
   const cornerTag = isTarget
     ? `<circle cx="124" cy="32" r="10" fill="#d97757"/>`
     : "";
+  const stIcon = stateIcon(b.state);
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="144" height="144">
   <defs><clipPath id="r"><rect width="144" height="144" rx="18"/></clipPath></defs>
   ${g0}<rect width="144" height="144" rx="18" fill="#1c1c1e"/>
+  ${renderBgIcon(b)}
   ${glow}
   <rect width="144" height="13" fill="${color}" clip-path="url(#r)"/>
-  ${projSvg}${subSvg}${agentBadge(b.agentType)}${g1}${cornerTag}
+  ${stIcon}${projSvg}${subSvg}${agentBadge(b.agentType)}${g1}${cornerTag}
 </svg>`;
 }
 

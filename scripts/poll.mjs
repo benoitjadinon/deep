@@ -17,15 +17,20 @@ const clip = (s, n) => {
 const page = Number(process.argv[2] ?? 0);
 const terminals = orca(["terminal", "list", "--json"]).result?.terminals ?? [];
 const worktrees = orca(["worktree", "ps", "--json"]).result?.worktrees ?? [];
-const deck = buildDeck({ terminals, worktrees }, { page, perPage: 8 });
+const repos = orca(["repo", "list", "--json"]).result?.repos ?? [];
+const deck = buildDeck({ terminals, worktrees, repos }, { page, perPage: 8 });
 
-const cell = (b) => (b.empty ? `⚪ ${"·".padEnd(14)}` : `${DOT[b.color]} ${clip(b.label, 14)}`);
+const cell = (b) => {
+  if (b.empty) return `⚪ ${"·".padEnd(14)}`;
+  const dot = b.state === "unverifiable" ? "🟠" : (DOT[b.color] ?? "⚪");
+  return `${dot} ${clip(b.label, 14)}`;
+};
 console.log(`\n  AgentDeck — page ${deck.page + 1}/${deck.pageCount} · 세션 ${deck.total}개\n`);
 for (let r = 0; r < 2; r++) {
   const row = deck.slots.slice(r * 4, r * 4 + 4).map(cell);
   console.log("  " + row.map((c) => `[ ${c} ]`).join(" "));
 }
-console.log("\n  🔵working 🟡waiting 🟢done 🔴error ⚪empty\n");
+console.log("\n  🔵working 🟡waiting 🟠no recent update 🟢done 🔴error ⚪idle/empty\n");
 // 탭 매핑 참고용: 각 버튼이 어떤 handle로 switch/send 될지
 deck.slots.forEach((b, i) => {
   if (!b.empty) console.log(`  S${i + 1} → orca terminal switch --terminal ${b.handle}`);

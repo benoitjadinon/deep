@@ -91,15 +91,33 @@ describe("중복 프로젝트 순번(dupIndex)", () => {
   });
 });
 
-describe("unread — 완료 후 확인 여부로 색 전환", () => {
-  const mk = (state: string, unread: boolean) => {
+describe("unread & staleness — 완료 및 비활성 감쇠 상태", () => {
+  const mk = (state: string, unread: boolean, updatedAt?: number, now?: number) => {
     const terms = [{ handle: "term_A", tabId: "t1", leafId: "l1", title: "x", worktreePath: "/x", worktreeId: "wt1" }];
-    const wts = [{ worktreeId: "wt1", repo: "x", displayName: "main", unread, agents: [{ paneKey: "t1:l1", state }] }];
-    return buildDeck({ terminals: terms, worktrees: wts }).slots[0] as any;
+    const wts = [{ worktreeId: "wt1", repo: "x", displayName: "main", unread, agents: [{ paneKey: "t1:l1", state, updatedAt }] }];
+    return buildDeck({ terminals: terms, worktrees: wts }, { now }).slots[0] as any;
   };
-  it("done + 안읽음 → 초록", () => expect(mk("done", true).color).toBe("green"));
-  it("done + 읽음 → 흰색(idle)", () => expect(mk("done", false).color).toBe("white"));
-  it("working은 읽어도 파랑 유지(unread는 done에만)", () => expect(mk("working", false).color).toBe("blue"));
+  it("done은 읽음 여부와 무관하게 초록(green) 유지", () => {
+    expect(mk("done", true).color).toBe("green");
+    expect(mk("done", false).color).toBe("green");
+  });
+  it("done + 안읽음은 주의 필요(needsAttention: true), 읽음은 주의 불필요(false)", () => {
+    const unreadSlot = mk("done", true);
+    const readSlot = mk("done", false);
+    expect(needsAttention(unreadSlot, false)).toBe(true);
+    expect(needsAttention(readSlot, false)).toBe(false);
+  });
+  it("working 상태에서 30분 초과 시 unverifiable(주황/amber)로 감쇠", () => {
+    const now = 10000000;
+    const fresh = mk("working", false, now - 10 * 60 * 1000, now);
+    expect(fresh.state).toBe("working");
+    expect(fresh.color).toBe("blue");
+
+    const stale = mk("working", false, now - 35 * 60 * 1000, now);
+    expect(stale.state).toBe("unverifiable");
+    expect(stale.color).toBe("amber");
+    expect(needsAttention(stale, false)).toBe(false); // unverifiable은 조용히(펄스 없음)
+  });
 });
 
 describe("buildDeck — 열려 있는 에이전트(agentIdentity)가 worktree ps보다 먼저 감지되면", () => {

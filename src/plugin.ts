@@ -3,12 +3,13 @@
 // 다이얼은 위치(열)로 역할 결정: 0=모델 1=Effort 2=Talk 3=대상선택.
 import streamDeck, { action, SingletonAction } from "@elgato/streamdeck";
 import { execFile } from "node:child_process";
-import { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, unlinkSync, watch } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
-import { buildDeck, needsAttention, resolveActiveTerminal, nextWorktreeName, type Deck } from "./deck";
+import { buildDeck, needsAttention, resolveActiveTerminal, nextWorktreeName, type Deck, type OrcaRepo } from "./deck";
 import { keyImage, dialImage } from "./render";
+import { prefetchRepoIcons } from "./icons";
 import {
   agentFor,
   profileFor,
@@ -684,27 +685,47 @@ function getHookEvents(): Map<string, { hookEventName?: string; agentType?: stri
   return map;
 }
 
-async function poll(): Promise<void> {
+let cachedRepos: OrcaRepo[] = [];
+let lastRepoFetchAt = 0;
+async function refreshRepos(): Promise<void> {
+  if (Date.now() - lastRepoFetchAt < 15000 && cachedRepos.length > 0) return;
   try {
+    const rl = await orcaJson(["repo", "list"]);
+    if (rl?.result?.repos) {
+      cachedRepos = rl.result.repos;
+      lastRepoFetchAt = Date.now();
+      prefetchRepoIcons(cachedRepos);
+    }
+  } catch (e) {
+    streamDeck.logger.error(`fetch repos: ${e}`);
+  }
+}
+
+let pollBusy = false;
+async function poll(): Promise<void> {
+  if (pollBusy) return;
+  pollBusy = true;
+  try {
+    refreshRepos().catch(() => {});
     const [tl, wp] = await Promise.all([
       orcaJson(["terminal", "list", "--include-visual-layouts"]),
       orcaJson(["worktree", "ps"]),
     ]);
     const hookEvents = getHookEvents();
     deck = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
+      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, hookEventsByPane: hookEvents },
       { page: currentPage, perPage: 8 },
     );
     if (currentPage >= deck.pageCount) {
       currentPage = Math.max(0, deck.pageCount - 1);
       deck = buildDeck(
-        { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
+        { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, hookEventsByPane: hookEvents },
         { page: currentPage, perPage: 8 },
       );
     }
     // 전체 세션(사이드바 전부) 목록 유지 — 대상 다이얼이 8키 넘어서도 순회
     const full = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
+      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, hookEventsByPane: hookEvents },
       { page: 0, perPage: 9999 },
     );
     allHandles = [];
@@ -767,6 +788,8 @@ async function poll(): Promise<void> {
     } catch {}
   } catch (e) {
     streamDeck.logger.error(`poll failed: ${e}`);
+  } finally {
+    pollBusy = false;
   }
 }
 
@@ -840,11 +863,21 @@ async function spawnSession(ev: any): Promise<void> {
   }
 }
 
+let fileDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+function pollDebounced(delay = 50): void {
+  if (fileDebounceTimer) clearTimeout(fileDebounceTimer);
+  fileDebounceTimer = setTimeout(() => {
+    fileDebounceTimer = null;
+    poll().catch(() => {});
+  }, delay);
+}
+
 @action({ UUID: "com.byjw.deep.slot" })
 class SlotAction extends SingletonAction {
   override onWillAppear(ev: any): void {
     slotViews.set(ev.action.id, { action: ev.action, coordinates: ev.payload?.coordinates });
     renderAll();
+    pollDebounced(100);
   }
   override onWillDisappear(ev: any): void {
     slotViews.delete(ev.action.id);
@@ -890,6 +923,7 @@ class DialBase extends SingletonAction {
   override onWillAppear(ev: any): void {
     dialViews.set(ev.action.id, { action: ev.action, role: this.role });
     ev.action.setFeedback(dialFeedback(this.role)).catch(() => {});
+    pollDebounced(100);
   }
   override onWillDisappear(ev: any): void {
     dialViews.delete(ev.action.id);
@@ -1026,6 +1060,56 @@ streamDeck.actions.registerAction(new EffortDial());
 streamDeck.actions.registerAction(new ModeDial());
 streamDeck.actions.registerAction(new TalkDial());
 streamDeck.actions.registerAction(new TargetDial());
+// 시스템 및 디바이스 이벤트: 잠자기 해제, 기기 연결 시 즉시 폴링 및 렌더
+streamDeck.system.onSystemDidWakeUp(() => {
+  streamDeck.logger.info("system did wake up: triggering immediate poll");
+  lastHeartbeat = Date.now();
+  poll().catch(() => {});
+});
+
+streamDeck.devices.onDeviceDidConnect((ev) => {
+  streamDeck.logger.info(`device connected: ${ev.device.id}, polling & rendering`);
+  poll().catch(() => {});
+  renderAll();
+});
+
+streamDeck.devices.onDeviceDidChange(() => {
+  poll().catch(() => {});
+  renderAll();
+});
+
+// 잠자기/프로세스 일시중지 감지용 하트비트 워치독
+// Mac이 잠자기에 들어가면 setInterval 타이머가 멈추므로, 깨어났을 때 갭(>2.5초)을 즉시 감지해 poll 실행
+let lastHeartbeat = Date.now();
+setInterval(() => {
+  const now = Date.now();
+  if (now - lastHeartbeat > 2500) {
+    streamDeck.logger.info(`heartbeat gap detected (${now - lastHeartbeat}ms): waking up, running poll`);
+    poll().catch(() => {});
+  }
+  lastHeartbeat = now;
+}, 1000);
+
+// orca 훅 파일 및 opencode 상태 파일 변경 감시 (디스크 상태 변경 시 <50ms 이내 즉각 반영)
+function setupFileWatchers(): void {
+  const dirsToWatch = [
+    join(homedir(), "Library/Application Support/orca/agent-hooks"),
+    join(homedir(), ".local/state/opencode"),
+  ];
+  for (const dir of dirsToWatch) {
+    try {
+      if (existsSync(dir)) {
+        watch(dir, { recursive: false }, () => {
+          pollDebounced(50);
+        });
+      }
+    } catch (e) {
+      streamDeck.logger.warn(`watch ${dir} failed: ${e}`);
+    }
+  }
+}
+setupFileWatchers();
+
 streamDeck.connect();
 
 setInterval(poll, 1500);
@@ -1059,3 +1143,4 @@ function anyMarquee(): boolean {
   }
   return false;
 }
+

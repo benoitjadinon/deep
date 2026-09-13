@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { keySvg, agentBadge, keyImage, wrap, stripSpinner, marqueeWindow, dialImage } from "../src/render.js";
+import { keySvg, agentBadge, stateIcon, keyImage, wrap, stripSpinner, marqueeWindow, dialImage } from "../src/render.js";
 
 describe("stripSpinner / wrap", () => {
   it("앞 스피너 글리프만 제거, 한글 보존", () => {
@@ -96,6 +96,39 @@ describe("agentBadge — 타일마다 에이전트 뱃지(Orca 로고 아이콘 
   });
 });
 
+describe("stateIcon — 세션 상태 아이콘 (Orca UI 매칭)", () => {
+  it("done은 녹색 체크마크 원", () => {
+    const icon = stateIcon("done");
+    expect(icon).toContain('stroke="#22c55e"');
+    expect(icon).toContain("<circle");
+    expect(icon).toContain("<path");
+  });
+  it("unverifiable(no recent update)는 주황색 점선 원", () => {
+    const icon = stateIcon("unverifiable");
+    expect(icon).toContain('stroke="#f59e0b"');
+    expect(icon).toContain("stroke-dasharray");
+  });
+  it("working은 파란색 스피너 링", () => {
+    const icon = stateIcon("working");
+    expect(icon).toContain('stroke="#3b82f6"');
+    expect(icon).toContain("stroke-dasharray");
+  });
+  it("waiting은 앰버 물음표", () => {
+    const icon = stateIcon("waiting");
+    expect(icon).toContain('stroke="#f59e0b"');
+    expect(icon).toContain(">?</text>");
+  });
+  it("error/blocked/failed는 빨간색 느낌표", () => {
+    expect(stateIcon("error")).toContain('stroke="#ef4444"');
+    expect(stateIcon("blocked")).toContain('stroke="#ef4444"');
+    expect(stateIcon("failed")).toContain('stroke="#ef4444"');
+  });
+  it("idle 또는 빈 상태는 아이콘 없음(깔끔)", () => {
+    expect(stateIcon("idle")).toBe("");
+    expect(stateIcon(undefined)).toBe("");
+  });
+});
+
 describe("keySvg 주의 애니메이션(펄스 링)", () => {
   const attn = { empty: false as const, handle: "t", label: "x", state: "waiting", color: "amber" as const, repo: "svd", branch: "main" };
   const calm = { empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main" };
@@ -112,11 +145,11 @@ describe("keySvg 주의 애니메이션(펄스 링)", () => {
   it("현재 보는 세션(target)이라도 입력대기(amber)는 승인/입력 필요로 애니메이션 유지", () => {
     expect(keySvg(attn, 0, true, 0)).not.toBe(keySvg(attn, 0, true, 320));
   });
-  it("주의 키는 배경이 상태색으로 펄스(글로우 오버레이 — 상태띠 포함 최소 2개 fill)", () => {
-    // amber 주의 키: 배경 글로우 + 상태띠 = #f59e0b fill 2개 이상
-    expect((keySvg(attn, 0, false, 200).match(/#f59e0b/g) || []).length).toBeGreaterThanOrEqual(2);
+  it("주의 키는 배경이 상태색으로 펄스(글로우 오버레이 — fill 2개 이상)", () => {
+    // amber 주의 키: 배경 글로우 + 상태띠 + 상태아이콘 = fill="#f59e0b" 2개 이상
+    expect((keySvg(attn, 0, false, 200).match(/fill="#f59e0b"/g) || []).length).toBeGreaterThanOrEqual(2);
     // 비주의(파랑) 키는 상태띠 1개뿐(글로우 없음)
-    expect((keySvg(calm, 0, false, 200).match(/#3b82f6/g) || []).length).toBe(1);
+    expect((keySvg(calm, 0, false, 200).match(/fill="#3b82f6"/g) || []).length).toBe(1);
   });
 });
 

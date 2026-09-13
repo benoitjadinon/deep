@@ -2,8 +2,13 @@
 // Stream Deck Plus 버튼 8칸 모델로 변환하는 순수 함수.
 // 실물 Stream Deck 없이도 이 계층은 전부 테스트 가능하다.
 
-export type AgentState = "working" | "waiting" | "done" | "error" | string | undefined;
+import { resolveRepoBgIcon, type ResolvedBgIcon } from "./icons.ts";
+
+export type AgentState = "working" | "waiting" | "done" | "error" | "unverifiable" | "idle" | string | undefined;
 export type Color = "blue" | "amber" | "green" | "red" | "white";
+
+/** Orca와 동일한 비활성 상태 감쇠 시간 (30분) */
+export const AGENT_STATUS_STALE_AFTER_MS = 30 * 60 * 1000;
 
 /** orca terminal list --json → result.terminals[] 중 우리가 쓰는 필드 */
 export interface OrcaTerminal {
@@ -25,23 +30,53 @@ export interface OrcaWorktree {
   branch?: string;
   displayName?: string;
   unread?: boolean; // 사용자가 최신 출력을 아직 안 봤으면 true (Orca가 열람 시 자동 false)
-  agents?: Array<{ paneKey: string; state?: AgentState; agentType?: string }>;
+  agents?: Array<{
+    paneKey: string;
+    state?: AgentState;
+    agentType?: string;
+    updatedAt?: number;
+    stateStartedAt?: number;
+    evidenceObservedAt?: number;
+  }>;
+}
+
+/** orca repo list --json / project list --json 중 아이콘/색상 관련 필드 */
+export interface OrcaRepoIcon {
+  type?: "image" | "lucide" | "emoji" | string;
+  src?: string;
+  source?: "github" | "file" | string;
+  label?: string;
+  name?: string;
+  emoji?: string;
+  value?: string;
+}
+
+export interface OrcaRepo {
+  id: string;
+  path?: string;
+  displayName?: string;
+  badgeColor?: string;
+  repoIcon?: OrcaRepoIcon | null;
 }
 
 export interface HookInfo {
   hookEventName?: string;
   agentType?: string;
+  state?: string;
+  receivedAt?: number;
 }
 
 export interface DeckInput {
   terminals: OrcaTerminal[];
   worktrees: OrcaWorktree[];
+  repos?: OrcaRepo[];
   hookEventsByPane?: Map<string, string | HookInfo> | Record<string, string | HookInfo>;
 }
 
 export interface DeckOptions {
   page?: number;
   perPage?: number;
+  now?: number;
 }
 
 export type Button =
@@ -60,6 +95,11 @@ export type Button =
       dupIndex?: number; // 같은 repo(branch) 내 순번 (0=첫째, 1↑는 -N 표기)
       unread?: boolean; // 완료됐지만 아직 안 본 상태 표시용
       agentType?: string; // orca가 보고한 에이전트 종류 (claude/codex/opencode/…) — 다이얼 게이팅에 사용
+      badgeColor?: string; // orca 프로젝트 뱃지 색상 (예: #ef4444)
+      repoIcon?: OrcaRepoIcon | null; // orca 프로젝트 원본 아이콘 메타
+      bgIconUri?: string; // 타일 배경에 그릴 이미지 Data URI (GitHub 아바타, 로컬 icon.png)
+      bgIconLucide?: string; // 타일 배경에 그릴 Lucide SVG 내부 태그 (Rocket, Folder 등)
+      bgIconEmoji?: string; // 타일 배경에 그릴 이모지
     };
 
 export interface Deck {
@@ -73,8 +113,10 @@ const STATE_COLOR: Record<string, Color> = {
   working: "blue",
   waiting: "amber",
   blocked: "amber",
+  unverifiable: "amber",
   done: "green",
   error: "red",
+  idle: "white",
 };
 
 /**
@@ -116,13 +158,15 @@ export function nextWorktreeName(repo: string, existingNames: string[]): string 
 
 /**
  * 주의(애니메이션)가 필요한 세션인지 — orca가 "다 됐다/대답 필요"를 알릴 때 키가 확 띄게.
- * 대상 = 입력대기(amber)·완료 미확인(green)·에러(red). 작업중(blue)·idle(white)은 조용히.
+ * 대상 = 입력대기(amber)·완료 미확인(green)·에러(red). 작업중(blue)·idle(white)·stale(unverifiable)은 조용히.
  * 현재 보고 있는 세션(target)이라도 대답/승인 필요(amber)나 에러(red)는 행동이 필요하므로 펄스 유지.
- * 완료 미확인(green)은 이미 보고 있으므로 제외.
+ * 완료 미확인(green)은 이미 보고 있으므로 제외, 이미 읽은 완료 세션(unread===false)도 펄스 불필요.
  */
 export function needsAttention(b: Button, isTarget: boolean): boolean {
   if (b.empty) return false;
   if (isTarget && b.color === "green") return false;
+  if (b.state === "done" && b.unread === false) return false;
+  if (b.state === "unverifiable") return false;
   return b.color === "amber" || b.color === "green" || b.color === "red";
 }
 
@@ -138,6 +182,7 @@ const EMPTY: Button = { empty: true };
 export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   const page = opts.page ?? 0;
   const perPage = opts.perPage ?? 8;
+  const now = opts.now ?? Date.now();
 
   const getHook = (pane: string): HookInfo | undefined => {
     if (!input.hookEventsByPane) return undefined;
@@ -156,7 +201,19 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   const metaByWt = new Map<string, { repo?: string; branch?: string; unread?: boolean }>();
   for (const wt of input.worktrees ?? []) {
     for (const a of wt.agents ?? []) {
-      stateByPane.set(a.paneKey, a.state);
+      let st = a.state;
+      const observedAt = a.evidenceObservedAt ?? a.updatedAt ?? a.stateStartedAt;
+      if (
+        st &&
+        st !== "done" &&
+        st !== "idle" &&
+        (st === "working" || st === "waiting" || st === "blocked") &&
+        observedAt &&
+        now - observedAt > AGENT_STATUS_STALE_AFTER_MS
+      ) {
+        st = "unverifiable";
+      }
+      stateByPane.set(a.paneKey, st);
       // 같은 paneKey의 에이전트가 여럿일 수 있으니 첫 번째만 (폴백), 보통 0~1개
       if (!agentByPane.has(a.paneKey)) agentByPane.set(a.paneKey, a.agentType ?? "");
     }
@@ -170,7 +227,6 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   // (최근순으로 하면 세션이 출력할 때마다 자리가 바뀌어 헷갈림 → 세션 수명 동안 자리 고정)
   // 판정: worktree ps가 그 paneKey의 에이전트를 아직 안 보고했더라도
   // 터미널의 agentIdentity가 있으면 "열려 있는 에이전트"로 취급한다.
-  // 그 경우 state는 아직 몰라도 되니 기본 waiting(amber)으로 — 다이얼 게이팅이 제출 전부터 살아 있다.
   const sessions = (input.terminals ?? [])
     .map((t) => {
       const pane = `${t.tabId}:${t.leafId}`;
@@ -193,17 +249,28 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       if (hasWt) {
         state = stateByPane.get(pane) || "idle";
         // PreToolUse/Notification 단계는 도구 실행 승인/응답 대기 중이므로 waiting(amber)으로 표시
-        if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
-          state = "waiting";
-        } else if (hookEvent === "PostToolUse" || hookEvent === "SessionStart" || hookEvent === "UserPrompt") {
-          state = "working";
-        } else if (hookEvent === "Stop" || hookEvent === "SessionEnd") {
-          state = "done";
+        // 단, 이미 unverifiable(비활성 감쇠)이거나 done인 경우 오래된 훅 이벤트 잔여물로 덮어쓰지 않음
+        if (state !== "unverifiable" && state !== "done") {
+          if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
+            state = "waiting";
+          } else if (hookEvent === "PostToolUse" || hookEvent === "UserPrompt") {
+            state = "working";
+          }
         }
       } else {
         // worktree ps 보고 전이지만 터미널 agentIdentity로 감지된 경우
         if (hook?.state) {
-          state = hook.state;
+          let st = hook.state;
+          if (
+            st !== "done" &&
+            st !== "idle" &&
+            (st === "working" || st === "waiting" || st === "blocked") &&
+            hook.receivedAt &&
+            now - hook.receivedAt > AGENT_STATUS_STALE_AFTER_MS
+          ) {
+            st = "unverifiable";
+          }
+          state = st;
         } else if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
           state = "waiting";
         } else if (hookEvent === "Stop" || hookEvent === "SessionEnd") {
@@ -226,6 +293,16 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
     .sort((a, b) => a.t.handle.localeCompare(b.t.handle));
+
+  // 저장소 메타 색인: repoId, path, displayName 기준
+  const repoById = new Map<string, OrcaRepo>();
+  const repoByPath = new Map<string, OrcaRepo>();
+  const repoByName = new Map<string, OrcaRepo>();
+  for (const r of input.repos ?? []) {
+    if (r.id) repoById.set(r.id, r);
+    if (r.path) repoByPath.set(r.path, r);
+    if (r.displayName) repoByName.set(r.displayName.toLowerCase(), r);
+  }
 
   // 프로젝트명·브랜치·중복순번을 전체(정렬된) 세션 기준으로 부여 → 페이지 넘어도 안정
   const dupCount = new Map<string, number>();
@@ -251,14 +328,20 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       slots.push(EMPTY);
       continue;
     }
-    // done인데 이미 읽었으면(unread===false) idle(흰색)로 — "끝났고 확인함"
-    const reviewed = e.item.state === "done" && e.unread === false;
+    const repoId = e.item.t.worktreeId ? e.item.t.worktreeId.split("::")[0] : undefined;
+    const repo =
+      (repoId ? repoById.get(repoId) : undefined) ||
+      (e.item.t.worktreePath ? repoByPath.get(e.item.t.worktreePath) : undefined) ||
+      (e.project ? repoByName.get(e.project.toLowerCase()) : undefined);
+
+    const iconInfo = repo ? resolveRepoBgIcon(repo) : undefined;
+
     slots.push({
       empty: false,
       handle: e.item.t.handle,
       label: e.item.t.title,
       state: e.item.state,
-      color: reviewed ? "white" : colorFor(e.item.state),
+      color: colorFor(e.item.state),
       worktreePath: e.item.t.worktreePath,
       worktreeId: e.item.t.worktreeId,
       lastOutputAt: e.item.t.lastOutputAt,
@@ -267,41 +350,62 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       dupIndex: e.dupIndex,
       unread: e.unread,
       agentType: e.item.agentType,
+      badgeColor: repo?.badgeColor,
+      repoIcon: repo?.repoIcon,
+      bgIconUri: iconInfo?.uri,
+      bgIconLucide: iconInfo?.lucide,
+      bgIconEmoji: iconInfo?.emoji,
     });
   }
 
   return { slots, page, pageCount, total };
 }
 
-/** visualLayouts의 pane/tab 트리에서 활성 터미널 정보(tabId, leafId, handle)를 재귀 탐색 */
-export function findActivePaneInLayout(node: any): { tabId?: string; leafId?: string; handle?: string } | undefined {
-  if (!node) return undefined;
+/** visualLayouts의 pane/tab 트리에서 모든 활성 탭/터미널 정보(tabId, leafId, handle)를 재귀 탐색 */
+export function findAllActivePanesInLayout(node: any): Array<{ tabId?: string; leafId?: string; handle?: string }> {
+  if (!node) return [];
   if (node.type === "terminal" && node.active) {
-    return { tabId: node.tabId, leafId: node.leafId, handle: node.handle };
+    return [{ tabId: node.tabId, leafId: node.leafId, handle: node.handle }];
   }
   if (node.type === "group" && Array.isArray(node.tabs)) {
     const activeTab = node.tabs.find((t: any) => t.tabId === node.activeTabId) || node.tabs[0];
     if (activeTab) {
       if (activeTab.panes) {
-        const found = findActivePaneInLayout(activeTab.panes);
-        if (found) return { tabId: activeTab.tabId, leafId: activeTab.activeLeafId, ...found };
+        const sub = findAllActivePanesInLayout(activeTab.panes);
+        if (sub.length > 0) {
+          return sub.map((s) => ({ tabId: activeTab.tabId, leafId: activeTab.activeLeafId, ...s }));
+        }
       }
-      return { tabId: activeTab.tabId, leafId: activeTab.activeLeafId };
+      return [{ tabId: activeTab.tabId, leafId: activeTab.activeLeafId }];
     }
+    return [];
+  }
+  const results: Array<{ tabId?: string; leafId?: string; handle?: string }> = [];
+  if (node.first) {
+    results.push(...findAllActivePanesInLayout(node.first));
+  }
+  if (node.second) {
+    results.push(...findAllActivePanesInLayout(node.second));
   }
   if (Array.isArray(node.children)) {
     for (const child of node.children) {
-      const found = findActivePaneInLayout(child);
-      if (found) return found;
+      results.push(...findAllActivePanesInLayout(child));
     }
   }
-  return undefined;
+  return results;
+}
+
+/** visualLayouts의 pane/tab 트리에서 첫 번째 활성 터미널 정보 탐색 (하위 호환) */
+export function findActivePaneInLayout(node: any): { tabId?: string; leafId?: string; handle?: string } | undefined {
+  const all = findAllActivePanesInLayout(node);
+  return all[0];
 }
 
 /**
  * Orca의 worktrees, terminals, visualLayouts 정보를 종합하여
  * 현재 사용자가 보고 있는(활성화된) 터미널 handle을 찾아낸다.
- * - visualLayouts에서 활성 탭/터미널을 최우선으로 반영.
+ * - visualLayouts에서 활성 탭/터미널 목록을 추출 (스플릿 레이아웃 포함).
+ * - 현재 타깃이 레이아웃의 활성 탭들 중 하나라면 그대로 유지 (스플릿의 다른 쪽 탭으로 튕기지 않음).
  * - visualLayouts가 없더라도 현재 타깃이 이미 활성 워크트리에 있다면 튕기지 않고 유지.
  */
 export function resolveActiveTerminal(
@@ -314,19 +418,31 @@ export function resolveActiveTerminal(
   const activeWtId = activeWt?.worktreeId;
   if (!activeWtId) return undefined;
 
-  // 1. visualLayouts가 있으면 해당 워크트리의 실제 활성 탭/리프 터미널을 먼저 찾는다
+  // 1. visualLayouts가 있으면 해당 워크트리의 모든 활성 탭/터미널을 찾는다
   if (visualLayouts && visualLayouts.length > 0) {
     const vl = visualLayouts.find((v: any) => v.worktreeId === activeWtId);
     if (vl?.root) {
-      const activePane = findActivePaneInLayout(vl.root);
-      if (activePane?.handle) return activePane.handle;
-      if (activePane?.tabId) {
-        const termsInTab = terminals.filter((t) => t.worktreeId === activeWtId && t.tabId === activePane.tabId);
-        if (activePane.leafId) {
-          const matchLeaf = termsInTab.find((t) => t.leafId === activePane.leafId);
-          if (matchLeaf) return matchLeaf.handle;
+      const activePanes = findAllActivePanesInLayout(vl.root);
+      const activeHandles: string[] = [];
+      for (const p of activePanes) {
+        if (p.handle) {
+          activeHandles.push(p.handle);
+        } else if (p.tabId) {
+          const termsInTab = terminals.filter((t) => t.worktreeId === activeWtId && t.tabId === p.tabId);
+          if (p.leafId) {
+            const matchLeaf = termsInTab.find((t) => t.leafId === p.leafId);
+            if (matchLeaf) activeHandles.push(matchLeaf.handle);
+          } else if (termsInTab.length > 0) {
+            activeHandles.push(termsInTab[0].handle);
+          }
         }
-        if (termsInTab.length > 0) return termsInTab[0].handle;
+      }
+      // 현재 선택된 타깃이 레이아웃의 활성 탭들 중 하나라면 유지
+      if (currentTargetHandle && activeHandles.includes(currentTargetHandle)) {
+        return currentTargetHandle;
+      }
+      if (activeHandles.length > 0) {
+        return activeHandles[0];
       }
     }
   }

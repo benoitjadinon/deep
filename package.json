@@ -21,6 +21,7 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
-    "@elgato/streamdeck": "^2.1.0"
+    "@elgato/streamdeck": "^2.1.0",
+    "lucide-static": "^1.45.0"
   }
 }

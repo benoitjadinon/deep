@@ -11,7 +11,7 @@
   "CodePath": "bin/launch.sh",
   "SDKVersion": 2,
   "Software": {
-    "MinimumVersion": "6.5"
+    "MinimumVersion": "7.0"
   },
   "OS": [
     {
