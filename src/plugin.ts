@@ -26,6 +26,7 @@ import {
   AbstractAgent,
   UNSUPPORTED_AGENT,
   UNSUPPORTED_PROFILE,
+  type AgentContext,
   type AgentProfile,
   type ApplyStep,
   type ControlKind,
@@ -209,6 +210,16 @@ async function stopAndSend(target?: string): Promise<void> {
   renderAll();
 }
 
+// 세션별 AgentContext 생성 (작업공간 경로, 워크트리 ID 등)
+function contextForHandle(h: string): AgentContext {
+  const b = sessionByHandle.get(h);
+  return {
+    handle: h,
+    worktreePath: b?.worktreePath,
+    worktreeId: b?.worktreeId,
+  };
+}
+
 // 대상 변경 시 pending을 그 세션의 적용값/프로파일 목록으로 리셋
 function noteHandle(h: string): void {
   const b = sessionByHandle.get(h);
@@ -220,9 +231,59 @@ function noteHandle(h: string): void {
     }
   }
 }
+
+// 특정 세션의 실시간 상태(모델/effort/모드)를 에이전트 인터페이스(작업공간별 로그/설정)에서 읽기
+function refreshSessionState(h: string): boolean {
+  if (!h) return false;
+  noteHandle(h);
+  const agent = agentInstanceByHandle.get(h) ?? agentFor(agentByHandle.get(h));
+  const ctx = contextForHandle(h);
+  const state = agent.readCurrentState(ctx);
+  let modelChanged = false;
+
+  if (state.model) {
+    if (currentModelByHandle.get(h) !== state.model) {
+      currentModelByHandle.set(h, state.model);
+      modelChanged = true;
+    }
+  }
+
+  let effortToSet = state.effort;
+  if (!effortToSet && state.model) {
+    effortToSet = agent.getEffortForModel(state.model);
+  }
+  if (effortToSet) {
+    if (currentEffortByHandle.get(h) !== effortToSet || modelChanged) {
+      currentEffortByHandle.set(h, effortToSet);
+      if (modelChanged) {
+        effortByHandle.set(h, effortToSet);
+      }
+    }
+  }
+
+  if (state.mode) {
+    currentModeByHandle.set(h, state.mode);
+  }
+
+  if (state.recentModels || state.favoriteModels) {
+    const list = modelsByHandle.get(h);
+    if (list && list.length) {
+      const sorted = sortModels(list, state.recentModels ?? [], state.favoriteModels ?? []);
+      if (sorted.length !== list.length || sorted.some((m, i) => m !== list[i])) {
+        modelsByHandle.set(h, sorted);
+      }
+    }
+  }
+
+  return modelChanged;
+}
+
 function setTarget(h?: string): void {
   targetHandle = h;
-  if (h) noteHandle(h);
+  if (h) {
+    noteHandle(h);
+    refreshSessionState(h);
+  }
   agentForHandle();
   pickAt.model = 0; // 대상이 바뀌면 이전 유예 무효 → 새 세션의 실제 상태부터 채움
   pickAt.effort = 0;
@@ -331,7 +392,7 @@ async function refreshDiscovery(): Promise<void> {
       const list = agent.parseDiscoveredModels(stdout);
       if (list.length) {
         agent.setModelNames(agent.parseDiscoveredModelNames(stdout));
-        const st = agent.readCurrentState();
+        const st = agent.readCurrentState(contextForHandle(t));
         modelsByHandle.set(t, sortModels(list, st.recentModels ?? [], st.favoriteModels ?? []));
       }
     }
@@ -359,49 +420,15 @@ async function refreshDiscovery(): Promise<void> {
   }
 }
 
-// 대상 세션의 현재 상태(모델/effort/모드)를 에이전트 인터페이스에서 읽어 다이얼에 반영
+// 모든 활성 세션의 현재 상태(모델/effort/모드)를 에이전트 인터페이스(작업공간별)에서 읽어 다이얼에 반영
 function refreshCurrentState(): void {
   const t = ensureTarget();
-  if (!t) return;
-  const agent = agentForHandle();
-  const state = agent.readCurrentState();
-  let modelChanged = false;
-  if (state.model) {
-    if (currentModelByHandle.get(t) !== state.model) {
-      currentModelByHandle.set(t, state.model);
-      modelChanged = true;
+  for (const h of allHandles) {
+    const modelChanged = refreshSessionState(h);
+    if (h === t && modelChanged) {
+      lastEffortDiscoverAt = 0;
+      refreshEfforts().catch(() => {});
     }
-  }
-  let effortToSet = state.effort;
-  if (!effortToSet && state.model) {
-    effortToSet = agent.getEffortForModel(state.model);
-  }
-  if (effortToSet) {
-    if (currentEffortByHandle.get(t) !== effortToSet || modelChanged) {
-      currentEffortByHandle.set(t, effortToSet);
-      if (modelChanged) {
-        effortByHandle.set(t, effortToSet);
-        pendingEffort = effortToSet;
-        pickAt.effort = 0;
-      }
-    }
-  }
-  if (state.mode) {
-    currentModeByHandle.set(t, state.mode);
-  }
-  if (state.recentModels || state.favoriteModels) {
-    const list = modelsByHandle.get(t);
-    if (list && list.length) {
-      const sorted = sortModels(list, state.recentModels ?? [], state.favoriteModels ?? []);
-      if (sorted.length !== list.length || sorted.some((m, i) => m !== list[i])) {
-        modelsByHandle.set(t, sorted);
-      }
-    }
-  }
-  if (modelChanged) {
-    lastEffortDiscoverAt = 0;
-    refreshEfforts().catch(() => {});
-    renderAll();
   }
   adoptPending("model");
   adoptPending("effort");
@@ -510,8 +537,8 @@ function anyAttention(): boolean {
 }
 
 // orca agent-hooks의 최신 훅 상태(last-status.json)를 읽어 paneKey별 훅 정보 반환
-function getHookEvents(): Map<string, { hookEventName?: string; agentType?: string }> {
-  const map = new Map<string, { hookEventName?: string; agentType?: string }>();
+function getHookEvents(): Map<string, { hookEventName?: string; agentType?: string; state?: string; receivedAt?: number }> {
+  const map = new Map<string, { hookEventName?: string; agentType?: string; state?: string; receivedAt?: number }>();
   try {
     const filePath = join(homedir(), "Library/Application Support/orca/agent-hooks/last-status.json");
     if (existsSync(filePath)) {
@@ -523,6 +550,8 @@ function getHookEvents(): Map<string, { hookEventName?: string; agentType?: stri
             map.set(paneKey, {
               hookEventName: entry.hookEventName,
               agentType: entry.source || entry.payload?.agentType,
+              state: entry.payload?.state,
+              receivedAt: entry.receivedAt,
             });
           }
         }
@@ -543,7 +572,13 @@ async function poll(): Promise<void> {
       { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
       { page: currentPage, perPage: 8 },
     );
-    if (currentPage >= deck.pageCount) currentPage = deck.pageCount - 1;
+    if (currentPage >= deck.pageCount) {
+      currentPage = Math.max(0, deck.pageCount - 1);
+      deck = buildDeck(
+        { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
+        { page: currentPage, perPage: 8 },
+      );
+    }
     // 전체 세션(사이드바 전부) 목록 유지 — 대상 다이얼이 8키 넘어서도 순회
     const full = buildDeck(
       { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
@@ -565,6 +600,22 @@ async function poll(): Promise<void> {
             applyPending();
           }
         }
+      }
+    }
+    // 닫힌 세션의 메모리 누수 방지: 더 이상 존재하지 않는 핸들 정리
+    for (const h of Array.from(agentByHandle.keys())) {
+      if (!sessionByHandle.has(h)) {
+        agentByHandle.delete(h);
+        agentInstanceByHandle.delete(h);
+        modelsByHandle.delete(h);
+        modesByHandle.delete(h);
+        effortsByHandle.delete(h);
+        currentModelByHandle.delete(h);
+        currentEffortByHandle.delete(h);
+        currentModeByHandle.delete(h);
+        modelByHandle.delete(h);
+        effortByHandle.delete(h);
+        modeByHandle.delete(h);
       }
     }
     // 현재 포커스(활성) 세션을 대상으로 자동 지정 → 말하면 지금 보는 세션으로 감
@@ -846,9 +897,17 @@ setInterval(() => {
   tick++;
   if (anyAttention() || anyMarquee()) renderKeys();
 }, 450);
-// 주의 필요 키를 부드럽게 펄스(≈6fps, Elgato ≤10/s 준수). 주의 키 없으면 렌더 스킵.
+// 주의 필요 키를 부드럽게 펄스(≈6fps, Elgato ≤10/s 준수). 주의 상태 해제 시 즉시 1회 정적 리셋.
+let wasAttention = false;
 setInterval(() => {
-  if (anyAttention()) renderKeys();
+  const attn = anyAttention();
+  if (attn) {
+    wasAttention = true;
+    renderKeys();
+  } else if (wasAttention) {
+    wasAttention = false;
+    renderKeys();
+  }
 }, 160);
 poll();
 

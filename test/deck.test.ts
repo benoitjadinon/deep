@@ -114,8 +114,8 @@ describe("buildDeck — 열려 있는 에이전트(agentIdentity)가 worktree ps
     const deck = buildDeck({ terminals: ts, worktrees: wts });
     const handles = deck.slots.filter((s) => !s.empty).map((s: any) => s.handle);
     expect(handles).toEqual(["term_fresh"]);
-    // 아직 상태를 모르므로 기본 waiting(amber) — 다이얼 게이팅이 제출 전부터 살아 있다
-    expect(deck.slots[0]).toMatchObject({ state: "waiting", color: "amber", agentType: "opencode" });
+    // 아직 활성 작업이나 훅이 없으므로 기본 idle(white) — 다이얼 게이팅이 살아있고 불필요한 깜빡임 방지
+    expect(deck.slots[0]).toMatchObject({ state: "idle", color: "white", agentType: "opencode" });
   });
 
   it("worktree ps가 상태를 보고하면 그 상태를 우선한다", () => {
@@ -160,6 +160,29 @@ describe("buildDeck — 열려 있는 에이전트(agentIdentity)가 worktree ps
     const hookEvents = new Map([["t1:l1", { hookEventName: "PreInvocation", agentType: "antigravity" }]]);
     const a = buildDeck({ terminals: ts, worktrees: wts, hookEventsByPane: hookEvents }).slots[0] as any;
     expect(a.agentType).toBe("antigravity");
+  });
+
+  it("에이전트가 종료된 셸 터미널은 이전 훅 이벤트 잔여물이 있어도 세션판에 표시하지 않음(노란 불 깜빡임 방지)", () => {
+    // hermes 종료 후 일반 셸 터미널: agentIdentity=null, worktree ps에 agent 없음
+    const ts = [{ handle: "term_closed", tabId: "t1", leafId: "l1", title: "Shell", worktreePath: "/x", worktreeId: "wt1", agentIdentity: null }];
+    const wts = [{ worktreeId: "wt1", repo: "x" }]; // worktree ps agent 없음
+    // last-status.json에 남아있던 이전 훅 잔여물
+    const hookEvents = new Map([["t1:l1", { hookEventName: "PreInvocation", agentType: "hermes" }]]);
+    const deck = buildDeck({ terminals: ts, worktrees: wts, hookEventsByPane: hookEvents });
+    // 빈 칸이어야 함 — 세션으로 부활하거나 waiting(amber)으로 깜빡이지 않아야 함
+    expect(deck.slots[0]).toEqual({ empty: true });
+    expect(deck.total).toBe(0);
+  });
+
+  it("hermes CLI 실행 시 agentIdentity로 세션 표시", () => {
+    const ts = [{ handle: "term_hermes", tabId: "t1", leafId: "l1", title: "Hermes", worktreePath: "/x", worktreeId: "wt1", agentIdentity: "hermes" }];
+    const wts = [{ worktreeId: "wt1", repo: "x" }];
+    const deck = buildDeck({ terminals: ts, worktrees: wts });
+    expect(deck.slots[0]).toMatchObject({
+      empty: false,
+      handle: "term_hermes",
+      agentType: "hermes",
+    });
   });
 });
 

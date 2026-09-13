@@ -70,10 +70,14 @@ describe("agentBadge — 타일마다 에이전트 뱃지(Orca 로고 아이콘 
     expect(agentBadge("codex")).toContain("M9.205");
     expect(agentBadge("agy")).toContain("<image href=\"data:image/png;base64,");
     expect(agentBadge("antigravity")).toContain("<image href=\"data:image/png;base64,");
+    expect(agentBadge("hermes")).toContain('fill="#10B981"');
+    expect(agentBadge("hermes-cli")).toContain('fill="#10B981"');
+    expect(agentBadge("hermes-agent")).toContain('fill="#10B981"');
   });
   it("대소문자 무시", () => {
     expect(agentBadge("OpenCode")).toContain('fill="#F1ECEC"');
     expect(agentBadge("Claude")).toContain('fill="#D97757"');
+    expect(agentBadge("Hermes")).toContain('fill="#10B981"');
   });
   it("모르는 타입은 회색 알약 + 앞 2글자, 없으면 물음표", () => {
     const g = agentBadge("grok");

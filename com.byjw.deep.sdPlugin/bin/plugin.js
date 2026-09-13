@@ -17338,13 +17338,34 @@ function buildDeck(input, opts = {}) {
     const hasWt = stateByPane.has(pane);
     const idFromWt = agentByPane.get(pane);
     const hook = getHook(pane);
+    const hasAgent = hasWt || Boolean(t.agentIdentity);
+    if (!hasAgent) {
+      return null;
+    }
     const agent = idFromWt || hook?.agentType || t.agentIdentity || "";
-    const wtState = hasWt ? stateByPane.get(pane) : "waiting";
     const hookEvent = hook?.hookEventName;
-    let state = wtState;
-    const isAgy = agent === "agy" || agent === "antigravity" || idFromWt === "agy" || idFromWt === "antigravity" || hook?.agentType === "agy" || hook?.agentType === "antigravity";
-    if (isAgy && hookEvent === "PreToolUse") {
-      state = "waiting";
+    let state;
+    if (hasWt) {
+      state = stateByPane.get(pane) || "idle";
+      if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
+        state = "waiting";
+      } else if (hookEvent === "PostToolUse" || hookEvent === "SessionStart" || hookEvent === "UserPrompt") {
+        state = "working";
+      } else if (hookEvent === "Stop" || hookEvent === "SessionEnd") {
+        state = "done";
+      }
+    } else {
+      if (hook?.state) {
+        state = hook.state;
+      } else if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
+        state = "waiting";
+      } else if (hookEvent === "Stop" || hookEvent === "SessionEnd") {
+        state = "done";
+      } else if (hookEvent === "SessionStart" || hookEvent === "UserPrompt" || hookEvent === "PostToolUse") {
+        state = "working";
+      } else {
+        state = "idle";
+      }
     }
     return {
       t,
@@ -17354,7 +17375,7 @@ function buildDeck(input, opts = {}) {
       state,
       agentType: agent
     };
-  }).filter((x) => x.hasWt || Boolean(x.agent)).sort((a, b) => a.t.handle.localeCompare(b.t.handle));
+  }).filter((x) => x !== null).sort((a, b) => a.t.handle.localeCompare(b.t.handle));
   const dupCount = /* @__PURE__ */ new Map();
   const enriched = sessions.map((item) => {
     const meta = item.t.worktreeId ? metaByWt.get(item.t.worktreeId) : void 0;
@@ -17477,6 +17498,7 @@ function marqueeWindow(s, win, tick2) {
 var CLAUDE_SVG_PATH = "M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z";
 var CODEX_SVG_PATH = "M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z";
 var ANTIGRAVITY_PNG_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAABYlBMVEVHcEw5iPw2i/IziPztaDo3ifeJwGA6iPhkhug3ifjtVEg6ivgujO00h/8wivRztHQ0iftrgdLrhy41ifA0iPs+mMJNrp7rWEgwifjgryrcVmJ4wXDiUlmPeMCGxWK3w0FhprPZVmJato0pktxVjflCqKqjbqeLxWKQeL/opSZBp6z1Uj3Xuy01ifwwiPg1h/87if8wh/wvivRCiv4vi+8zktxNjPsvjek1ltEwj+Q5nMTwV0BDpK9Rg+hZifJ5e8tMq6C7ZHk+h/k2h/nOW2lXsJBAn7mGdrx1vG9dgd1Jh/SebZ3lU07meDlitoKuZo1kfszdWlOgvlBWk69wgttBhe/Ia14/iOTaZ01Cj87gpSxzfbOHdqeVcaxMh9O7uz90loxwiKFah77GelWfrVdToKGSe4uud2+kcIXlky6Sm22+qENyp37Mh0iHq2pfpo6tmVeuh2LSszGJhonJlkKWi3VeO12PAAAALXRSTlMARBro/o/8f/1lxVMt8q79vAf6/cv6i23YVBo4QcePmg6TzuC5S3QaM6re4bufpM1dAAADxklEQVRYhZ2X+T9iURTAXz2VVIQYxowxY4wxM7wShWwVSrIvlchStopR+P/n3O0t3tqcH933/d5zzj339sFxBjE40dOz3dbxwegbI/z09AEE221tsf9STJyC4IEIYh2t83+aTVEAht+t8l+aRPC4TVJoNYfBi4tms3b6+voIhjw2fG1JcAFRq9WwoJxv2wdB7GMrBcgE5e18Pr8fy7ZSxPgBRKVSe35+fmyUy2VsiMU+WU8A85UKCBpIcAKCbDZrOYURkkDlqfpcbSDDyUl+HxmspjB84HQ6nyCq1epbo3F3d0INVlNwyniIO2RYW0OGbkv8kNOZTnd1ddXr9cvLt5e3WzDEicHanRjGfB3zl5cvL7e39/fxeBwMFmvA/E79LwQIrmSGtX0rwzSUTqd3dtYBv7k5PLyCOEOGXWywUEP3MObXAUcCMBSvzs62qMFKDV0if4ji+rpYLIJhaxcbzPlxzK+uLi5ubBz2AS8z7MbXzGepX+L7+gqFAjLsIcM5TsL8Un9T8oVSqbS3t7dSTFGDqYDxCwtzc8DnmCGVOscGs4MckvjC3OzsbC6XWyqVNsFAFLs/zFog7Y/w+RwyLG1Khs9mLZDx8/PRaDSHFZugoAZjvlvOR6Mzvb29x8fHS0s4CWRInf80FIwp+RlqOMaGoxWkMG5Cv5Kfnp5KJpMJ0QCKlHETfsl5wKeQIJkARYYYQGHEj0j8DOGxAAyZDBja25HAqAlj8v0RHgqFiAAZlrHhyGXUAjUPIYiG5XZQGDWhT1F/iPKCMCk3tOs/rXbF/qGQz+9wu12dvDAZDCbCCSRACpuuwE3nj/C8h/3dFhCCwWA4HIlEkMGhK+iU56/4zI0F4Qwx6AogAbw/4t3KJRsxkBzsOrxXxqvOSm5wa9EQDjpAwHeqV11YgAyR7zqCUfEAfFrLAZZCJKJ9kHapgZoHZReLiHi01jmX2AC/doYu0aBdwyi7QSG9LvvENmiterUnQB50GsLaNTjEG6A/6zwzaBXJTlA9AlLYBGYYUa15WAJJfZ7jBphBvcsAK0BvzHB4BWRACtUKK4A34jnOzwzv9/GzBPQvOw67QA3vNvIyPmDMw2ERQTCsPMkA8NPoDdObISl8NAdFCh46gkZHyMImCEQh/7aX8gPmPLxbzCBl20l+RKwUwIpACrFfbsZr31JVeAVqoJfGy34E9F/bd+GhBgEPg53xGs+YXriYAU0NT/PXeUW0w8EM3Zyr9f3lOTg4fqq1+lm4icDHEd7kBmiFF58mz9n40IDL2r8yqiQCvN/+D+aPcPZ+RgT3AAAAAElFTkSuQmCC";
+var HERMES_SVG_PATH = "M12 2a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm1 4.1a5.002 5.002 0 00-2 0V7c-1.54-.48-2.78-1.58-3.34-3.03a1 1 0 00-1.87.71C6.67 6.94 8.7 8.5 11 8.9V11c-2.3-.4-4.33-1.96-5.21-4.22a1 1 0 00-1.87.71C4.8 10.3 7.6 12.3 11 12.9V15c-2.3-.4-4.33-1.96-5.21-4.22a1 1 0 00-1.87.71C4.8 14.3 7.6 16.3 11 16.9V21a1 1 0 102 0v-4.1c3.4-.6 6.2-2.6 7.08-5.41a1 1 0 00-1.87-.71C17.33 13.04 15.3 14.6 13 15v-2.1c3.4-.6 6.2-2.6 7.08-5.41a1 1 0 00-1.87-.71C17.33 9.04 15.3 10.6 13 11V8.9c2.3-.4 4.33-1.96 5.21-4.22a1 1 0 00-1.87-.71C15.42 5.76 13.97 6.7 13 7.08V6.1z";
 function agentBadge(agentType) {
   const a = (agentType || "").toLowerCase();
   const boxX = 108;
@@ -17502,6 +17524,10 @@ function agentBadge(agentType) {
   }
   if (a === "antigravity" || a === "agy") {
     return `${bg}<image href="${ANTIGRAVITY_PNG_DATA}" xlink:href="${ANTIGRAVITY_PNG_DATA}" x="${ix}" y="${iy}" width="${isize}" height="${isize}"/>`;
+  }
+  if (a === "hermes" || a === "hermes-cli" || a === "hermes-agent") {
+    const s = (isize / 24).toFixed(4);
+    return `${bg}<g transform="translate(${ix}, ${iy}) scale(${s})"><path fill-rule="evenodd" clip-rule="evenodd" d="${HERMES_SVG_PATH}" fill="#10B981"/></g>`;
   }
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
   return `<rect x="104" y="118" width="32" height="18" rx="9" fill="#4b5563"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
@@ -17617,6 +17643,10 @@ function agentBadgeForDial(agentType) {
   if (a === "antigravity" || a === "agy") {
     return `${bg}<image href="${ANTIGRAVITY_PNG_DATA}" xlink:href="${ANTIGRAVITY_PNG_DATA}" x="${ix}" y="${iy}" width="${isize}" height="${isize}"/>`;
   }
+  if (a === "hermes" || a === "hermes-cli" || a === "hermes-agent") {
+    const s = (isize / 24).toFixed(4);
+    return `${bg}<g transform="translate(${ix}, ${iy}) scale(${s})"><path fill-rule="evenodd" clip-rule="evenodd" d="${HERMES_SVG_PATH}" fill="#10B981"/></g>`;
+  }
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
   return `<rect x="166" y="6" width="28" height="16" rx="8" fill="#4b5563"/><text x="180" y="18" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
 }
@@ -17669,8 +17699,8 @@ var AbstractAgent = class {
   parseDiscoveredEfforts(stdout, modelId) {
     return parseModelVariants(stdout, modelId);
   }
-  /** 로컬 상태 파일/설정에서 현재 선택된 상태 읽기 */
-  readCurrentState() {
+  /** 로컬 상태 파일/설정 또는 작업공간 로그에서 현재 선택된 상태 읽기 */
+  readCurrentState(_ctx) {
     return {};
   }
   /** 모델 선택 시 해당 모델에 귀속되거나 내포된 effort(변형)가 있다면 반환 */
@@ -17751,11 +17781,18 @@ function parseCodexModelsCache(text) {
   }
   return [];
 }
-function readCodexState() {
+function readCodexState(ctx) {
   try {
+    if (ctx?.worktreePath) {
+      const localCfg = (0, import_node_path6.join)(ctx.worktreePath, ".codex", "config.toml");
+      if ((0, import_node_fs4.existsSync)(localCfg)) {
+        const cfg = parseCodexConfig((0, import_node_fs4.readFileSync)(localCfg, "utf8"));
+        return { model: cfg.model, effort: cfg.effort };
+      }
+    }
     if ((0, import_node_fs4.existsSync)(CODEX_CONFIG)) {
       const cfg = parseCodexConfig((0, import_node_fs4.readFileSync)(CODEX_CONFIG, "utf8"));
-      return { model: cfg.model };
+      return { model: cfg.model, effort: cfg.effort };
     }
   } catch {
   }
@@ -17796,21 +17833,33 @@ var CodexAgent = class extends AbstractAgent {
     }
     return [];
   }
-  readCurrentState() {
-    return readCodexState();
+  readCurrentState(ctx) {
+    return readCodexState(ctx);
   }
 };
 var OPENCODE_STATE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "model.json");
 var OPENCODE_TUI = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "tui");
-function readOpenCodeState() {
+function readOpenCodeState(ctx) {
   try {
+    if (ctx?.worktreePath) {
+      const localState = (0, import_node_path6.join)(ctx.worktreePath, ".opencode", "model.json");
+      if ((0, import_node_fs4.existsSync)(localState)) {
+        return parseOpenCodeState((0, import_node_fs4.readFileSync)(localState, "utf8"));
+      }
+    }
     return parseOpenCodeState((0, import_node_fs4.readFileSync)(OPENCODE_STATE, "utf8"));
   } catch {
     return {};
   }
 }
-function readTuiAgent() {
+function readTuiAgent(ctx) {
   try {
+    if (ctx?.worktreePath) {
+      const localTui = (0, import_node_path6.join)(ctx.worktreePath, ".opencode", "tui");
+      if ((0, import_node_fs4.existsSync)(localTui)) {
+        return parseTuiAgent((0, import_node_fs4.readFileSync)(localTui, "utf8"));
+      }
+    }
     return parseTuiAgent((0, import_node_fs4.readFileSync)(OPENCODE_TUI, "utf8"));
   } catch {
     return void 0;
@@ -17865,9 +17914,9 @@ var OpenCodeAgent = class extends AbstractAgent {
   getDiscoverVariantCmd() {
     return ["opencode", "models", "--verbose"];
   }
-  readCurrentState() {
-    const st = readOpenCodeState();
-    const tuiAgent = readTuiAgent();
+  readCurrentState(ctx) {
+    const st = readOpenCodeState(ctx);
+    const tuiAgent = readTuiAgent(ctx);
     const model = st.model ? `${st.model.providerID}/${st.model.modelID}` : void 0;
     const effort = model && st.variant ? st.variant[model] : void 0;
     return {
@@ -17979,22 +18028,123 @@ function parseAgyModels(stdout) {
   return out;
 }
 var AGY_LOG_DIR = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "log");
-function parseAgyLogMode(text) {
+function parseAgyLogWorkspace(headerText) {
+  if (!headerText) return [];
+  const dirs = [];
+  const wsMatch = /workspaceDirs=\[([^\]]*)\]/.exec(headerText);
+  if (wsMatch && wsMatch[1]) {
+    for (const d of wsMatch[1].split(/[,|\s]+/)) {
+      const trimmed = d.trim();
+      if (trimmed && !dirs.includes(trimmed)) dirs.push(trimmed);
+    }
+  }
+  const initMatch = /Initializing CLI store manager for workspace\s+([^\r\n]+)/.exec(headerText);
+  if (initMatch && initMatch[1]) {
+    const trimmed = initMatch[1].trim();
+    if (trimmed && !dirs.includes(trimmed)) dirs.push(trimmed);
+  }
+  return dirs;
+}
+function isMatchingWorkspace(wsPath, targetPath) {
+  if (!wsPath || !targetPath) return false;
+  const normalize = (p) => {
+    let s = p.trim();
+    while (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1);
+    return s;
+  };
+  const w = normalize(wsPath);
+  const t = normalize(targetPath);
+  if (w === t) return true;
+  if (t.startsWith(w + "/") || w.startsWith(t + "/")) return true;
+  return false;
+}
+function parseAgyLogModel(text) {
   if (!text) return void 0;
   const lines = text.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
-    const m = /\]\s+SetCycleMode called:\s*([a-zA-Z0-9_\-]*)/.exec(lines[i]);
-    if (m) {
-      return normalizeAgyMode(m[1]);
+    const line = lines[i];
+    const m1 = /Propagating selected model override to backend:\s*label="([^"]+)"/.exec(line);
+    if (m1 && m1[1].trim()) {
+      return m1[1].trim();
+    }
+    const m2 = /Resolving model\s+([^\r\n]+)/.exec(line);
+    if (m2 && m2[1].trim()) {
+      return m2[1].trim();
+    }
+    const m3 = /HandleUserInput called with text:\s*"\/model\s+([^"\r\n]+)"/.exec(line);
+    if (m3 && m3[1].trim()) {
+      return m3[1].trim();
     }
   }
   return void 0;
 }
-function readAgyLiveMode() {
+function parseAgyLogEffort(text) {
+  if (!text) return void 0;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    const m = /HandleUserInput called with text:\s*"\/effort\s+([^"\r\n]+)"/.exec(line);
+    if (m && m[1].trim()) {
+      return m[1].trim().toLowerCase();
+    }
+  }
+  return void 0;
+}
+function parseAgyLogMode(text) {
+  if (!text) return void 0;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    const m = /\]\s+SetCycleMode called:\s*([a-zA-Z0-9_\-]*)/.exec(line);
+    if (m) {
+      return normalizeAgyMode(m[1]);
+    }
+    const mAgent = /HandleUserInput called with text:\s*"\/agent\s+([^"\r\n]+)"/.exec(line);
+    if (mAgent && mAgent[1].trim()) {
+      return normalizeAgyMode(mAgent[1].trim());
+    }
+    const mMode = /HandleUserInput called with text:\s*"\/mode\s+([^"\r\n]+)"/.exec(line);
+    if (mMode && mMode[1].trim()) {
+      return normalizeAgyMode(mMode[1].trim());
+    }
+  }
+  return void 0;
+}
+function readAgyLiveState(ctx) {
   try {
-    if (!(0, import_node_fs4.existsSync)(AGY_LOG_DIR)) return void 0;
-    const files = (0, import_node_fs4.readdirSync)(AGY_LOG_DIR).filter((f) => f.startsWith("cli-") && f.endsWith(".log")).map((f) => ({ path: (0, import_node_path6.join)(AGY_LOG_DIR, f), mtime: (0, import_node_fs4.statSync)((0, import_node_path6.join)(AGY_LOG_DIR, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
-    for (const file2 of files.slice(0, 3)) {
+    if (!(0, import_node_fs4.existsSync)(AGY_LOG_DIR)) return {};
+    const allFiles = (0, import_node_fs4.readdirSync)(AGY_LOG_DIR).filter((f) => f.startsWith("cli-") && f.endsWith(".log")).map((f) => ({ path: (0, import_node_path6.join)(AGY_LOG_DIR, f), mtime: (0, import_node_fs4.statSync)((0, import_node_path6.join)(AGY_LOG_DIR, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
+    const targetPath = ctx?.worktreePath;
+    let candidateFiles = [];
+    if (targetPath) {
+      const matched = [];
+      for (const file2 of allFiles.slice(0, 30)) {
+        try {
+          const fd = (0, import_node_fs4.openSync)(file2.path, "r");
+          const size = (0, import_node_fs4.fstatSync)(fd).size;
+          const readHeaderLen = Math.min(size, 32 * 1024);
+          const buf = Buffer.alloc(readHeaderLen);
+          (0, import_node_fs4.readSync)(fd, buf, 0, readHeaderLen, 0);
+          (0, import_node_fs4.closeSync)(fd);
+          const header = buf.toString("utf8", 0, readHeaderLen);
+          const workspaces = parseAgyLogWorkspace(header);
+          if (workspaces.some((ws) => isMatchingWorkspace(ws, targetPath))) {
+            matched.push(file2);
+          }
+        } catch {
+        }
+      }
+      if (matched.length) {
+        candidateFiles = matched;
+      }
+    }
+    if (!candidateFiles.length) {
+      candidateFiles = allFiles.slice(0, 5);
+    }
+    let foundModel;
+    let foundEffort;
+    let foundMode;
+    for (const file2 of candidateFiles.slice(0, 5)) {
       try {
         const fd = (0, import_node_fs4.openSync)(file2.path, "r");
         const size = (0, import_node_fs4.fstatSync)(fd).size;
@@ -18002,16 +18152,31 @@ function readAgyLiveMode() {
         const buf = Buffer.alloc(readLen);
         (0, import_node_fs4.readSync)(fd, buf, 0, readLen, Math.max(0, size - readLen));
         (0, import_node_fs4.closeSync)(fd);
-        const mode = parseAgyLogMode(buf.toString("utf8", 0, readLen));
-        if (mode) return mode;
+        const tail = buf.toString("utf8", 0, readLen);
+        if (!foundModel) {
+          foundModel = parseAgyLogModel(tail);
+        }
+        if (!foundEffort) {
+          const rawEffort = parseAgyLogEffort(tail);
+          if (rawEffort) {
+            foundEffort = rawEffort;
+          } else if (foundModel) {
+            foundEffort = extractEffortFromModel(foundModel);
+          }
+        }
+        if (!foundMode) {
+          foundMode = parseAgyLogMode(tail);
+        }
+        if (foundModel && foundEffort && foundMode) break;
       } catch {
       }
     }
+    return { model: foundModel, effort: foundEffort, mode: foundMode };
   } catch {
+    return {};
   }
-  return void 0;
 }
-function readAgyState() {
+function readAgyState(ctx) {
   let model;
   let effort;
   let mode;
@@ -18024,9 +18189,15 @@ function readAgyState() {
     }
   } catch {
   }
-  const liveMode = readAgyLiveMode();
-  if (liveMode) {
-    mode = liveMode;
+  const live = readAgyLiveState(ctx);
+  if (live.model) {
+    model = live.model;
+    effort = extractEffortFromModel(live.model) || live.effort || effort;
+  } else if (live.effort) {
+    effort = live.effort;
+  }
+  if (live.mode) {
+    mode = live.mode;
   }
   return { model, effort, mode };
 }
@@ -18079,11 +18250,121 @@ var AgyAgent = class extends AbstractAgent {
   parseDiscoveredModes(stdout) {
     return parseAgyHelpModes(stdout);
   }
-  readCurrentState() {
-    return readAgyState();
+  readCurrentState(ctx) {
+    return readAgyState(ctx);
   }
   getEffortForModel(model) {
     return extractEffortFromModel(model);
+  }
+};
+var HERMES_CONFIG = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".hermes", "config.yaml");
+var HERMES_MODELS_CACHE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".hermes", "provider_models_cache.json");
+function parseHermesConfig(yamlText) {
+  let model;
+  let effort;
+  const defaultModelMatch = /^\s*default:\s*['"]?([^'"\r\n]+)['"]?/m.exec(yamlText || "");
+  if (defaultModelMatch) {
+    model = defaultModelMatch[1].trim();
+  } else {
+    const rootModelMatch = /^model:\s*['"]?([^'"\r\n{]+)['"]?/m.exec(yamlText || "");
+    if (rootModelMatch && rootModelMatch[1].trim()) {
+      model = rootModelMatch[1].trim();
+    }
+  }
+  const effortMatch = /reasoning_effort:\s*['"]?([^'"\r\n]+)['"]?/m.exec(yamlText || "");
+  if (effortMatch && effortMatch[1].trim()) {
+    effort = effortMatch[1].trim();
+  }
+  return { model, effort };
+}
+function parseHermesModelsCache(jsonText) {
+  try {
+    const data = JSON.parse(jsonText);
+    const set2 = /* @__PURE__ */ new Set();
+    const out = [];
+    if (data && typeof data === "object") {
+      for (const val of Object.values(data)) {
+        if (val && Array.isArray(val.models)) {
+          for (const m of val.models) {
+            if (typeof m === "string" && m.trim()) {
+              const id = m.trim();
+              if (!set2.has(id)) {
+                set2.add(id);
+                out.push(id);
+              }
+            }
+          }
+        }
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+function readHermesState(ctx) {
+  try {
+    if (ctx?.worktreePath) {
+      const localCfg = (0, import_node_path6.join)(ctx.worktreePath, ".hermes", "config.yaml");
+      if ((0, import_node_fs4.existsSync)(localCfg)) {
+        const cfg = parseHermesConfig((0, import_node_fs4.readFileSync)(localCfg, "utf8"));
+        return { model: cfg.model, effort: cfg.effort };
+      }
+    }
+    if ((0, import_node_fs4.existsSync)(HERMES_CONFIG)) {
+      const cfg = parseHermesConfig((0, import_node_fs4.readFileSync)(HERMES_CONFIG, "utf8"));
+      return { model: cfg.model, effort: cfg.effort };
+    }
+  } catch {
+  }
+  return {};
+}
+function readHermesModelsCache() {
+  try {
+    if ((0, import_node_fs4.existsSync)(HERMES_MODELS_CACHE)) {
+      return parseHermesModelsCache((0, import_node_fs4.readFileSync)(HERMES_MODELS_CACHE, "utf8"));
+    }
+  } catch {
+  }
+  return [];
+}
+var HermesAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "hermes";
+    this.label = "Hermes";
+  }
+  supports(kind) {
+    return kind === "model" || kind === "effort";
+  }
+  getModels() {
+    const cached2 = readHermesModelsCache();
+    if (cached2.length) return cached2;
+    return [
+      "deepseek/deepseek-v4-flash-0731",
+      "anthropic/claude-sonnet-4-6",
+      "openai/gpt-5.6-luna",
+      "google/gemini-3.8-flash",
+      "minimax/minimax-m3"
+    ];
+  }
+  getEfforts() {
+    return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+  }
+  getModes() {
+    return [];
+  }
+  getApplySteps(kind, value) {
+    if (kind === "model") {
+      return slash("/model", value);
+    }
+    if (kind === "effort") {
+      return slash("/reasoning", value);
+    }
+    return [];
+  }
+  readCurrentState(ctx) {
+    return readHermesState(ctx);
   }
 };
 var UnsupportedAgent = class extends AbstractAgent {
@@ -18105,7 +18386,10 @@ var AGENT_INSTANCES = {
   code: new CodexAgent(),
   opencode: new OpenCodeAgent(),
   agy: new AgyAgent(),
-  antigravity: new AgyAgent()
+  antigravity: new AgyAgent(),
+  hermes: new HermesAgent(),
+  "hermes-cli": new HermesAgent(),
+  "hermes-agent": new HermesAgent()
 };
 var UNSUPPORTED_AGENT = new UnsupportedAgent();
 function agentFor(agentType) {
@@ -18142,7 +18426,10 @@ var AGENTS = {
   code: profileFor("code"),
   opencode: profileFor("opencode"),
   agy: profileFor("agy"),
-  antigravity: profileFor("antigravity")
+  antigravity: profileFor("antigravity"),
+  hermes: profileFor("hermes"),
+  "hermes-cli": profileFor("hermes-cli"),
+  "hermes-agent": profileFor("hermes-agent")
 };
 var HIDDEN_PRIMARY_AGENTS = /* @__PURE__ */ new Set(["compaction", "summary", "title"]);
 function parsePrimaryAgents(stdout) {
@@ -18429,6 +18716,14 @@ async function stopAndSend(target) {
   }
   renderAll();
 }
+function contextForHandle(h) {
+  const b = sessionByHandle.get(h);
+  return {
+    handle: h,
+    worktreePath: b?.worktreePath,
+    worktreeId: b?.worktreeId
+  };
+}
 function noteHandle(h) {
   const b = sessionByHandle.get(h);
   if (b) {
@@ -18439,9 +18734,51 @@ function noteHandle(h) {
     }
   }
 }
+function refreshSessionState(h) {
+  if (!h) return false;
+  noteHandle(h);
+  const agent = agentInstanceByHandle.get(h) ?? agentFor(agentByHandle.get(h));
+  const ctx = contextForHandle(h);
+  const state = agent.readCurrentState(ctx);
+  let modelChanged = false;
+  if (state.model) {
+    if (currentModelByHandle.get(h) !== state.model) {
+      currentModelByHandle.set(h, state.model);
+      modelChanged = true;
+    }
+  }
+  let effortToSet = state.effort;
+  if (!effortToSet && state.model) {
+    effortToSet = agent.getEffortForModel(state.model);
+  }
+  if (effortToSet) {
+    if (currentEffortByHandle.get(h) !== effortToSet || modelChanged) {
+      currentEffortByHandle.set(h, effortToSet);
+      if (modelChanged) {
+        effortByHandle.set(h, effortToSet);
+      }
+    }
+  }
+  if (state.mode) {
+    currentModeByHandle.set(h, state.mode);
+  }
+  if (state.recentModels || state.favoriteModels) {
+    const list = modelsByHandle.get(h);
+    if (list && list.length) {
+      const sorted = sortModels(list, state.recentModels ?? [], state.favoriteModels ?? []);
+      if (sorted.length !== list.length || sorted.some((m, i) => m !== list[i])) {
+        modelsByHandle.set(h, sorted);
+      }
+    }
+  }
+  return modelChanged;
+}
 function setTarget(h) {
   targetHandle = h;
-  if (h) noteHandle(h);
+  if (h) {
+    noteHandle(h);
+    refreshSessionState(h);
+  }
   agentForHandle();
   pickAt.model = 0;
   pickAt.effort = 0;
@@ -18540,7 +18877,7 @@ async function refreshDiscovery() {
       const list = agent.parseDiscoveredModels(stdout);
       if (list.length) {
         agent.setModelNames(agent.parseDiscoveredModelNames(stdout));
-        const st = agent.readCurrentState();
+        const st = agent.readCurrentState(contextForHandle(t));
         modelsByHandle.set(t, sortModels(list, st.recentModels ?? [], st.favoriteModels ?? []));
       }
     }
@@ -18569,47 +18906,13 @@ async function refreshDiscovery() {
 }
 function refreshCurrentState() {
   const t = ensureTarget();
-  if (!t) return;
-  const agent = agentForHandle();
-  const state = agent.readCurrentState();
-  let modelChanged = false;
-  if (state.model) {
-    if (currentModelByHandle.get(t) !== state.model) {
-      currentModelByHandle.set(t, state.model);
-      modelChanged = true;
+  for (const h of allHandles) {
+    const modelChanged = refreshSessionState(h);
+    if (h === t && modelChanged) {
+      lastEffortDiscoverAt = 0;
+      refreshEfforts().catch(() => {
+      });
     }
-  }
-  let effortToSet = state.effort;
-  if (!effortToSet && state.model) {
-    effortToSet = agent.getEffortForModel(state.model);
-  }
-  if (effortToSet) {
-    if (currentEffortByHandle.get(t) !== effortToSet || modelChanged) {
-      currentEffortByHandle.set(t, effortToSet);
-      if (modelChanged) {
-        effortByHandle.set(t, effortToSet);
-        pendingEffort = effortToSet;
-        pickAt.effort = 0;
-      }
-    }
-  }
-  if (state.mode) {
-    currentModeByHandle.set(t, state.mode);
-  }
-  if (state.recentModels || state.favoriteModels) {
-    const list = modelsByHandle.get(t);
-    if (list && list.length) {
-      const sorted = sortModels(list, state.recentModels ?? [], state.favoriteModels ?? []);
-      if (sorted.length !== list.length || sorted.some((m, i) => m !== list[i])) {
-        modelsByHandle.set(t, sorted);
-      }
-    }
-  }
-  if (modelChanged) {
-    lastEffortDiscoverAt = 0;
-    refreshEfforts().catch(() => {
-    });
-    renderAll();
   }
   adoptPending("model");
   adoptPending("effort");
@@ -18716,7 +19019,9 @@ function getHookEvents() {
           if (entry) {
             map2.set(paneKey, {
               hookEventName: entry.hookEventName,
-              agentType: entry.source || entry.payload?.agentType
+              agentType: entry.source || entry.payload?.agentType,
+              state: entry.payload?.state,
+              receivedAt: entry.receivedAt
             });
           }
         }
@@ -18737,7 +19042,13 @@ async function poll() {
       { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
       { page: currentPage, perPage: 8 }
     );
-    if (currentPage >= deck.pageCount) currentPage = deck.pageCount - 1;
+    if (currentPage >= deck.pageCount) {
+      currentPage = Math.max(0, deck.pageCount - 1);
+      deck = buildDeck(
+        { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
+        { page: currentPage, perPage: 8 }
+      );
+    }
     const full = buildDeck(
       { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], hookEventsByPane: hookEvents },
       { page: 0, perPage: 9999 }
@@ -18758,6 +19069,21 @@ async function poll() {
             applyPending();
           }
         }
+      }
+    }
+    for (const h of Array.from(agentByHandle.keys())) {
+      if (!sessionByHandle.has(h)) {
+        agentByHandle.delete(h);
+        agentInstanceByHandle.delete(h);
+        modelsByHandle.delete(h);
+        modesByHandle.delete(h);
+        effortsByHandle.delete(h);
+        currentModelByHandle.delete(h);
+        currentEffortByHandle.delete(h);
+        currentModeByHandle.delete(h);
+        modelByHandle.delete(h);
+        effortByHandle.delete(h);
+        modeByHandle.delete(h);
       }
     }
     const activeHandle = resolveActiveTerminal(
@@ -19042,8 +19368,16 @@ setInterval(() => {
   tick++;
   if (anyAttention() || anyMarquee()) renderKeys();
 }, 450);
+var wasAttention = false;
 setInterval(() => {
-  if (anyAttention()) renderKeys();
+  const attn = anyAttention();
+  if (attn) {
+    wasAttention = true;
+    renderKeys();
+  } else if (wasAttention) {
+    wasAttention = false;
+    renderKeys();
+  }
 }, 160);
 poll();
 function anyMarquee() {

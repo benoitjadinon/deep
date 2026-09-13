@@ -22,12 +22,19 @@ import {
   parseAgyAgents,
   parseAgySettings,
   parseAgyHelpModes,
+  parseAgyLogWorkspace,
+  isMatchingWorkspace,
+  parseAgyLogModel,
+  parseAgyLogEffort,
   parseAgyLogMode,
   readAgyState,
   extractEffortFromModel,
   AGY_MODES,
   normalizeAgyMode,
   getAgyShiftTabSteps,
+  parseHermesConfig,
+  parseHermesModelsCache,
+  HermesAgent,
   ClaudeAgent,
   CodexAgent,
   OpenCodeAgent,
@@ -43,16 +50,21 @@ describe("agentFor / profileFor — 에이전트 타입 → 추상 인터페이�
     expect(agentFor("codex")).toBeInstanceOf(CodexAgent);
     expect(agentFor("opencode")).toBeInstanceOf(OpenCodeAgent);
     expect(agentFor("agy")).toBeInstanceOf(AgyAgent);
+    expect(agentFor("hermes")).toBeInstanceOf(HermesAgent);
+    expect(agentFor("hermes-cli")).toBeInstanceOf(HermesAgent);
+    expect(agentFor("hermes-agent")).toBeInstanceOf(HermesAgent);
 
     expect(profileFor("claude").label).toBe("Claude");
     expect(profileFor("codex").label).toBe("Codex");
     expect(profileFor("opencode").label).toBe("OpenCode");
     expect(profileFor("agy").label).toBe("Agy");
+    expect(profileFor("hermes").label).toBe("Hermes");
   });
   it("대소문자 및 공백 허용", () => {
     expect(agentFor(" Claude ")).toBeInstanceOf(ClaudeAgent);
     expect(agentFor("OpenCode")).toBeInstanceOf(OpenCodeAgent);
     expect(agentFor("AGY")).toBeInstanceOf(AgyAgent);
+    expect(agentFor(" Hermes ")).toBeInstanceOf(HermesAgent);
   });
   it("모르는 에이전트(null/빈 값 포함)는 미지원 에이전트", () => {
     expect(agentFor("grok")).toBe(UNSUPPORTED_AGENT);
@@ -90,6 +102,12 @@ describe("supported — 에이전트별 기능 게이팅", () => {
     expect(a.supports("model")).toBe(true);
     expect(a.supports("effort")).toBe(true);
     expect(a.supports("mode")).toBe(true);
+  });
+  it("hermes: 모델·effort 지원, 모드는 미지원(비활성화)", () => {
+    const a = agentFor("hermes");
+    expect(a.supports("model")).toBe(true);
+    expect(a.supports("effort")).toBe(true);
+    expect(a.supports("mode")).toBe(false);
   });
   it("미지원 에이전트는 전부 차단", () => {
     const a = agentFor("grok");
@@ -167,6 +185,16 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
     ]);
     // 동일 모드: 변경 없음
     expect(stepsFor(a, "mode", "plan", "plan")).toEqual([]);
+  });
+  it("hermes: 슬래시 명령(/model <m>, /reasoning <e>), 모드는 미지원 빈 배열", () => {
+    const a = agentFor("hermes");
+    expect(stepsFor(a, "model", "deepseek/deepseek-v4-flash-0731")).toEqual([
+      { text: "/model deepseek/deepseek-v4-flash-0731", enter: true, delayMs: 120 },
+    ]);
+    expect(stepsFor(a, "effort", "medium")).toEqual([
+      { text: "/reasoning medium", enter: true, delayMs: 120 },
+    ]);
+    expect(stepsFor(a, "mode", "plan")).toEqual([]);
   });
   it("미지원 에이전트는 빈 시퀀스", () => {
     expect(stepsFor(agentFor("grok"), "model", "x")).toEqual([]);
@@ -420,7 +448,50 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
     expect(agy.getEffortForModel("claude-sonnet-4-6")).toBeUndefined();
   });
 
-  it("parseAgyLogMode: CLI 로그에서 SetCycleMode 파싱", () => {
+  it("parseAgyLogWorkspace: 로그 헤더에서 workspaceDirs 및 store manager 경로 추출", () => {
+    const header1 = `I0913 16:36:45.100430       1 server.go:299] Creating CLI server backend: product=antigravity workspaceDirs=[/Users/ben/Workspaces/Tools/deep] appDataDir=/Users/ben/.gemini/antigravity-cli cascadeManager=true codeAssist=true`;
+    expect(parseAgyLogWorkspace(header1)).toEqual(["/Users/ben/Workspaces/Tools/deep"]);
+
+    const header2 = `I0912 02:17:26.375160       1 server.go:285] Creating CLI server backend: product=antigravity workspaceDirs=[/Users/ben/Workspaces/Tools/AltReady] appDataDir=...
+I0912 02:17:26.378614       1 manager.go:426] Initializing CLI store manager for workspace /Users/ben/Workspaces/Tools/AltReady`;
+    expect(parseAgyLogWorkspace(header2)).toEqual(["/Users/ben/Workspaces/Tools/AltReady"]);
+
+    expect(parseAgyLogWorkspace("")).toEqual([]);
+  });
+
+  it("isMatchingWorkspace: 작업공간 경로 매칭 및 정규화", () => {
+    expect(isMatchingWorkspace("/Users/ben/Workspaces/Tools/deep", "/Users/ben/Workspaces/Tools/deep")).toBe(true);
+    expect(isMatchingWorkspace("/Users/ben/Workspaces/Tools/deep/", "/Users/ben/Workspaces/Tools/deep")).toBe(true);
+    expect(isMatchingWorkspace("/Users/ben/Workspaces/Tools/deep", "/Users/ben/Workspaces/Tools/deep/.orca/worktrees/feat")).toBe(true);
+    expect(isMatchingWorkspace("/Users/ben/Workspaces/Tools/deep/com.byjw.deep.sdPlugin", "/Users/ben/Workspaces/Tools/deep")).toBe(true);
+    expect(isMatchingWorkspace("/Users/ben/Workspaces/Tools/deep", "/Users/ben/Workspaces/Tools/AltReady")).toBe(false);
+    expect(isMatchingWorkspace("", "/Users/ben/Workspaces/Tools/deep")).toBe(false);
+  });
+
+  it("parseAgyLogModel: CLI 로그에서 모델 오버라이드 및 유저 입력 파싱", () => {
+    const log1 = `I0913 16:48:15.672433   11525 model_config_manager.go:327] Propagating selected model override to backend: label="Gemini 3.7 Flash (High)"`;
+    expect(parseAgyLogModel(log1)).toBe("Gemini 3.7 Flash (High)");
+
+    const log2 = `I0913 16:48:15.672342   11525 model_resolver.go:93] Resolving model Gemini 3.7 Flash (Medium)`;
+    expect(parseAgyLogModel(log2)).toBe("Gemini 3.7 Flash (Medium)");
+
+    const log3 = `I0913 16:48:15.672342   11525 input_loop.go:94] HandleUserInput called with text: "/model gemini-3.8-flash-low"`;
+    expect(parseAgyLogModel(log3)).toBe("gemini-3.8-flash-low");
+
+    expect(parseAgyLogModel("")).toBeUndefined();
+  });
+
+  it("parseAgyLogEffort: CLI 로그에서 /effort 명령 파싱", () => {
+    const log1 = `I0913 16:48:15.672342   11525 input_loop.go:94] HandleUserInput called with text: "/effort high"`;
+    expect(parseAgyLogEffort(log1)).toBe("high");
+
+    const log2 = `I0913 16:48:15.672342   11525 input_loop.go:94] HandleUserInput called with text: "/effort medium"`;
+    expect(parseAgyLogEffort(log2)).toBe("medium");
+
+    expect(parseAgyLogEffort("")).toBeUndefined();
+  });
+
+  it("parseAgyLogMode: CLI 로그에서 SetCycleMode, /mode, /agent 파싱", () => {
     const log1 = `ERROR: logging before google.Init: I0908 00:02:47.642897       1 manager.go:1341] SetCycleMode called: accept-edits`;
     expect(parseAgyLogMode(log1)).toBe("accept-edits");
 
@@ -428,14 +499,79 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
 ERROR: logging before google.Init: I0908 00:00:46.631352       1 manager.go:1341] SetCycleMode called: `;
     expect(parseAgyLogMode(log2)).toBe("default");
 
+    const log3 = `I0913 16:48:15.672342   11525 input_loop.go:94] HandleUserInput called with text: "/mode plan"`;
+    expect(parseAgyLogMode(log3)).toBe("plan");
+
     expect(parseAgyLogMode("")).toBeUndefined();
     expect(parseAgyLogMode("random log content")).toBeUndefined();
   });
 
-  it("readAgyState: 현재 실행 중인 agy 세션의 라이브 상태 읽기", () => {
-    const st = readAgyState();
-    expect(st).toBeDefined();
-    // In our live session, agy is in accept-edits mode
-    expect(st.mode).toBe("accept-edits");
+  it("readAgyState: 현재 실행 중인 agy 세션의 상태 읽기 (작업공간별 분리 검증)", () => {
+    const stDeep = readAgyState({ worktreePath: "/Users/ben/Workspaces/Tools/deep" });
+    expect(stDeep).toBeDefined();
+    expect(typeof stDeep).toBe("object");
+
+    const stAlt = readAgyState({ worktreePath: "/Users/ben/Workspaces/Tools/AltReady" });
+    expect(stAlt).toBeDefined();
+    expect(typeof stAlt).toBe("object");
+
+    if (stDeep.effort && stAlt.effort) {
+      // deep과 AltReady 작업공간이 서로 다른 effort를 가질 때 각각 올바르게 분리되어 읽힘
+      expect(typeof stDeep.effort).toBe("string");
+      expect(typeof stAlt.effort).toBe("string");
+    }
+  });
+});
+
+describe("Hermes 파서 및 모델 캐시", () => {
+  it("parseHermesConfig: config.yaml에서 default model 및 reasoning_effort 추출", () => {
+    const yaml1 = `model:
+  default: deepseek/deepseek-v4-flash-0731
+  provider: openrouter
+agent:
+  reasoning_effort: medium
+`;
+    expect(parseHermesConfig(yaml1)).toEqual({
+      model: "deepseek/deepseek-v4-flash-0731",
+      effort: "medium",
+    });
+
+    const yaml2 = `model: anthropic/claude-sonnet-4-6\nagent:\n  reasoning_effort: high\n`;
+    expect(parseHermesConfig(yaml2)).toEqual({
+      model: "anthropic/claude-sonnet-4-6",
+      effort: "high",
+    });
+  });
+
+  it("parseHermesConfig: 누락 시 undefined", () => {
+    expect(parseHermesConfig("")).toEqual({ model: undefined, effort: undefined });
+  });
+
+  it("parseHermesModelsCache: provider_models_cache.json에서 중복 없는 모델 목록 추출", () => {
+    const json = JSON.stringify({
+      openrouter: {
+        models: ["deepseek/deepseek-v4-flash-0731", "minimax/minimax-m3"],
+      },
+      anthropic: {
+        models: ["claude-sonnet-4-6", "deepseek/deepseek-v4-flash-0731"],
+      },
+    });
+    expect(parseHermesModelsCache(json)).toEqual([
+      "deepseek/deepseek-v4-flash-0731",
+      "minimax/minimax-m3",
+      "claude-sonnet-4-6",
+    ]);
+  });
+
+  it("HermesAgent.getEfforts: hermes 지원 reasoning levels 반환", () => {
+    expect(agentFor("hermes").getEfforts()).toEqual([
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
   });
 });

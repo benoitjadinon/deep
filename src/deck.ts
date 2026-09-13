@@ -177,22 +177,42 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       const hasWt = stateByPane.has(pane);
       const idFromWt = agentByPane.get(pane);
       const hook = getHook(pane);
+      // 에이전트 세션 유효성 판정:
+      // worktree ps에 에이전트가 있거나(hasWt) 터미널에 활성 에이전트 프로세스가 감지된 경우(t.agentIdentity)만 인정.
+      // 이미 종료된 셸 터미널에 이전 세션의 훅 잔여물이 있더라도 세션으로 부활시키지 않는다.
+      const hasAgent = hasWt || Boolean(t.agentIdentity);
+      if (!hasAgent) {
+        return null;
+      }
+
       // 우선순위: worktree ps 등록 에이전트 > 훅 원본 에이전트 > 터미널 프로세스 추정치
       const agent = idFromWt || hook?.agentType || t.agentIdentity || "";
-      const wtState = hasWt ? stateByPane.get(pane) : "waiting";
       const hookEvent = hook?.hookEventName;
 
-      let state = wtState;
-      // agy/antigravity: PreToolUse 단계는 도구 실행 승인/응답 대기 중이므로 waiting(amber)으로 표시
-      const isAgy =
-        agent === "agy" ||
-        agent === "antigravity" ||
-        idFromWt === "agy" ||
-        idFromWt === "antigravity" ||
-        hook?.agentType === "agy" ||
-        hook?.agentType === "antigravity";
-      if (isAgy && hookEvent === "PreToolUse") {
-        state = "waiting";
+      let state: AgentState;
+      if (hasWt) {
+        state = stateByPane.get(pane) || "idle";
+        // PreToolUse/Notification 단계는 도구 실행 승인/응답 대기 중이므로 waiting(amber)으로 표시
+        if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
+          state = "waiting";
+        } else if (hookEvent === "PostToolUse" || hookEvent === "SessionStart" || hookEvent === "UserPrompt") {
+          state = "working";
+        } else if (hookEvent === "Stop" || hookEvent === "SessionEnd") {
+          state = "done";
+        }
+      } else {
+        // worktree ps 보고 전이지만 터미널 agentIdentity로 감지된 경우
+        if (hook?.state) {
+          state = hook.state;
+        } else if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
+          state = "waiting";
+        } else if (hookEvent === "Stop" || hookEvent === "SessionEnd") {
+          state = "done";
+        } else if (hookEvent === "SessionStart" || hookEvent === "UserPrompt" || hookEvent === "PostToolUse") {
+          state = "working";
+        } else {
+          state = "idle";
+        }
       }
 
       return {
@@ -204,7 +224,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
         agentType: agent,
       };
     })
-    .filter((x) => x.hasWt || Boolean(x.agent))
+    .filter((x): x is NonNullable<typeof x> => x !== null)
     .sort((a, b) => a.t.handle.localeCompare(b.t.handle));
 
   // 프로젝트명·브랜치·중복순번을 전체(정렬된) 세션 기준으로 부여 → 페이지 넘어도 안정

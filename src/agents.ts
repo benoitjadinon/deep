@@ -15,6 +15,12 @@ export interface ApplyStep {
   delayMs?: number;
 }
 
+export interface AgentContext {
+  worktreePath?: string;
+  worktreeId?: string;
+  handle?: string;
+}
+
 export interface AgentStateSnapshot {
   model?: string;
   effort?: string;
@@ -82,8 +88,8 @@ export abstract class AbstractAgent {
     return parseModelVariants(stdout, modelId);
   }
 
-  /** 로컬 상태 파일/설정에서 현재 선택된 상태 읽기 */
-  readCurrentState(): AgentStateSnapshot {
+  /** 로컬 상태 파일/설정 또는 작업공간 로그에서 현재 선택된 상태 읽기 */
+  readCurrentState(_ctx?: AgentContext): AgentStateSnapshot {
     return {};
   }
 
@@ -179,11 +185,18 @@ export function parseCodexModelsCache(text: string): string[] {
   return [];
 }
 
-export function readCodexState(): AgentStateSnapshot {
+export function readCodexState(ctx?: AgentContext): AgentStateSnapshot {
   try {
+    if (ctx?.worktreePath) {
+      const localCfg = join(ctx.worktreePath, ".codex", "config.toml");
+      if (existsSync(localCfg)) {
+        const cfg = parseCodexConfig(readFileSync(localCfg, "utf8"));
+        return { model: cfg.model, effort: cfg.effort };
+      }
+    }
     if (existsSync(CODEX_CONFIG)) {
       const cfg = parseCodexConfig(readFileSync(CODEX_CONFIG, "utf8"));
-      return { model: cfg.model };
+      return { model: cfg.model, effort: cfg.effort };
     }
   } catch {}
   return {};
@@ -228,8 +241,8 @@ export class CodexAgent extends AbstractAgent {
     return [];
   }
 
-  override readCurrentState(): AgentStateSnapshot {
-    return readCodexState();
+  override readCurrentState(ctx?: AgentContext): AgentStateSnapshot {
+    return readCodexState(ctx);
   }
 }
 
@@ -237,16 +250,28 @@ export class CodexAgent extends AbstractAgent {
 export const OPENCODE_STATE = join(homedir(), ".local", "state", "opencode", "model.json");
 export const OPENCODE_TUI = join(homedir(), ".local", "state", "opencode", "tui");
 
-export function readOpenCodeState(): OpenCodeModelState {
+export function readOpenCodeState(ctx?: AgentContext): OpenCodeModelState {
   try {
+    if (ctx?.worktreePath) {
+      const localState = join(ctx.worktreePath, ".opencode", "model.json");
+      if (existsSync(localState)) {
+        return parseOpenCodeState(readFileSync(localState, "utf8"));
+      }
+    }
     return parseOpenCodeState(readFileSync(OPENCODE_STATE, "utf8"));
   } catch {
     return {};
   }
 }
 
-export function readTuiAgent(): string | undefined {
+export function readTuiAgent(ctx?: AgentContext): string | undefined {
   try {
+    if (ctx?.worktreePath) {
+      const localTui = join(ctx.worktreePath, ".opencode", "tui");
+      if (existsSync(localTui)) {
+        return parseTuiAgent(readFileSync(localTui, "utf8"));
+      }
+    }
     return parseTuiAgent(readFileSync(OPENCODE_TUI, "utf8"));
   } catch {
     return undefined;
@@ -313,9 +338,9 @@ export class OpenCodeAgent extends AbstractAgent {
     return ["opencode", "models", "--verbose"];
   }
 
-  override readCurrentState(): AgentStateSnapshot {
-    const st = readOpenCodeState();
-    const tuiAgent = readTuiAgent();
+  override readCurrentState(ctx?: AgentContext): AgentStateSnapshot {
+    const st = readOpenCodeState(ctx);
+    const tuiAgent = readTuiAgent(ctx);
     const model = st.model ? `${st.model.providerID}/${st.model.modelID}` : undefined;
     const effort = model && st.variant ? st.variant[model] : undefined;
     return {
@@ -456,27 +481,135 @@ export function parseAgyAgents(stdout: string): string[] {
 
 export const AGY_LOG_DIR = join(homedir(), ".gemini", "antigravity-cli", "log");
 
-export function parseAgyLogMode(text: string): string | undefined {
+export function parseAgyLogWorkspace(headerText: string): string[] {
+  if (!headerText) return [];
+  const dirs: string[] = [];
+  const wsMatch = /workspaceDirs=\[([^\]]*)\]/.exec(headerText);
+  if (wsMatch && wsMatch[1]) {
+    for (const d of wsMatch[1].split(/[,|\s]+/)) {
+      const trimmed = d.trim();
+      if (trimmed && !dirs.includes(trimmed)) dirs.push(trimmed);
+    }
+  }
+  const initMatch = /Initializing CLI store manager for workspace\s+([^\r\n]+)/.exec(headerText);
+  if (initMatch && initMatch[1]) {
+    const trimmed = initMatch[1].trim();
+    if (trimmed && !dirs.includes(trimmed)) dirs.push(trimmed);
+  }
+  return dirs;
+}
+
+export function isMatchingWorkspace(wsPath?: string, targetPath?: string): boolean {
+  if (!wsPath || !targetPath) return false;
+  const normalize = (p: string) => {
+    let s = p.trim();
+    while (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1);
+    return s;
+  };
+  const w = normalize(wsPath);
+  const t = normalize(targetPath);
+  if (w === t) return true;
+  if (t.startsWith(w + "/") || w.startsWith(t + "/")) return true;
+  return false;
+}
+
+export function parseAgyLogModel(text: string): string | undefined {
   if (!text) return undefined;
   const lines = text.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
-    const m = /\]\s+SetCycleMode called:\s*([a-zA-Z0-9_\-]*)/.exec(lines[i]);
-    if (m) {
-      return normalizeAgyMode(m[1]);
+    const line = lines[i];
+    const m1 = /Propagating selected model override to backend:\s*label="([^"]+)"/.exec(line);
+    if (m1 && m1[1].trim()) {
+      return m1[1].trim();
+    }
+    const m2 = /Resolving model\s+([^\r\n]+)/.exec(line);
+    if (m2 && m2[1].trim()) {
+      return m2[1].trim();
+    }
+    const m3 = /HandleUserInput called with text:\s*"\/model\s+([^"\r\n]+)"/.exec(line);
+    if (m3 && m3[1].trim()) {
+      return m3[1].trim();
     }
   }
   return undefined;
 }
 
-export function readAgyLiveMode(): string | undefined {
+export function parseAgyLogEffort(text: string): string | undefined {
+  if (!text) return undefined;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    const m = /HandleUserInput called with text:\s*"\/effort\s+([^"\r\n]+)"/.exec(line);
+    if (m && m[1].trim()) {
+      return m[1].trim().toLowerCase();
+    }
+  }
+  return undefined;
+}
+
+export function parseAgyLogMode(text: string): string | undefined {
+  if (!text) return undefined;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    const m = /\]\s+SetCycleMode called:\s*([a-zA-Z0-9_\-]*)/.exec(line);
+    if (m) {
+      return normalizeAgyMode(m[1]);
+    }
+    const mAgent = /HandleUserInput called with text:\s*"\/agent\s+([^"\r\n]+)"/.exec(line);
+    if (mAgent && mAgent[1].trim()) {
+      return normalizeAgyMode(mAgent[1].trim());
+    }
+    const mMode = /HandleUserInput called with text:\s*"\/mode\s+([^"\r\n]+)"/.exec(line);
+    if (mMode && mMode[1].trim()) {
+      return normalizeAgyMode(mMode[1].trim());
+    }
+  }
+  return undefined;
+}
+
+export function readAgyLiveState(ctx?: AgentContext): { model?: string; effort?: string; mode?: string } {
   try {
-    if (!existsSync(AGY_LOG_DIR)) return undefined;
-    const files = readdirSync(AGY_LOG_DIR)
+    if (!existsSync(AGY_LOG_DIR)) return {};
+    const allFiles = readdirSync(AGY_LOG_DIR)
       .filter((f) => f.startsWith("cli-") && f.endsWith(".log"))
       .map((f) => ({ path: join(AGY_LOG_DIR, f), mtime: statSync(join(AGY_LOG_DIR, f)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
 
-    for (const file of files.slice(0, 3)) {
+    const targetPath = ctx?.worktreePath;
+    let candidateFiles: { path: string; mtime: number }[] = [];
+
+    if (targetPath) {
+      const matched: { path: string; mtime: number }[] = [];
+      for (const file of allFiles.slice(0, 30)) {
+        try {
+          const fd = openSync(file.path, "r");
+          const size = fstatSync(fd).size;
+          const readHeaderLen = Math.min(size, 32 * 1024);
+          const buf = Buffer.alloc(readHeaderLen);
+          readSync(fd, buf, 0, readHeaderLen, 0);
+          closeSync(fd);
+          const header = buf.toString("utf8", 0, readHeaderLen);
+          const workspaces = parseAgyLogWorkspace(header);
+          if (workspaces.some((ws) => isMatchingWorkspace(ws, targetPath))) {
+            matched.push(file);
+          }
+        } catch {}
+      }
+      if (matched.length) {
+        candidateFiles = matched;
+      }
+    }
+
+    if (!candidateFiles.length) {
+      candidateFiles = allFiles.slice(0, 5);
+    }
+
+    let foundModel: string | undefined;
+    let foundEffort: string | undefined;
+    let foundMode: string | undefined;
+
+    for (const file of candidateFiles.slice(0, 5)) {
       try {
         const fd = openSync(file.path, "r");
         const size = fstatSync(fd).size;
@@ -484,15 +617,38 @@ export function readAgyLiveMode(): string | undefined {
         const buf = Buffer.alloc(readLen);
         readSync(fd, buf, 0, readLen, Math.max(0, size - readLen));
         closeSync(fd);
-        const mode = parseAgyLogMode(buf.toString("utf8", 0, readLen));
-        if (mode) return mode;
+        const tail = buf.toString("utf8", 0, readLen);
+
+        if (!foundModel) {
+          foundModel = parseAgyLogModel(tail);
+        }
+        if (!foundEffort) {
+          const rawEffort = parseAgyLogEffort(tail);
+          if (rawEffort) {
+            foundEffort = rawEffort;
+          } else if (foundModel) {
+            foundEffort = extractEffortFromModel(foundModel);
+          }
+        }
+        if (!foundMode) {
+          foundMode = parseAgyLogMode(tail);
+        }
+
+        if (foundModel && foundEffort && foundMode) break;
       } catch {}
     }
-  } catch {}
-  return undefined;
+
+    return { model: foundModel, effort: foundEffort, mode: foundMode };
+  } catch {
+    return {};
+  }
 }
 
-export function readAgyState(): AgentStateSnapshot {
+export function readAgyLiveMode(ctx?: AgentContext): string | undefined {
+  return readAgyLiveState(ctx).mode;
+}
+
+export function readAgyState(ctx?: AgentContext): AgentStateSnapshot {
   let model: string | undefined;
   let effort: string | undefined;
   let mode: string | undefined;
@@ -505,9 +661,15 @@ export function readAgyState(): AgentStateSnapshot {
     }
   } catch {}
 
-  const liveMode = readAgyLiveMode();
-  if (liveMode) {
-    mode = liveMode;
+  const live = readAgyLiveState(ctx);
+  if (live.model) {
+    model = live.model;
+    effort = extractEffortFromModel(live.model) || live.effort || effort;
+  } else if (live.effort) {
+    effort = live.effort;
+  }
+  if (live.mode) {
+    mode = live.mode;
   }
   return { model, effort, mode };
 }
@@ -569,12 +731,134 @@ export class AgyAgent extends AbstractAgent {
     return parseAgyHelpModes(stdout);
   }
 
-  override readCurrentState(): AgentStateSnapshot {
-    return readAgyState();
+  override readCurrentState(ctx?: AgentContext): AgentStateSnapshot {
+    return readAgyState(ctx);
   }
 
   override getEffortForModel(model: string): string | undefined {
     return extractEffortFromModel(model);
+  }
+}
+
+// Hermes 설정 및 모델 캐시 경로
+export const HERMES_CONFIG = join(homedir(), ".hermes", "config.yaml");
+export const HERMES_MODELS_CACHE = join(homedir(), ".hermes", "provider_models_cache.json");
+
+export function parseHermesConfig(yamlText: string): { model?: string; effort?: string } {
+  let model: string | undefined;
+  let effort: string | undefined;
+
+  const defaultModelMatch = /^\s*default:\s*['"]?([^'"\r\n]+)['"]?/m.exec(yamlText || "");
+  if (defaultModelMatch) {
+    model = defaultModelMatch[1].trim();
+  } else {
+    const rootModelMatch = /^model:\s*['"]?([^'"\r\n{]+)['"]?/m.exec(yamlText || "");
+    if (rootModelMatch && rootModelMatch[1].trim()) {
+      model = rootModelMatch[1].trim();
+    }
+  }
+
+  const effortMatch = /reasoning_effort:\s*['"]?([^'"\r\n]+)['"]?/m.exec(yamlText || "");
+  if (effortMatch && effortMatch[1].trim()) {
+    effort = effortMatch[1].trim();
+  }
+
+  return { model, effort };
+}
+
+export function parseHermesModelsCache(jsonText: string): string[] {
+  try {
+    const data = JSON.parse(jsonText);
+    const set = new Set<string>();
+    const out: string[] = [];
+    if (data && typeof data === "object") {
+      for (const val of Object.values(data as Record<string, any>)) {
+        if (val && Array.isArray(val.models)) {
+          for (const m of val.models) {
+            if (typeof m === "string" && m.trim()) {
+              const id = m.trim();
+              if (!set.has(id)) {
+                set.add(id);
+                out.push(id);
+              }
+            }
+          }
+        }
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export function readHermesState(ctx?: AgentContext): AgentStateSnapshot {
+  try {
+    if (ctx?.worktreePath) {
+      const localCfg = join(ctx.worktreePath, ".hermes", "config.yaml");
+      if (existsSync(localCfg)) {
+        const cfg = parseHermesConfig(readFileSync(localCfg, "utf8"));
+        return { model: cfg.model, effort: cfg.effort };
+      }
+    }
+    if (existsSync(HERMES_CONFIG)) {
+      const cfg = parseHermesConfig(readFileSync(HERMES_CONFIG, "utf8"));
+      return { model: cfg.model, effort: cfg.effort };
+    }
+  } catch {}
+  return {};
+}
+
+export function readHermesModelsCache(): string[] {
+  try {
+    if (existsSync(HERMES_MODELS_CACHE)) {
+      return parseHermesModelsCache(readFileSync(HERMES_MODELS_CACHE, "utf8"));
+    }
+  } catch {}
+  return [];
+}
+
+// Hermes 구현체
+export class HermesAgent extends AbstractAgent {
+  readonly agentType = "hermes";
+  readonly label = "Hermes";
+
+  supports(kind: ControlKind): boolean {
+    return kind === "model" || kind === "effort";
+  }
+
+  override getModels(): string[] {
+    const cached = readHermesModelsCache();
+    if (cached.length) return cached;
+    return [
+      "deepseek/deepseek-v4-flash-0731",
+      "anthropic/claude-sonnet-4-6",
+      "openai/gpt-5.6-luna",
+      "google/gemini-3.8-flash",
+      "minimax/minimax-m3",
+    ];
+  }
+
+  override getEfforts(): string[] {
+    return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+  }
+
+  override getModes(): string[] {
+    return [];
+  }
+
+  getApplySteps(kind: ControlKind, value: string): ApplyStep[] {
+    if (kind === "model") {
+      return slash("/model", value);
+    }
+    if (kind === "effort") {
+      return slash("/reasoning", value);
+    }
+    return [];
+  }
+
+  override readCurrentState(ctx?: AgentContext): AgentStateSnapshot {
+    return readHermesState(ctx);
   }
 }
 
@@ -599,6 +883,9 @@ const AGENT_INSTANCES: Record<string, AbstractAgent> = {
   opencode: new OpenCodeAgent(),
   agy: new AgyAgent(),
   antigravity: new AgyAgent(),
+  hermes: new HermesAgent(),
+  "hermes-cli": new HermesAgent(),
+  "hermes-agent": new HermesAgent(),
 };
 
 export const UNSUPPORTED_AGENT = new UnsupportedAgent();
@@ -654,6 +941,9 @@ export const AGENTS: Record<string, AgentProfile> = {
   opencode: profileFor("opencode"),
   agy: profileFor("agy"),
   antigravity: profileFor("antigravity"),
+  hermes: profileFor("hermes"),
+  "hermes-cli": profileFor("hermes-cli"),
+  "hermes-agent": profileFor("hermes-agent"),
 };
 
 export function supported(agent: AbstractAgent | AgentProfile, kind: ControlKind): boolean {
