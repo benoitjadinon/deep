@@ -76,10 +76,133 @@ async function orcaJson(args: string[]): Promise<any> {
 async function orcaRun(args: string[]): Promise<void> {
   await execFileP(ORCA, args, EXEC);
 }
+interface AppInfo {
+  bundleId?: string;
+  name?: string;
+  asn?: string;
+}
+
+let lastNonOrcaApp: AppInfo | null = null;
+
+function isOrca(app: AppInfo | null): boolean {
+  if (!app) return false;
+  if (app.bundleId === "com.stablyai.orca") return true;
+  if (app.name === "Orca") return true;
+  return false;
+}
+
+function isStreamDeck(app: AppInfo | null): boolean {
+  if (!app) return false;
+  if (app.bundleId === "com.elgato.StreamDeck") return true;
+  if (app.name === "Stream Deck") return true;
+  return false;
+}
+
+async function getFrontmostApp(): Promise<AppInfo | null> {
+  try {
+    const { stdout: frontAsn } = await execFileP("/usr/bin/lsappinfo", ["front"], EXEC);
+    const asn = frontAsn.trim();
+    if (!asn) return null;
+    const { stdout: info } = await execFileP("/usr/bin/lsappinfo", [
+      "info",
+      "-only", "bundleid",
+      "-only", "name",
+      asn,
+    ], EXEC);
+    const bidMatch = info.match(/"CFBundleIdentifier"="([^"]+)"/);
+    const nameMatch = info.match(/"LSDisplayName"="([^"]+)"/);
+    return {
+      asn,
+      bundleId: bidMatch ? bidMatch[1] : undefined,
+      name: nameMatch ? nameMatch[1] : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function getPreviousAppFromSystem(): Promise<AppInfo | null> {
+  try {
+    const { stdout: meta } = await execFileP("/usr/bin/lsappinfo", ["metainfo"], EXEC);
+    const m = meta.match(/bringForwardOrder\s*=\s*(.+)/);
+    if (!m) return null;
+    const entries = [...m[1].matchAll(/"([^"]+)"\s+(ASN:[^\s:]+:)/g)].map((x) => ({ name: x[1], asn: x[2] }));
+    for (const app of entries) {
+      if (app.name === "Orca" || app.name === "Stream Deck") continue;
+      try {
+        const { stdout: info } = await execFileP("/usr/bin/lsappinfo", [
+          "info",
+          "-only", "bundleid",
+          app.asn,
+        ], EXEC);
+        const bidMatch = info.match(/"CFBundleIdentifier"="([^"]+)"/);
+        const bundleId = bidMatch ? bidMatch[1] : undefined;
+        if (bundleId && bundleId !== "com.stablyai.orca" && bundleId !== "com.elgato.StreamDeck") {
+          return { name: app.name, asn: app.asn, bundleId };
+        }
+      } catch {}
+    }
+  } catch {}
+  return null;
+}
+
+async function activateApp(app: AppInfo): Promise<boolean> {
+  if (app.bundleId) {
+    try {
+      await execFileP("/usr/bin/open", ["-b", app.bundleId], EXEC);
+      return true;
+    } catch {}
+  }
+  if (app.asn) {
+    try {
+      await execFileP("/usr/bin/lsappinfo", ["setfront", app.asn], EXEC);
+      return true;
+    } catch {}
+  }
+  if (app.name) {
+    try {
+      await execFileP("/usr/bin/open", ["-a", app.name], EXEC);
+      return true;
+    } catch {}
+  }
+  return false;
+}
+
+async function hideOrca(): Promise<void> {
+  try {
+    await execFileP("/usr/bin/osascript", [
+      "-l", "JavaScript",
+      "-e", 'ObjC.import("AppKit"); const a = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("com.stablyai.orca"); if (a.count > 0) a.objectAtIndex(0).hide();',
+    ], EXEC);
+  } catch {}
+}
+
+// 이전에 보던 앱으로 OS 전환 (슈퍼탭: Cmd+Tab / Alt+Tab 토글 효과)
+async function switchToPreviousApp(): Promise<void> {
+  try {
+    if (lastNonOrcaApp) {
+      const ok = await activateApp(lastNonOrcaApp);
+      if (ok) return;
+    }
+    const sysPrev = await getPreviousAppFromSystem();
+    if (sysPrev) {
+      const ok = await activateApp(sysPrev);
+      if (ok) return;
+    }
+    await hideOrca();
+  } catch (e) {
+    streamDeck.logger.error(`switch to previous app: ${e}`);
+  }
+}
+
 // Orca가 백그라운드(다른 앱에 포커스)면 앞으로 가져온다 — 키 탭/대상 점프 시 창이 안 뜨는 문제 해결.
 // 이미 앞이면 no-op. `open -b <bundle>`은 실행중이면 activate, 아니면 실행.
 async function focusOrca(): Promise<void> {
   try {
+    const frontApp = await getFrontmostApp();
+    if (!isOrca(frontApp) && frontApp && !isStreamDeck(frontApp)) {
+      lastNonOrcaApp = frontApp;
+    }
     await execFileP("/usr/bin/open", ["-b", "com.stablyai.orca"], EXEC);
   } catch (e) {
     streamDeck.logger.error(`focus orca: ${e}`);
@@ -730,6 +853,20 @@ class SlotAction extends SingletonAction {
   override async onKeyDown(ev: any): Promise<void> {
     const b: any = deck.slots[slotIndex(ev.payload?.coordinates)];
     if (b && !b.empty) {
+      const frontApp = await getFrontmostApp();
+      const isOrcaFront = isOrca(frontApp);
+
+      if (!isOrcaFront && frontApp && !isStreamDeck(frontApp)) {
+        lastNonOrcaApp = frontApp;
+      }
+
+      // 이미 Orca가 포커스되어 있고, 탭한 세션이 이미 활성 세션(targetHandle)인 경우:
+      // 이전 앱으로 OS 슈퍼탭(Cmd+Tab / Alt+Tab) 토글 전환
+      if (isOrcaFront && targetHandle === b.handle) {
+        await switchToPreviousApp();
+        return;
+      }
+
       setTarget(b.handle); // 탭한 세션을 다이얼 대상으로(pending 모델도 그 세션값으로)
       lastNav = Date.now(); // 방금 수동 이동 → poll 자동추적 잠깐 억제
       try {

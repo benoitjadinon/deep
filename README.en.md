@@ -42,7 +42,7 @@ npx streamdeck link com.byjw.deep.sdPlugin
 | **Top color ribbon** | 🔵 working · 🟡 waiting (input needed) · 🟢 done · 🔴 error · ⚪ idle |
 | **Center white text** | Project name (extracted from the path, e.g. `AcmeApp`) |
 | **Bottom** | Branch. The session you're currently viewing is highlighted with a coral chip |
-| **Tap** | Focus that session (`orca terminal switch`) |
+| **Tap** | Focus that session (`orca terminal switch`) / If already focused on that session, toggle back to previous app (OS super-tab) |
 | **Green done color** | done + unread = green (needs checking), fades to white (idle) once reviewed |
 
 ### Dials

@@ -18589,8 +18589,127 @@ async function orcaJson(args) {
 async function orcaRun(args) {
   await execFileP(ORCA, args, EXEC);
 }
+var lastNonOrcaApp = null;
+function isOrca(app) {
+  if (!app) return false;
+  if (app.bundleId === "com.stablyai.orca") return true;
+  if (app.name === "Orca") return true;
+  return false;
+}
+function isStreamDeck(app) {
+  if (!app) return false;
+  if (app.bundleId === "com.elgato.StreamDeck") return true;
+  if (app.name === "Stream Deck") return true;
+  return false;
+}
+async function getFrontmostApp() {
+  try {
+    const { stdout: frontAsn } = await execFileP("/usr/bin/lsappinfo", ["front"], EXEC);
+    const asn = frontAsn.trim();
+    if (!asn) return null;
+    const { stdout: info } = await execFileP("/usr/bin/lsappinfo", [
+      "info",
+      "-only",
+      "bundleid",
+      "-only",
+      "name",
+      asn
+    ], EXEC);
+    const bidMatch = info.match(/"CFBundleIdentifier"="([^"]+)"/);
+    const nameMatch = info.match(/"LSDisplayName"="([^"]+)"/);
+    return {
+      asn,
+      bundleId: bidMatch ? bidMatch[1] : void 0,
+      name: nameMatch ? nameMatch[1] : void 0
+    };
+  } catch {
+    return null;
+  }
+}
+async function getPreviousAppFromSystem() {
+  try {
+    const { stdout: meta } = await execFileP("/usr/bin/lsappinfo", ["metainfo"], EXEC);
+    const m = meta.match(/bringForwardOrder\s*=\s*(.+)/);
+    if (!m) return null;
+    const entries = [...m[1].matchAll(/"([^"]+)"\s+(ASN:[^\s:]+:)/g)].map((x) => ({ name: x[1], asn: x[2] }));
+    for (const app of entries) {
+      if (app.name === "Orca" || app.name === "Stream Deck") continue;
+      try {
+        const { stdout: info } = await execFileP("/usr/bin/lsappinfo", [
+          "info",
+          "-only",
+          "bundleid",
+          app.asn
+        ], EXEC);
+        const bidMatch = info.match(/"CFBundleIdentifier"="([^"]+)"/);
+        const bundleId = bidMatch ? bidMatch[1] : void 0;
+        if (bundleId && bundleId !== "com.stablyai.orca" && bundleId !== "com.elgato.StreamDeck") {
+          return { name: app.name, asn: app.asn, bundleId };
+        }
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return null;
+}
+async function activateApp(app) {
+  if (app.bundleId) {
+    try {
+      await execFileP("/usr/bin/open", ["-b", app.bundleId], EXEC);
+      return true;
+    } catch {
+    }
+  }
+  if (app.asn) {
+    try {
+      await execFileP("/usr/bin/lsappinfo", ["setfront", app.asn], EXEC);
+      return true;
+    } catch {
+    }
+  }
+  if (app.name) {
+    try {
+      await execFileP("/usr/bin/open", ["-a", app.name], EXEC);
+      return true;
+    } catch {
+    }
+  }
+  return false;
+}
+async function hideOrca() {
+  try {
+    await execFileP("/usr/bin/osascript", [
+      "-l",
+      "JavaScript",
+      "-e",
+      'ObjC.import("AppKit"); const a = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("com.stablyai.orca"); if (a.count > 0) a.objectAtIndex(0).hide();'
+    ], EXEC);
+  } catch {
+  }
+}
+async function switchToPreviousApp() {
+  try {
+    if (lastNonOrcaApp) {
+      const ok = await activateApp(lastNonOrcaApp);
+      if (ok) return;
+    }
+    const sysPrev = await getPreviousAppFromSystem();
+    if (sysPrev) {
+      const ok = await activateApp(sysPrev);
+      if (ok) return;
+    }
+    await hideOrca();
+  } catch (e) {
+    plugin_default.logger.error(`switch to previous app: ${e}`);
+  }
+}
 async function focusOrca() {
   try {
+    const frontApp = await getFrontmostApp();
+    if (!isOrca(frontApp) && frontApp && !isStreamDeck(frontApp)) {
+      lastNonOrcaApp = frontApp;
+    }
     await execFileP("/usr/bin/open", ["-b", "com.stablyai.orca"], EXEC);
   } catch (e) {
     plugin_default.logger.error(`focus orca: ${e}`);
@@ -19187,6 +19306,15 @@ var SlotAction = class extends SingletonAction {
   async onKeyDown(ev) {
     const b = deck.slots[slotIndex(ev.payload?.coordinates)];
     if (b && !b.empty) {
+      const frontApp = await getFrontmostApp();
+      const isOrcaFront = isOrca(frontApp);
+      if (!isOrcaFront && frontApp && !isStreamDeck(frontApp)) {
+        lastNonOrcaApp = frontApp;
+      }
+      if (isOrcaFront && targetHandle === b.handle) {
+        await switchToPreviousApp();
+        return;
+      }
       setTarget(b.handle);
       lastNav = Date.now();
       try {

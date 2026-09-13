@@ -44,7 +44,7 @@ npx streamdeck link com.byjw.deep.sdPlugin
 | **상단 색 띠** | 🔵 working · 🟡 waiting(입력대기) · 🟢 done · 🔴 error · ⚪ idle |
 | **가운데 흰 글자** | 프로젝트명 (경로에서 추출, 예: `AcmeApp`) |
 | **아래** | 브랜치. **현재 보는 세션은 코랄 칩**으로 강조 |
-| **탭** | 그 세션으로 포커스(`orca terminal switch`) |
+| **탭** | 그 세션으로 포커스(`orca terminal switch`) / 이미 그 세션에 포커스되어 있으면 이전 앱으로 OS 전환(슈퍼탭) |
 | **초록 완료 색** | done + 안 읽음 = 초록(확인 필요), 열어보면 흰색(idle) |
 
 ### 다이얼
