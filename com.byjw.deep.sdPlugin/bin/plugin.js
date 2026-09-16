@@ -54588,6 +54588,14 @@ function buildDeck(input, opts = {}) {
       metaByWt.set(wt.worktreeId, { repo: wt.repo, branch: branch || void 0, unread: wt.unread });
     }
   }
+  const tabTitlesFromLayouts = extractTabTitlesFromLayouts(input.visualLayouts);
+  const getTabTitle = (tabId) => {
+    if (input.tabTitles) {
+      const explicit = input.tabTitles instanceof Map ? input.tabTitles.get(tabId) : input.tabTitles[tabId];
+      if (explicit) return explicit;
+    }
+    return tabTitlesFromLayouts.get(tabId);
+  };
   const sessions = (input.terminals ?? []).map((t) => {
     const pane = `${t.tabId}:${t.leafId}`;
     const hasWt = stateByPane.has(pane);
@@ -54599,6 +54607,7 @@ function buildDeck(input, opts = {}) {
     }
     const agent = idFromWt || hook?.agentType || t.agentIdentity || "";
     const hookEvent = hook?.hookEventName;
+    const tabTitle = getTabTitle(t.tabId) || t.title || void 0;
     let state;
     if (hasWt) {
       state = stateByPane.get(pane) || "idle";
@@ -54632,7 +54641,8 @@ function buildDeck(input, opts = {}) {
       hasWt,
       agent,
       state,
-      agentType: agent
+      agentType: agent,
+      tabTitle
     };
   }).filter((x) => x !== null).sort((a, b) => a.t.handle.localeCompare(b.t.handle));
   const repoById = /* @__PURE__ */ new Map();
@@ -54670,7 +54680,8 @@ function buildDeck(input, opts = {}) {
     slots.push({
       empty: false,
       handle: e.item.t.handle,
-      label: e.item.t.title,
+      label: e.item.tabTitle || e.item.t.title || "",
+      tabTitle: e.item.tabTitle || e.item.t.title || void 0,
       state: e.item.state,
       color: colorFor(e.item.state),
       worktreePath: e.item.t.worktreePath,
@@ -54689,6 +54700,28 @@ function buildDeck(input, opts = {}) {
     });
   }
   return { slots, page, pageCount, total };
+}
+function extractTabTitlesFromLayouts(visualLayouts) {
+  const map2 = /* @__PURE__ */ new Map();
+  if (!visualLayouts) return map2;
+  function walk(node) {
+    if (!node) return;
+    if (Array.isArray(node.tabs)) {
+      for (const t of node.tabs) {
+        if (t.tabId && t.title) map2.set(t.tabId, t.title);
+        if (t.panes) walk(t.panes);
+      }
+    }
+    if (node.first) walk(node.first);
+    if (node.second) walk(node.second);
+    if (Array.isArray(node.children)) {
+      for (const child of node.children) walk(child);
+    }
+  }
+  for (const vl of visualLayouts) {
+    if (vl?.root) walk(vl.root);
+  }
+  return map2;
 }
 function findAllActivePanesInLayout(node) {
   if (!node) return [];
@@ -54769,6 +54802,7 @@ var HEX = {
   white: "#6b7280"
 };
 var esc2 = (s) => (s ?? "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
+var stripSpinner = (s) => (s ?? "").replace(/^[\s⠀-⣿✨✳✻⏺※*•…]+/u, "").trim();
 function wrap(s, perLine = 6, maxLines = 3) {
   const chars = [...s];
   const lines = [];
@@ -54826,10 +54860,51 @@ function agentBadge(agentType) {
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
   return `<rect x="104" y="118" width="32" height="18" rx="9" fill="#4b5563"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
 }
+function wrapWords(s, maxCharsPerLine = 15, maxLines = 2) {
+  const cleaned = stripSpinner(s).trim();
+  if (!cleaned) return [];
+  const words = cleaned.split(/\s+/);
+  const lines = [];
+  let cur = "";
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (!cur) {
+      if (w.length > maxCharsPerLine) {
+        lines.push(w.slice(0, maxCharsPerLine));
+        cur = w.slice(maxCharsPerLine);
+      } else {
+        cur = w;
+      }
+    } else {
+      if ((cur + " " + w).length <= maxCharsPerLine) {
+        cur += " " + w;
+      } else {
+        lines.push(cur);
+        cur = w;
+        if (lines.length === maxLines) break;
+      }
+    }
+  }
+  if (cur && lines.length < maxLines) {
+    lines.push(cur);
+  }
+  const rendered = lines.join(" ");
+  if (rendered.length < cleaned.length && lines.length > 0) {
+    const last = lines[lines.length - 1];
+    if (!last.endsWith("\u2026")) {
+      if (last.length >= maxCharsPerLine) {
+        lines[lines.length - 1] = last.slice(0, maxCharsPerLine - 1) + "\u2026";
+      } else {
+        lines[lines.length - 1] = last + "\u2026";
+      }
+    }
+  }
+  return lines;
+}
 function stateIcon(state) {
   const s = (state || "").toLowerCase();
   const x = 12;
-  const y = 22;
+  const y = 114;
   if (s === "done") {
     return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#22c55e" stroke-width="2"/><path d="M4.8 8.2 L7.2 10.4 L11.2 5.8" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`;
   }
@@ -54875,10 +54950,18 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   const num = b.dupIndex && b.dupIndex > 0 ? `-${b.dupIndex}` : "";
   const sub = b.branch ? `${b.branch}${num}` : num ? `#${b.dupIndex}` : "";
   const fit = 116 / units(proj);
-  const projSvg = fit >= 16 ? `<text x="72" y="84" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="${Math.min(30, Math.floor(fit))}" font-weight="700">${esc2(proj)}</text>` : `<text x="72" y="84" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="20" font-weight="700">${esc2(marqueeWindow(proj, 9, tick2))}</text>`;
+  const projSvg = fit >= 15 ? `<text x="72" y="41" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="${Math.min(21, Math.floor(fit))}" font-weight="700">${esc2(proj)}</text>` : `<text x="72" y="41" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="15" font-weight="700">${esc2(marqueeWindow(proj, 10, tick2))}</text>`;
   let subSvg = "";
   if (sub) {
-    subSvg = `<text x="72" y="112" text-anchor="middle" fill="#b8b8be" font-family="sans-serif" font-size="17" font-weight="600">${esc2(sub)}</text>`;
+    subSvg = `<text x="72" y="58" text-anchor="middle" fill="#a1a1aa" font-family="sans-serif" font-size="15" font-weight="600">${esc2(sub)}</text>`;
+  }
+  const titleText = b.tabTitle || b.label || "";
+  const rawTitle = titleText !== proj ? titleText : "";
+  const titleLines = wrapWords(rawTitle, 15, 2);
+  let titleSvg = "";
+  if (titleLines.length > 0) {
+    const startY = sub ? 77 : 67;
+    titleSvg = titleLines.map((line, idx) => `<text x="72" y="${startY + idx * 16}" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="14" font-weight="500">${esc2(line)}</text>`).join("");
   }
   const attn = needsAttention(b, isTarget);
   let glow = "";
@@ -54891,7 +54974,7 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   }
   const g0 = dim ? '<g opacity="0.32">' : "";
   const g1 = dim ? "</g>" : "";
-  const cornerTag = isTarget ? `<circle cx="124" cy="32" r="10" fill="#d97757"/>` : "";
+  const cornerTag = isTarget ? `<circle cx="124" cy="28" r="8" fill="#d97757"/>` : "";
   const stIcon = stateIcon(b.state);
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="144" height="144">
   <defs><clipPath id="r"><rect width="144" height="144" rx="18"/></clipPath></defs>
@@ -54899,7 +54982,7 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   ${renderBgIcon(b)}
   ${glow}
   <rect width="144" height="13" fill="${color}" clip-path="url(#r)"/>
-  ${stIcon}${projSvg}${subSvg}${agentBadge(b.agentType)}${g1}${cornerTag}
+  ${projSvg}${subSvg}${titleSvg}${stIcon}${agentBadge(b.agentType)}${g1}${cornerTag}
 </svg>`;
 }
 function keyImage(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
@@ -55067,6 +55150,212 @@ var openCodeModelPicker = (value, name) => [
   // model list dialog
   { text: modelFilterText(value, name), enter: false }
 ];
+var CLAUDE_SETTINGS = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".claude", "settings.json");
+var CLAUDE_MODEL_CATALOG_DIR = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".claude", "cache", "model-catalog");
+var CLAUDE_PROJECTS_DIR = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".claude", "projects");
+var CLAUDE_DEFAULT_MODELS = [
+  "claude-opus-5",
+  "claude-sonnet-5",
+  "claude-haiku-4-5-20251001",
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+  "claude-sonnet-4-6",
+  "opus",
+  "sonnet",
+  "haiku"
+];
+function parseClaudeSettings(text) {
+  try {
+    const data = JSON.parse(text);
+    const model = typeof data?.model === "string" ? data.model : void 0;
+    const effort = typeof data?.effortLevel === "string" ? data.effortLevel : typeof data?.effort === "string" ? data.effort : void 0;
+    const mode = typeof data?.permissionMode === "string" ? data.permissionMode : typeof data?.mode === "string" ? data.mode : typeof data?.agent === "string" ? data.agent : void 0;
+    return { model, effort, mode };
+  } catch {
+    return {};
+  }
+}
+function parseClaudeModelCatalog(text) {
+  const models = [];
+  const modelNames = {};
+  const effortsByModel = {};
+  const seen = /* @__PURE__ */ new Set();
+  try {
+    const data = JSON.parse(text);
+    if (!data || typeof data !== "object") {
+      return { models, modelNames, effortsByModel };
+    }
+    const processModel = (m) => {
+      if (!m || typeof m !== "object") return;
+      const mid = typeof m.id === "string" ? m.id.trim() : "";
+      if (!mid) return;
+      if (!seen.has(mid)) {
+        seen.add(mid);
+        models.push(mid);
+      }
+      const name = typeof m.name === "string" ? m.name.trim() : typeof m.short_name === "string" ? m.short_name.trim() : "";
+      if (name) {
+        modelNames[mid] = name;
+      }
+      const thinking = m.thinking;
+      if (thinking && typeof thinking === "object") {
+        const effortOpts = thinking.effort_options;
+        if (Array.isArray(effortOpts)) {
+          const efforts = effortOpts.map((opt) => typeof opt?.id === "string" ? opt.id.trim() : "").filter(Boolean);
+          if (efforts.length) {
+            effortsByModel[mid] = efforts;
+          }
+        }
+      }
+    };
+    const catModels = data?.catalog?.config?.models;
+    if (Array.isArray(catModels)) {
+      for (const m of catModels) processModel(m);
+    }
+    const surfaces = data?.document?.surfaces;
+    if (surfaces && typeof surfaces === "object") {
+      const surfaceKeys = ["cc", "cowork", "ccd", "ccr", "chat", ...Object.keys(surfaces)];
+      const checked = /* @__PURE__ */ new Set();
+      for (const sname of surfaceKeys) {
+        if (checked.has(sname)) continue;
+        checked.add(sname);
+        const sval = surfaces[sname];
+        if (sval && typeof sval === "object" && Array.isArray(sval.model_selector_config)) {
+          for (const cfg of sval.model_selector_config) {
+            if (cfg && Array.isArray(cfg.models)) {
+              for (const m of cfg.models) processModel(m);
+            }
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  return { models, modelNames, effortsByModel };
+}
+function readClaudeModelsCache() {
+  try {
+    if ((0, import_node_fs5.existsSync)(CLAUDE_MODEL_CATALOG_DIR)) {
+      const files = (0, import_node_fs5.readdirSync)(CLAUDE_MODEL_CATALOG_DIR).filter((f) => f.endsWith(".json"));
+      const allModels = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const file2 of files) {
+        try {
+          const content = (0, import_node_fs5.readFileSync)((0, import_node_path7.join)(CLAUDE_MODEL_CATALOG_DIR, file2), "utf8");
+          const { models } = parseClaudeModelCatalog(content);
+          for (const m of models) {
+            if (!seen.has(m)) {
+              seen.add(m);
+              allModels.push(m);
+            }
+          }
+        } catch {
+        }
+      }
+      if (allModels.length) return allModels;
+    }
+  } catch {
+  }
+  return [];
+}
+function readClaudeModelEffortsCache(modelId) {
+  if (!modelId) return [];
+  try {
+    if ((0, import_node_fs5.existsSync)(CLAUDE_MODEL_CATALOG_DIR)) {
+      const files = (0, import_node_fs5.readdirSync)(CLAUDE_MODEL_CATALOG_DIR).filter((f) => f.endsWith(".json"));
+      for (const file2 of files) {
+        try {
+          const content = (0, import_node_fs5.readFileSync)((0, import_node_path7.join)(CLAUDE_MODEL_CATALOG_DIR, file2), "utf8");
+          const { effortsByModel } = parseClaudeModelCatalog(content);
+          if (effortsByModel[modelId]?.length) {
+            return effortsByModel[modelId];
+          }
+        } catch {
+        }
+      }
+    }
+  } catch {
+  }
+  return [];
+}
+function readClaudeState(ctx) {
+  const state = {};
+  const settingsPaths = [];
+  if (ctx?.worktreePath) {
+    settingsPaths.push((0, import_node_path7.join)(ctx.worktreePath, ".claude", "settings.json"));
+    settingsPaths.push((0, import_node_path7.join)(ctx.worktreePath, ".claude.json"));
+  }
+  settingsPaths.push(CLAUDE_SETTINGS);
+  for (const p of settingsPaths) {
+    try {
+      if ((0, import_node_fs5.existsSync)(p)) {
+        const parsed = parseClaudeSettings((0, import_node_fs5.readFileSync)(p, "utf8"));
+        if (!state.model && parsed.model) state.model = parsed.model;
+        if (!state.effort && parsed.effort) state.effort = parsed.effort;
+        if (!state.mode && parsed.mode) state.mode = parsed.mode;
+      }
+    } catch {
+    }
+  }
+  if (ctx?.worktreePath) {
+    try {
+      const normalizedPath = ctx.worktreePath.replace(/\/+$/, "");
+      const projName = normalizedPath.replace(/\//g, "-");
+      const projDir = (0, import_node_path7.join)(CLAUDE_PROJECTS_DIR, projName);
+      if ((0, import_node_fs5.existsSync)(projDir)) {
+        const jsonlFiles = (0, import_node_fs5.readdirSync)(projDir).filter((f) => f.endsWith(".jsonl") && !f.includes("subagents")).map((f) => ({
+          path: (0, import_node_path7.join)(projDir, f),
+          mtime: (0, import_node_fs5.statSync)((0, import_node_path7.join)(projDir, f)).mtimeMs
+        })).sort((a, b) => b.mtime - a.mtime);
+        for (const item of jsonlFiles.slice(0, 3)) {
+          try {
+            const fd = (0, import_node_fs5.openSync)(item.path, "r");
+            const size = (0, import_node_fs5.fstatSync)(fd).size;
+            const readLen = Math.min(size, 64 * 1024);
+            const buf = Buffer.alloc(readLen);
+            (0, import_node_fs5.readSync)(fd, buf, 0, readLen, Math.max(0, size - readLen));
+            (0, import_node_fs5.closeSync)(fd);
+            const tail = buf.toString("utf8", 0, readLen);
+            const lines = tail.split("\n");
+            for (let i = lines.length - 1; i >= 0; i--) {
+              const line = lines[i].trim();
+              if (!line) continue;
+              try {
+                const d = JSON.parse(line);
+                if (!state.model) {
+                  if (d.type === "assistant" && typeof d.message === "object" && typeof d.message?.model === "string") {
+                    state.model = d.message.model;
+                  }
+                }
+                if (!state.mode) {
+                  if (d.type === "permission-mode" && typeof d.permissionMode === "string") {
+                    state.mode = d.permissionMode;
+                  } else if (d.type === "mode" && typeof d.mode === "string") {
+                    state.mode = d.mode;
+                  }
+                }
+                if (!state.effort) {
+                  if (typeof d.effort === "string") {
+                    state.effort = d.effort;
+                  } else if (typeof d.effortLevel === "string") {
+                    state.effort = d.effortLevel;
+                  }
+                }
+              } catch {
+              }
+              if (state.model && state.mode && state.effort) break;
+            }
+          } catch {
+          }
+          if (state.model && state.mode && state.effort) break;
+        }
+      }
+    } catch {
+    }
+  }
+  return state;
+}
 var ClaudeAgent = class extends AbstractAgent {
   constructor() {
     super(...arguments);
@@ -55074,32 +55363,57 @@ var ClaudeAgent = class extends AbstractAgent {
     this.label = "Claude";
   }
   supports(kind) {
-    return kind === "model";
+    return kind === "model" || kind === "effort" || kind === "mode";
   }
   getModels() {
-    return ["opus", "sonnet", "haiku"];
+    const cached2 = readClaudeModelsCache();
+    if (cached2.length) return cached2;
+    return [...CLAUDE_DEFAULT_MODELS];
   }
-  getEfforts() {
-    return [];
+  getEfforts(modelId) {
+    if (modelId) {
+      const specific = readClaudeModelEffortsCache(modelId);
+      if (specific.length) return specific;
+      if (modelId.includes("haiku")) return [];
+    }
+    return ["low", "medium", "high", "xhigh", "max"];
   }
   getModes() {
-    return [];
+    return ["default", "plan", "accept-edits"];
   }
   getApplySteps(kind, value) {
     if (kind === "model") {
       return slash("/model", value);
     }
+    if (kind === "effort") {
+      return slash("/effort", value);
+    }
+    if (kind === "mode") {
+      return slash("/mode", value);
+    }
     return [];
+  }
+  readCurrentState(ctx) {
+    return readClaudeState(ctx);
   }
 };
 var CODEX_CONFIG = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".codex", "config.toml");
 var CODEX_MODELS_CACHE = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".codex", "models_cache.json");
+var CODEX_DEFAULT_MODELS = [
+  "gpt-5.6-luna",
+  "gpt-5.6-terra",
+  "gpt-5.5",
+  "gpt-5.4-mini",
+  "gpt-reserve"
+];
 function parseCodexConfig(toml) {
   const modelMatch = /^model\s*=\s*"([^"]+)"/m.exec(toml || "");
   const effortMatch = /^model_reasoning_effort\s*=\s*"([^"]+)"/m.exec(toml || "");
+  const modeMatch = /^(?:sandbox_mode|approval_policy|mode)\s*=\s*"([^"]+)"/m.exec(toml || "");
   return {
     model: modelMatch ? modelMatch[1] : void 0,
-    effort: effortMatch ? effortMatch[1] : void 0
+    effort: effortMatch ? effortMatch[1] : void 0,
+    mode: modeMatch ? modeMatch[1] : void 0
   };
 }
 function parseCodexModelsCache(text) {
@@ -55118,12 +55432,12 @@ function readCodexState(ctx) {
       const localCfg = (0, import_node_path7.join)(ctx.worktreePath, ".codex", "config.toml");
       if ((0, import_node_fs5.existsSync)(localCfg)) {
         const cfg = parseCodexConfig((0, import_node_fs5.readFileSync)(localCfg, "utf8"));
-        return { model: cfg.model, effort: cfg.effort };
+        return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
       }
     }
     if ((0, import_node_fs5.existsSync)(CODEX_CONFIG)) {
       const cfg = parseCodexConfig((0, import_node_fs5.readFileSync)(CODEX_CONFIG, "utf8"));
-      return { model: cfg.model, effort: cfg.effort };
+      return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
     }
   } catch {
   }
@@ -55145,22 +55459,28 @@ var CodexAgent = class extends AbstractAgent {
     this.label = "Codex";
   }
   supports(kind) {
-    return kind === "model";
+    return kind === "model" || kind === "effort" || kind === "mode";
   }
   getModels() {
     const cached2 = readCodexModelsCache();
     if (cached2.length) return cached2;
-    return ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4-mini", "gpt-reserve"];
+    return [...CODEX_DEFAULT_MODELS];
   }
   getEfforts() {
-    return [];
+    return ["none", "low", "medium", "high", "xhigh", "max"];
   }
   getModes() {
-    return [];
+    return ["workspace-write", "read-only", "danger-full-access"];
   }
   getApplySteps(kind, value) {
     if (kind === "model") {
       return slash("/model", value);
+    }
+    if (kind === "effort") {
+      return slash("/effort", value);
+    }
+    if (kind === "mode") {
+      return slash("/permissions", value);
     }
     return [];
   }
@@ -56508,19 +56828,20 @@ async function poll() {
       orcaJson(["worktree", "ps"])
     ]);
     const hookEvents = getHookEvents();
+    const visualLayouts = tl.result?.visualLayouts;
     deck = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, hookEventsByPane: hookEvents },
+      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
       { page: currentPage, perPage: 8 }
     );
     if (currentPage >= deck.pageCount) {
       currentPage = Math.max(0, deck.pageCount - 1);
       deck = buildDeck(
-        { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, hookEventsByPane: hookEvents },
+        { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
         { page: currentPage, perPage: 8 }
       );
     }
     const full = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, hookEventsByPane: hookEvents },
+      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
       { page: 0, perPage: 9999 }
     );
     allHandles = [];
@@ -56884,7 +57205,12 @@ setInterval(() => {
 function setupFileWatchers() {
   const dirsToWatch = [
     (0, import_node_path8.join)((0, import_node_os3.homedir)(), "Library/Application Support/orca/agent-hooks"),
-    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".local/state/opencode")
+    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".local/state/opencode"),
+    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".claude"),
+    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".claude/cache/model-catalog"),
+    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".claude/projects"),
+    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".codex"),
+    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".gemini/antigravity-cli")
   ];
   for (const dir of dirsToWatch) {
     try {

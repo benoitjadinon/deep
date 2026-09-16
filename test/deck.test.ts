@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildDeck, colorFor, projectOf, needsAttention, findActivePaneInLayout, resolveActiveTerminal, nextWorktreeName } from "../src/deck.js";
+import { buildDeck, colorFor, projectOf, needsAttention, findActivePaneInLayout, resolveActiveTerminal, nextWorktreeName, extractTabTitlesFromLayouts } from "../src/deck.js";
 
 describe("needsAttention — 주의 필요 세션 판정(애니메이션 트리거)", () => {
   const b = (color: any, unread?: boolean) => ({ empty: false as const, handle: "t", label: "x", state: "s" as any, color, unread });
@@ -37,11 +37,33 @@ const worktrees = [
   { agents: [{ paneKey: "tab2:leaf2", state: "waiting", agentType: "opencode" }] },
 ];
 
-describe("buildDeck — 에이전트 타입 스레딩 + 게이팅용 메타", () => {
+describe("buildDeck — 에이전트 타입 스레딩 + 게이팅용 메타 + 탭 제목", () => {
   it("버튼에 paneKey 매칭 agentType이 담긴다", () => {
     const slots = buildDeck({ terminals, worktrees }).slots as any[];
     expect(slots[0].agentType).toBe("claude");
     expect(slots[1].agentType).toBe("opencode");
+  });
+
+  it("visualLayouts에서 탭 제목(tabTitle)을 추출하여 버튼에 채운다", () => {
+    const visualLayouts = [
+      {
+        worktreeId: "wt1",
+        root: {
+          type: "group",
+          tabs: [
+            { tabId: "tab1", title: "Design Feedback URL Browser" },
+            { tabId: "tab2", title: "Fix Auth Flow Bug" },
+          ],
+        },
+      },
+    ];
+    const titles = extractTabTitlesFromLayouts(visualLayouts);
+    expect(titles.get("tab1")).toBe("Design Feedback URL Browser");
+    expect(titles.get("tab2")).toBe("Fix Auth Flow Bug");
+
+    const slots = buildDeck({ terminals, worktrees, visualLayouts }).slots as any[];
+    expect(slots[0].tabTitle).toBe("Design Feedback URL Browser");
+    expect(slots[1].tabTitle).toBe("Fix Auth Flow Bug");
   });
 });
 

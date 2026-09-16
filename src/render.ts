@@ -89,12 +89,58 @@ export function agentBadge(agentType?: string | null): string {
   return `<rect x="104" y="118" width="32" height="18" rx="9" fill="#4b5563"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
 }
 
-// 에이전트 세션 상태 아이콘 (Orca UI의 상태 뱃지 대응)
+// 단어/공백 경계 우선으로 maxCharsPerLine 글자씩 maxLines 줄로 자르고 넘치면 …
+export function wrapWords(s: string, maxCharsPerLine = 15, maxLines = 2): string[] {
+  const cleaned = stripSpinner(s).trim();
+  if (!cleaned) return [];
+  const words = cleaned.split(/\s+/);
+  const lines: string[] = [];
+  let cur = "";
+
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (!cur) {
+      if (w.length > maxCharsPerLine) {
+        lines.push(w.slice(0, maxCharsPerLine));
+        cur = w.slice(maxCharsPerLine);
+      } else {
+        cur = w;
+      }
+    } else {
+      if ((cur + " " + w).length <= maxCharsPerLine) {
+        cur += " " + w;
+      } else {
+        lines.push(cur);
+        cur = w;
+        if (lines.length === maxLines) break;
+      }
+    }
+  }
+  if (cur && lines.length < maxLines) {
+    lines.push(cur);
+  }
+
+  const rendered = lines.join(" ");
+  if (rendered.length < cleaned.length && lines.length > 0) {
+    const last = lines[lines.length - 1];
+    if (!last.endsWith("…")) {
+      if (last.length >= maxCharsPerLine) {
+        lines[lines.length - 1] = last.slice(0, maxCharsPerLine - 1) + "…";
+      } else {
+        lines[lines.length - 1] = last + "…";
+      }
+    }
+  }
+
+  return lines;
+}
+
+// 에이전트 세션 상태 아이콘 (Orca UI의 상태 뱃지 대응, 좌측 하단 배치)
 // done = 녹색 체크마크, unverifiable = 주황색 점선 원("No recent update"), working = 파란 스피너 링, waiting = 앰버 물음표, error = 빨간 느낌표
 export function stateIcon(state?: string): string {
   const s = (state || "").toLowerCase();
   const x = 12;
-  const y = 22;
+  const y = 114;
   if (s === "done") {
     return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#22c55e" stroke-width="2"/><path d="M4.8 8.2 L7.2 10.4 L11.2 5.8" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`;
   }
@@ -152,7 +198,7 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
   // 대상 세션이면 흰색 테두리(대상 다이얼 돌릴 때 이 링이 옮겨감). 상태색과 안 겹치게 흰색.
   const color = HEX[b.color] ?? HEX.white;
 
-  // 가운데=프로젝트명(항상 흰색), 아래=브랜치. 현재(대상) 세션이면 브랜치를 코랄 칩(알약)으로.
+  // 1. 프로젝트명 (상단, 항상 흰색)
   const proj = b.repo || (b.worktreePath ? b.worktreePath.split("/").filter(Boolean).pop() : "") || "?";
   const num = b.dupIndex && b.dupIndex > 0 ? `-${b.dupIndex}` : "";
   const sub = b.branch ? `${b.branch}${num}` : num ? `#${b.dupIndex}` : "";
@@ -160,13 +206,28 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
   // 좌우 패딩(안쪽 여백) — 텍스트가 버튼 가장자리에 안 붙게 폭을 좁혀 맞춤
   const fit = 116 / units(proj);
   const projSvg =
-    fit >= 16
-      ? `<text x="72" y="84" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="${Math.min(30, Math.floor(fit))}" font-weight="700">${esc(proj)}</text>`
-      : `<text x="72" y="84" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="20" font-weight="700">${esc(marqueeWindow(proj, 9, tick))}</text>`;
+    fit >= 15
+      ? `<text x="72" y="41" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="${Math.min(21, Math.floor(fit))}" font-weight="700">${esc(proj)}</text>`
+      : `<text x="72" y="41" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="15" font-weight="700">${esc(marqueeWindow(proj, 10, tick))}</text>`;
+
+  // 2. 브랜치명 (프로젝트명 바로 아래)
   let subSvg = "";
   if (sub) {
-    subSvg = `<text x="72" y="112" text-anchor="middle" fill="#b8b8be" font-family="sans-serif" font-size="17" font-weight="600">${esc(sub)}</text>`;
+    subSvg = `<text x="72" y="58" text-anchor="middle" fill="#a1a1aa" font-family="sans-serif" font-size="15" font-weight="600">${esc(sub)}</text>`;
   }
+
+  // 3. 탭 제목 (브랜치 아래, 2줄 요약 렌더, 말줄임)
+  const titleText = (b as any).tabTitle || b.label || "";
+  const rawTitle = titleText !== proj ? titleText : "";
+  const titleLines = wrapWords(rawTitle, 15, 2);
+  let titleSvg = "";
+  if (titleLines.length > 0) {
+    const startY = sub ? 77 : 67;
+    titleSvg = titleLines
+      .map((line, idx) => `<text x="72" y="${startY + idx * 16}" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="14" font-weight="500">${esc(line)}</text>`)
+      .join("");
+  }
+
   // 주의 필요(입력대기·완료미확인·에러) 키는 배경이 상태색으로 숨쉬듯 글로우 펄스 → 확 띔.
   // 긴급(대기·에러)=강하고 빠르게, 완료=은은하게. 피크에서도 틴트라 흰 글자 가독성 유지. nowMs로 위상(순수).
   const attn = needsAttention(b, isTarget);
@@ -183,7 +244,7 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
   const g1 = dim ? "</g>" : "";
   // 현재 세션(target)은 우측 상단 코랄 점(dot)으로 표시. dim돼도 보이게 그룹 밖에 그림.
   const cornerTag = isTarget
-    ? `<circle cx="124" cy="32" r="10" fill="#d97757"/>`
+    ? `<circle cx="124" cy="28" r="8" fill="#d97757"/>`
     : "";
   const stIcon = stateIcon(b.state);
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="144" height="144">
@@ -192,7 +253,7 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
   ${renderBgIcon(b)}
   ${glow}
   <rect width="144" height="13" fill="${color}" clip-path="url(#r)"/>
-  ${stIcon}${projSvg}${subSvg}${agentBadge(b.agentType)}${g1}${cornerTag}
+  ${projSvg}${subSvg}${titleSvg}${stIcon}${agentBadge(b.agentType)}${g1}${cornerTag}
 </svg>`;
 }
 

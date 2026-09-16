@@ -712,20 +712,21 @@ async function poll(): Promise<void> {
       orcaJson(["worktree", "ps"]),
     ]);
     const hookEvents = getHookEvents();
+    const visualLayouts = tl.result?.visualLayouts;
     deck = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, hookEventsByPane: hookEvents },
+      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
       { page: currentPage, perPage: 8 },
     );
     if (currentPage >= deck.pageCount) {
       currentPage = Math.max(0, deck.pageCount - 1);
       deck = buildDeck(
-        { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, hookEventsByPane: hookEvents },
+        { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
         { page: currentPage, perPage: 8 },
       );
     }
     // 전체 세션(사이드바 전부) 목록 유지 — 대상 다이얼이 8키 넘어서도 순회
     const full = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, hookEventsByPane: hookEvents },
+      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
       { page: 0, perPage: 9999 },
     );
     allHandles = [];
@@ -1090,11 +1091,16 @@ setInterval(() => {
   lastHeartbeat = now;
 }, 1000);
 
-// orca 훅 파일 및 opencode 상태 파일 변경 감시 (디스크 상태 변경 시 <50ms 이내 즉각 반영)
+// orca 훅 파일 및 각 에이전트(opencode/claude/codex/agy 등) 상태 파일 변경 감시 (디스크 상태 변경 시 <50ms 이내 즉각 반영)
 function setupFileWatchers(): void {
   const dirsToWatch = [
     join(homedir(), "Library/Application Support/orca/agent-hooks"),
     join(homedir(), ".local/state/opencode"),
+    join(homedir(), ".claude"),
+    join(homedir(), ".claude/cache/model-catalog"),
+    join(homedir(), ".claude/projects"),
+    join(homedir(), ".codex"),
+    join(homedir(), ".gemini/antigravity-cli"),
   ];
   for (const dir of dirsToWatch) {
     try {

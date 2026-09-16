@@ -18,6 +18,15 @@ import {
   sortModels,
   parseCodexConfig,
   parseCodexModelsCache,
+  readCodexModelsCache,
+  readCodexState,
+  CODEX_DEFAULT_MODELS,
+  parseClaudeSettings,
+  parseClaudeModelCatalog,
+  readClaudeModelsCache,
+  readClaudeModelEffortsCache,
+  readClaudeState,
+  CLAUDE_DEFAULT_MODELS,
   parseAgyModels,
   parseAgyAgents,
   parseAgySettings,
@@ -77,19 +86,23 @@ describe("agentFor / profileFor — 에이전트 타입 → 추상 인터페이�
 });
 
 describe("supported — 에이전트별 기능 게이팅", () => {
-  it("claude: 모델 지원, effort 및 모드는 미지원(비활성화)", () => {
+  it("claude: 모델·effort·모드 모두 지원", () => {
     const a = agentFor("claude");
     expect(a.supports("model")).toBe(true);
-    expect(a.supports("effort")).toBe(false);
-    expect(a.supports("mode")).toBe(false);
+    expect(a.supports("effort")).toBe(true);
+    expect(a.supports("mode")).toBe(true);
     expect(supported(a, "model")).toBe(true);
-    expect(supported(a, "effort")).toBe(false);
+    expect(supported(a, "effort")).toBe(true);
+    expect(supported(a, "mode")).toBe(true);
   });
-  it("codex: 모델 지원, effort 및 모드는 미지원(비활성화)", () => {
+  it("codex: 모델·effort·모드 모두 지원", () => {
     const a = agentFor("codex");
     expect(a.supports("model")).toBe(true);
-    expect(a.supports("effort")).toBe(false);
-    expect(a.supports("mode")).toBe(false);
+    expect(a.supports("effort")).toBe(true);
+    expect(a.supports("mode")).toBe(true);
+    expect(supported(a, "model")).toBe(true);
+    expect(supported(a, "effort")).toBe(true);
+    expect(supported(a, "mode")).toBe(true);
   });
   it("opencode: 모델·effort·모드 모두 지원(픽커)", () => {
     const a = agentFor("opencode");
@@ -118,19 +131,29 @@ describe("supported — 에이전트별 기능 게이팅", () => {
 });
 
 describe("stepsFor — 적용 명령 시퀀스", () => {
-  it("claude: 슬래시 명령 한 줄(/model <m>), effort는 미지원 빈 배열", () => {
+  it("claude: 슬래시 명령(/model <m>, /effort <e>, /mode <m>)", () => {
     const a = agentFor("claude");
-    expect(stepsFor(a, "model", "opus")).toEqual([
-      { text: "/model opus", enter: true, delayMs: 120 },
+    expect(stepsFor(a, "model", "claude-sonnet-5")).toEqual([
+      { text: "/model claude-sonnet-5", enter: true, delayMs: 120 },
     ]);
-    expect(stepsFor(a, "effort", "high")).toEqual([]);
+    expect(stepsFor(a, "effort", "high")).toEqual([
+      { text: "/effort high", enter: true, delayMs: 120 },
+    ]);
+    expect(stepsFor(a, "mode", "plan")).toEqual([
+      { text: "/mode plan", enter: true, delayMs: 120 },
+    ]);
   });
-  it("codex: 슬래시 명령 한 줄(/model <m>), effort는 미지원 빈 배열", () => {
+  it("codex: 슬래시 명령(/model <m>, /effort <e>, /permissions <m>)", () => {
     const a = agentFor("codex");
     expect(stepsFor(a, "model", "gpt-5.6-luna")).toEqual([
       { text: "/model gpt-5.6-luna", enter: true, delayMs: 120 },
     ]);
-    expect(stepsFor(a, "effort", "high")).toEqual([]);
+    expect(stepsFor(a, "effort", "high")).toEqual([
+      { text: "/effort high", enter: true, delayMs: 120 },
+    ]);
+    expect(stepsFor(a, "mode", "workspace-write")).toEqual([
+      { text: "/permissions workspace-write", enter: true, delayMs: 120 },
+    ]);
   });
   it("opencode: 모델 픽커(리더+m) → 프로바이더 포함 필터 입력, Enter는 사용자가 확인", () => {
     const a = agentFor("opencode");
@@ -341,16 +364,122 @@ agent = "plan"
   });
 });
 
+describe("Claude 파서 및 모델/상태 리더", () => {
+  it("parseClaudeSettings: settings.json에서 model, effortLevel, permissionMode 추출", () => {
+    const json1 = JSON.stringify({
+      model: "claude-sonnet-5",
+      effortLevel: "medium",
+      permissionMode: "plan",
+    });
+    expect(parseClaudeSettings(json1)).toEqual({
+      model: "claude-sonnet-5",
+      effort: "medium",
+      mode: "plan",
+    });
+
+    const json2 = JSON.stringify({
+      effort: "high",
+      mode: "accept-edits",
+    });
+    expect(parseClaudeSettings(json2)).toEqual({
+      model: undefined,
+      effort: "high",
+      mode: "accept-edits",
+    });
+
+    expect(parseClaudeSettings("{}")).toEqual({});
+    expect(parseClaudeSettings("invalid")).toEqual({});
+  });
+
+  it("parseClaudeModelCatalog: format A (catalog.config.models) 파싱", () => {
+    const json = JSON.stringify({
+      catalog: {
+        config: {
+          models: [
+            {
+              id: "claude-fable-5-1",
+              name: "Fable 5.1",
+              short_name: "Fable",
+              thinking: {
+                effort_options: [{ id: "low" }, { id: "medium" }, { id: "high" }, { id: "xhigh" }, { id: "max" }],
+              },
+            },
+            {
+              id: "claude-haiku-4-5-20251001",
+              name: "Haiku 4.5",
+              short_name: "Haiku",
+            },
+          ],
+        },
+      },
+    });
+    const parsed = parseClaudeModelCatalog(json);
+    expect(parsed.models).toEqual(["claude-fable-5-1", "claude-haiku-4-5-20251001"]);
+    expect(parsed.modelNames).toEqual({
+      "claude-fable-5-1": "Fable 5.1",
+      "claude-haiku-4-5-20251001": "Haiku 4.5",
+    });
+    expect(parsed.effortsByModel["claude-fable-5-1"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(parsed.effortsByModel["claude-haiku-4-5-20251001"]).toBeUndefined();
+  });
+
+  it("parseClaudeModelCatalog: format B (document.surfaces.cc.model_selector_config) 파싱", () => {
+    const json = JSON.stringify({
+      document: {
+        surfaces: {
+          cc: {
+            model_selector_config: [
+              {
+                id: "main",
+                models: [
+                  {
+                    id: "claude-opus-5",
+                    name: "Opus 5",
+                    short_name: "Opus",
+                    thinking: {
+                      effort_options: [{ id: "low" }, { id: "high" }],
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    });
+    const parsed = parseClaudeModelCatalog(json);
+    expect(parsed.models).toEqual(["claude-opus-5"]);
+    expect(parsed.modelNames).toEqual({ "claude-opus-5": "Opus 5" });
+    expect(parsed.effortsByModel["claude-opus-5"]).toEqual(["low", "high"]);
+  });
+
+  it("ClaudeAgent: getModels, getEfforts, getModes 기본 동작", () => {
+    const a = agentFor("claude");
+    const models = a.getModels();
+    expect(models.length).toBeGreaterThan(0);
+    expect(a.getEfforts("claude-opus-5")).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(a.getEfforts("claude-haiku-4-5-20251001")).toEqual([]);
+    expect(a.getModes()).toEqual(["default", "plan", "accept-edits"]);
+  });
+
+  it("readClaudeState: 로컬 상태 및 작업공간 상태 읽기", () => {
+    const st = readClaudeState({ worktreePath: "/Users/ben/Workspaces/Tools/deep" });
+    expect(st).toBeDefined();
+    expect(typeof st).toBe("object");
+  });
+});
+
 describe("Codex & Agy 파서 및 상태 리더", () => {
-  it("parseCodexConfig: TOML에서 model 및 model_reasoning_effort 추출", () => {
-    const toml = `model = "gpt-5.6-luna"\nmodel_reasoning_effort = "medium"\n`;
+  it("parseCodexConfig: TOML에서 model, model_reasoning_effort, sandbox_mode 추출", () => {
+    const toml = `model = "gpt-5.6-luna"\nmodel_reasoning_effort = "medium"\nsandbox_mode = "workspace-write"\n`;
     expect(parseCodexConfig(toml)).toEqual({
       model: "gpt-5.6-luna",
       effort: "medium",
+      mode: "workspace-write",
     });
   });
   it("parseCodexConfig: 누락 시 undefined", () => {
-    expect(parseCodexConfig("")).toEqual({ model: undefined, effort: undefined });
+    expect(parseCodexConfig("")).toEqual({ model: undefined, effort: undefined, mode: undefined });
   });
   it("parseCodexModelsCache: JSON 캐시에서 auto-review 제외 모델 slug 추출", () => {
     const json = JSON.stringify({
@@ -361,6 +490,17 @@ describe("Codex & Agy 파서 및 상태 리더", () => {
       ],
     });
     expect(parseCodexModelsCache(json)).toEqual(["gpt-reserve", "gpt-5.6-luna"]);
+  });
+  it("CodexAgent: getModels, getEfforts, getModes 기본 동작", () => {
+    const a = agentFor("codex");
+    expect(a.getModels().length).toBeGreaterThan(0);
+    expect(a.getEfforts()).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+    expect(a.getModes()).toEqual(["workspace-write", "read-only", "danger-full-access"]);
+  });
+  it("readCodexState: 로컬 상태 읽기", () => {
+    const st = readCodexState();
+    expect(st).toBeDefined();
+    expect(typeof st).toBe("object");
   });
   it("parseAgyModels: 'Fetching...' 제거 및 tab 앞 ID 추출", () => {
     const stdout = `Fetching available models...

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { keySvg, agentBadge, stateIcon, keyImage, wrap, stripSpinner, marqueeWindow, dialImage } from "../src/render.js";
+import { keySvg, agentBadge, stateIcon, keyImage, wrap, wrapWords, stripSpinner, marqueeWindow, dialImage } from "../src/render.js";
 
-describe("stripSpinner / wrap", () => {
+describe("stripSpinner / wrap / wrapWords", () => {
   it("앞 스피너 글리프만 제거, 한글 보존", () => {
     expect(stripSpinner("⠂ 상한가 주식")).toBe("상한가 주식");
     expect(stripSpinner("정상 제목")).toBe("정상 제목");
@@ -11,6 +11,17 @@ describe("stripSpinner / wrap", () => {
     const long = wrap("가".repeat(25), 7, 3); // 25 > 7*3 → 절단
     expect(long).toHaveLength(3);
     expect(long[2].endsWith("…")).toBe(true);
+  });
+  it("wrapWords는 단어 경계로 줄바꿈하고 최대 줄 수 제한 및 말줄임표 적용", () => {
+    expect(wrapWords("Design Feedback URL Browser", 15, 2)).toEqual([
+      "Design Feedback",
+      "URL Browser",
+    ]);
+    expect(wrapWords("This is a very long task description for agent session", 15, 2)).toEqual([
+      "This is a very",
+      "long task…",
+    ]);
+    expect(wrapWords("", 15, 2)).toEqual([]);
   });
 });
 
@@ -37,23 +48,24 @@ describe("keySvg", () => {
   it("빈 칸은 어두운 배경", () => {
     expect(keySvg({ empty: true })).toContain("#141416");
   });
-  it("상단 색 띠 + 프로젝트명(가운데) + 브랜치-번호, 상태워드·세션제목은 안 씀", () => {
+  it("상단 색 띠 + 프로젝트명(가운데) + 브랜치-번호 + 탭 제목 2줄 요약", () => {
     const svg = keySvg({
-      empty: false, handle: "term_x", label: "세션제목무시됨",
+      empty: false, handle: "term_x", tabTitle: "Design Feedback URL",
       state: "working", color: "blue", repo: "svd", branch: "main", dupIndex: 1,
     });
     expect(svg).toContain("#3b82f6"); // 상단 색 띠(blue)
     expect(svg).not.toContain("WORKING"); // 상태 단어 제거
     expect(svg).toContain("svd"); // 프로젝트명
     expect(svg).toContain("main-1"); // 브랜치-번호
-    expect(svg).not.toContain("세션제목무시됨");
+    expect(svg).toContain("Design Feedback"); // 탭 제목 1줄
+    expect(svg).toContain("URL"); // 탭 제목 2줄
   });
 
   it("대상이면 우측 상단 코랄 점(dot), 비대상은 없음", () => {
     const b = { empty: false as const, handle: "t", label: "x", state: "done", color: "green" as const, repo: "svd", branch: "main" };
     const on = keySvg(b, 0, true);
     const off = keySvg(b, 0, false);
-    expect(on).toContain('<circle cx="124" cy="32" r="10" fill="#d97757"'); // 우측 상단 코랄 점
+    expect(on).toContain('<circle cx="124" cy="28" r="8" fill="#d97757"'); // 우측 상단 코랄 점
     expect(on).toContain("main"); // 브랜치는 일반 텍스트 유지
     expect(on).toContain('fill="#ffffff"'); // 이름은 흰색
     expect(off).not.toContain("#d97757");

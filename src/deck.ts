@@ -70,6 +70,8 @@ export interface DeckInput {
   terminals: OrcaTerminal[];
   worktrees: OrcaWorktree[];
   repos?: OrcaRepo[];
+  visualLayouts?: any[];
+  tabTitles?: Map<string, string> | Record<string, string>;
   hookEventsByPane?: Map<string, string | HookInfo> | Record<string, string | HookInfo>;
 }
 
@@ -85,6 +87,7 @@ export type Button =
       empty: false;
       handle: string;
       label: string;
+      tabTitle?: string; // Orca 탭 제목 (2줄 요약 렌더용)
       state: AgentState;
       color: Color;
       worktreePath?: string;
@@ -223,6 +226,18 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
     }
   }
 
+  const tabTitlesFromLayouts = extractTabTitlesFromLayouts(input.visualLayouts);
+  const getTabTitle = (tabId: string): string | undefined => {
+    if (input.tabTitles) {
+      const explicit =
+        input.tabTitles instanceof Map
+          ? input.tabTitles.get(tabId)
+          : (input.tabTitles as Record<string, string>)[tabId];
+      if (explicit) return explicit;
+    }
+    return tabTitlesFromLayouts.get(tabId);
+  };
+
   // 에이전트가 붙은 터미널만 세션으로. 위치 고정 = handle 기준 안정 정렬.
   // (최근순으로 하면 세션이 출력할 때마다 자리가 바뀌어 헷갈림 → 세션 수명 동안 자리 고정)
   // 판정: worktree ps가 그 paneKey의 에이전트를 아직 안 보고했더라도
@@ -244,6 +259,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       // 우선순위: worktree ps 등록 에이전트 > 훅 원본 에이전트 > 터미널 프로세스 추정치
       const agent = idFromWt || hook?.agentType || t.agentIdentity || "";
       const hookEvent = hook?.hookEventName;
+      const tabTitle = getTabTitle(t.tabId) || t.title || undefined;
 
       let state: AgentState;
       if (hasWt) {
@@ -289,6 +305,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
         agent,
         state,
         agentType: agent,
+        tabTitle,
       };
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
@@ -339,7 +356,8 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
     slots.push({
       empty: false,
       handle: e.item.t.handle,
-      label: e.item.t.title,
+      label: e.item.tabTitle || e.item.t.title || "",
+      tabTitle: e.item.tabTitle || e.item.t.title || undefined,
       state: e.item.state,
       color: colorFor(e.item.state),
       worktreePath: e.item.t.worktreePath,
@@ -359,6 +377,32 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   }
 
   return { slots, page, pageCount, total };
+}
+
+/** visualLayouts 트리에서 모든 탭의 (tabId -> title) 맵을 추출 */
+export function extractTabTitlesFromLayouts(visualLayouts?: any[]): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!visualLayouts) return map;
+
+  function walk(node: any) {
+    if (!node) return;
+    if (Array.isArray(node.tabs)) {
+      for (const t of node.tabs) {
+        if (t.tabId && t.title) map.set(t.tabId, t.title);
+        if (t.panes) walk(t.panes);
+      }
+    }
+    if (node.first) walk(node.first);
+    if (node.second) walk(node.second);
+    if (Array.isArray(node.children)) {
+      for (const child of node.children) walk(child);
+    }
+  }
+
+  for (const vl of visualLayouts) {
+    if (vl?.root) walk(vl.root);
+  }
+  return map;
 }
 
 /** visualLayouts의 pane/tab 트리에서 모든 활성 탭/터미널 정보(tabId, leafId, handle)를 재귀 탐색 */

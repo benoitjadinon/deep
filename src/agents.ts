@@ -131,32 +131,294 @@ const openCodeModelPicker = (value: string, name?: string): ApplyStep[] => [
   { text: modelFilterText(value, name), enter: false },
 ];
 
+// Claude 설정 및 모델 캐시/프로젝트 경로
+export const CLAUDE_SETTINGS = join(homedir(), ".claude", "settings.json");
+export const CLAUDE_MODEL_CATALOG_DIR = join(homedir(), ".claude", "cache", "model-catalog");
+export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
+
+export const CLAUDE_DEFAULT_MODELS = [
+  "claude-opus-5",
+  "claude-sonnet-5",
+  "claude-haiku-4-5-20251001",
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+  "claude-sonnet-4-6",
+  "opus",
+  "sonnet",
+  "haiku",
+];
+
+export function parseClaudeSettings(text: string): { model?: string; effort?: string; mode?: string } {
+  try {
+    const data = JSON.parse(text);
+    const model = typeof data?.model === "string" ? data.model : undefined;
+    const effort =
+      typeof data?.effortLevel === "string"
+        ? data.effortLevel
+        : typeof data?.effort === "string"
+        ? data.effort
+        : undefined;
+    const mode =
+      typeof data?.permissionMode === "string"
+        ? data.permissionMode
+        : typeof data?.mode === "string"
+        ? data.mode
+        : typeof data?.agent === "string"
+        ? data.agent
+        : undefined;
+    return { model, effort, mode };
+  } catch {
+    return {};
+  }
+}
+
+export function parseClaudeModelCatalog(text: string): {
+  models: string[];
+  modelNames: Record<string, string>;
+  effortsByModel: Record<string, string[]>;
+} {
+  const models: string[] = [];
+  const modelNames: Record<string, string> = {};
+  const effortsByModel: Record<string, string[]> = {};
+  const seen = new Set<string>();
+
+  try {
+    const data = JSON.parse(text);
+    if (!data || typeof data !== "object") {
+      return { models, modelNames, effortsByModel };
+    }
+
+    const processModel = (m: any) => {
+      if (!m || typeof m !== "object") return;
+      const mid = typeof m.id === "string" ? m.id.trim() : "";
+      if (!mid) return;
+      if (!seen.has(mid)) {
+        seen.add(mid);
+        models.push(mid);
+      }
+      const name =
+        typeof m.name === "string"
+          ? m.name.trim()
+          : typeof m.short_name === "string"
+          ? m.short_name.trim()
+          : "";
+      if (name) {
+        modelNames[mid] = name;
+      }
+      const thinking = m.thinking;
+      if (thinking && typeof thinking === "object") {
+        const effortOpts = thinking.effort_options;
+        if (Array.isArray(effortOpts)) {
+          const efforts = effortOpts
+            .map((opt: any) => (typeof opt?.id === "string" ? opt.id.trim() : ""))
+            .filter(Boolean);
+          if (efforts.length) {
+            effortsByModel[mid] = efforts;
+          }
+        }
+      }
+    };
+
+    // Format A: catalog.config.models
+    const catModels = data?.catalog?.config?.models;
+    if (Array.isArray(catModels)) {
+      for (const m of catModels) processModel(m);
+    }
+
+    // Format B: document.surfaces.<surface>.model_selector_config[].models
+    const surfaces = data?.document?.surfaces;
+    if (surfaces && typeof surfaces === "object") {
+      const surfaceKeys = ["cc", "cowork", "ccd", "ccr", "chat", ...Object.keys(surfaces)];
+      const checked = new Set<string>();
+      for (const sname of surfaceKeys) {
+        if (checked.has(sname)) continue;
+        checked.add(sname);
+        const sval = surfaces[sname];
+        if (sval && typeof sval === "object" && Array.isArray(sval.model_selector_config)) {
+          for (const cfg of sval.model_selector_config) {
+            if (cfg && Array.isArray(cfg.models)) {
+              for (const m of cfg.models) processModel(m);
+            }
+          }
+        }
+      }
+    }
+  } catch {}
+
+  return { models, modelNames, effortsByModel };
+}
+
+export function readClaudeModelsCache(): string[] {
+  try {
+    if (existsSync(CLAUDE_MODEL_CATALOG_DIR)) {
+      const files = readdirSync(CLAUDE_MODEL_CATALOG_DIR).filter((f) => f.endsWith(".json"));
+      const allModels: string[] = [];
+      const seen = new Set<string>();
+      for (const file of files) {
+        try {
+          const content = readFileSync(join(CLAUDE_MODEL_CATALOG_DIR, file), "utf8");
+          const { models } = parseClaudeModelCatalog(content);
+          for (const m of models) {
+            if (!seen.has(m)) {
+              seen.add(m);
+              allModels.push(m);
+            }
+          }
+        } catch {}
+      }
+      if (allModels.length) return allModels;
+    }
+  } catch {}
+  return [];
+}
+
+export function readClaudeModelEffortsCache(modelId?: string): string[] {
+  if (!modelId) return [];
+  try {
+    if (existsSync(CLAUDE_MODEL_CATALOG_DIR)) {
+      const files = readdirSync(CLAUDE_MODEL_CATALOG_DIR).filter((f) => f.endsWith(".json"));
+      for (const file of files) {
+        try {
+          const content = readFileSync(join(CLAUDE_MODEL_CATALOG_DIR, file), "utf8");
+          const { effortsByModel } = parseClaudeModelCatalog(content);
+          if (effortsByModel[modelId]?.length) {
+            return effortsByModel[modelId];
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+  return [];
+}
+
+export function readClaudeState(ctx?: AgentContext): AgentStateSnapshot {
+  const state: AgentStateSnapshot = {};
+  const settingsPaths: string[] = [];
+
+  if (ctx?.worktreePath) {
+    settingsPaths.push(join(ctx.worktreePath, ".claude", "settings.json"));
+    settingsPaths.push(join(ctx.worktreePath, ".claude.json"));
+  }
+  settingsPaths.push(CLAUDE_SETTINGS);
+
+  for (const p of settingsPaths) {
+    try {
+      if (existsSync(p)) {
+        const parsed = parseClaudeSettings(readFileSync(p, "utf8"));
+        if (!state.model && parsed.model) state.model = parsed.model;
+        if (!state.effort && parsed.effort) state.effort = parsed.effort;
+        if (!state.mode && parsed.mode) state.mode = parsed.mode;
+      }
+    } catch {}
+  }
+
+  // Transcript JSONL inspection in ~/.claude/projects/-<normalized-path>/
+  if (ctx?.worktreePath) {
+    try {
+      const normalizedPath = ctx.worktreePath.replace(/\/+$/, "");
+      const projName = normalizedPath.replace(/\//g, "-");
+      const projDir = join(CLAUDE_PROJECTS_DIR, projName);
+      if (existsSync(projDir)) {
+        const jsonlFiles = readdirSync(projDir)
+          .filter((f) => f.endsWith(".jsonl") && !f.includes("subagents"))
+          .map((f) => ({
+            path: join(projDir, f),
+            mtime: statSync(join(projDir, f)).mtimeMs,
+          }))
+          .sort((a, b) => b.mtime - a.mtime);
+
+        for (const item of jsonlFiles.slice(0, 3)) {
+          try {
+            const fd = openSync(item.path, "r");
+            const size = fstatSync(fd).size;
+            const readLen = Math.min(size, 64 * 1024);
+            const buf = Buffer.alloc(readLen);
+            readSync(fd, buf, 0, readLen, Math.max(0, size - readLen));
+            closeSync(fd);
+            const tail = buf.toString("utf8", 0, readLen);
+            const lines = tail.split("\n");
+
+            for (let i = lines.length - 1; i >= 0; i--) {
+              const line = lines[i].trim();
+              if (!line) continue;
+              try {
+                const d = JSON.parse(line);
+                if (!state.model) {
+                  if (d.type === "assistant" && typeof d.message === "object" && typeof d.message?.model === "string") {
+                    state.model = d.message.model;
+                  }
+                }
+                if (!state.mode) {
+                  if (d.type === "permission-mode" && typeof d.permissionMode === "string") {
+                    state.mode = d.permissionMode;
+                  } else if (d.type === "mode" && typeof d.mode === "string") {
+                    state.mode = d.mode;
+                  }
+                }
+                if (!state.effort) {
+                  if (typeof d.effort === "string") {
+                    state.effort = d.effort;
+                  } else if (typeof d.effortLevel === "string") {
+                    state.effort = d.effortLevel;
+                  }
+                }
+              } catch {}
+              if (state.model && state.mode && state.effort) break;
+            }
+          } catch {}
+          if (state.model && state.mode && state.effort) break;
+        }
+      }
+    } catch {}
+  }
+
+  return state;
+}
+
 // Claude 구현체
 export class ClaudeAgent extends AbstractAgent {
   readonly agentType = "claude";
   readonly label = "Claude";
 
   supports(kind: ControlKind): boolean {
-    return kind === "model";
+    return kind === "model" || kind === "effort" || kind === "mode";
   }
 
   override getModels(): string[] {
-    return ["opus", "sonnet", "haiku"];
+    const cached = readClaudeModelsCache();
+    if (cached.length) return cached;
+    return [...CLAUDE_DEFAULT_MODELS];
   }
 
-  override getEfforts(): string[] {
-    return [];
+  override getEfforts(modelId?: string): string[] {
+    if (modelId) {
+      const specific = readClaudeModelEffortsCache(modelId);
+      if (specific.length) return specific;
+      if (modelId.includes("haiku")) return [];
+    }
+    return ["low", "medium", "high", "xhigh", "max"];
   }
 
   override getModes(): string[] {
-    return [];
+    return ["default", "plan", "accept-edits"];
   }
 
   getApplySteps(kind: ControlKind, value: string): ApplyStep[] {
     if (kind === "model") {
       return slash("/model", value);
     }
+    if (kind === "effort") {
+      return slash("/effort", value);
+    }
+    if (kind === "mode") {
+      return slash("/mode", value);
+    }
     return [];
+  }
+
+  override readCurrentState(ctx?: AgentContext): AgentStateSnapshot {
+    return readClaudeState(ctx);
   }
 }
 
@@ -164,12 +426,22 @@ export class ClaudeAgent extends AbstractAgent {
 export const CODEX_CONFIG = join(homedir(), ".codex", "config.toml");
 export const CODEX_MODELS_CACHE = join(homedir(), ".codex", "models_cache.json");
 
-export function parseCodexConfig(toml: string): { model?: string; effort?: string } {
+export const CODEX_DEFAULT_MODELS = [
+  "gpt-5.6-luna",
+  "gpt-5.6-terra",
+  "gpt-5.5",
+  "gpt-5.4-mini",
+  "gpt-reserve",
+];
+
+export function parseCodexConfig(toml: string): { model?: string; effort?: string; mode?: string } {
   const modelMatch = /^model\s*=\s*"([^"]+)"/m.exec(toml || "");
   const effortMatch = /^model_reasoning_effort\s*=\s*"([^"]+)"/m.exec(toml || "");
+  const modeMatch = /^(?:sandbox_mode|approval_policy|mode)\s*=\s*"([^"]+)"/m.exec(toml || "");
   return {
     model: modelMatch ? modelMatch[1] : undefined,
     effort: effortMatch ? effortMatch[1] : undefined,
+    mode: modeMatch ? modeMatch[1] : undefined,
   };
 }
 
@@ -191,12 +463,12 @@ export function readCodexState(ctx?: AgentContext): AgentStateSnapshot {
       const localCfg = join(ctx.worktreePath, ".codex", "config.toml");
       if (existsSync(localCfg)) {
         const cfg = parseCodexConfig(readFileSync(localCfg, "utf8"));
-        return { model: cfg.model, effort: cfg.effort };
+        return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
       }
     }
     if (existsSync(CODEX_CONFIG)) {
       const cfg = parseCodexConfig(readFileSync(CODEX_CONFIG, "utf8"));
-      return { model: cfg.model, effort: cfg.effort };
+      return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
     }
   } catch {}
   return {};
@@ -217,26 +489,32 @@ export class CodexAgent extends AbstractAgent {
   readonly label = "Codex";
 
   supports(kind: ControlKind): boolean {
-    return kind === "model";
+    return kind === "model" || kind === "effort" || kind === "mode";
   }
 
   override getModels(): string[] {
     const cached = readCodexModelsCache();
     if (cached.length) return cached;
-    return ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4-mini", "gpt-reserve"];
+    return [...CODEX_DEFAULT_MODELS];
   }
 
   override getEfforts(): string[] {
-    return [];
+    return ["none", "low", "medium", "high", "xhigh", "max"];
   }
 
   override getModes(): string[] {
-    return [];
+    return ["workspace-write", "read-only", "danger-full-access"];
   }
 
   getApplySteps(kind: ControlKind, value: string): ApplyStep[] {
     if (kind === "model") {
       return slash("/model", value);
+    }
+    if (kind === "effort") {
+      return slash("/effort", value);
+    }
+    if (kind === "mode") {
+      return slash("/permissions", value);
     }
     return [];
   }
