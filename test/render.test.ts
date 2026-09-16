@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { keySvg, agentBadge, stateIcon, keyImage, wrap, wrapWords, stripSpinner, marqueeWindow, dialImage } from "../src/render.js";
+import { keySvg, agentBadge, stateIcon, keyImage, wrap, wrapWords, stripSpinner, marqueeWindow, dialImage, modeColor } from "../src/render.js";
 
 describe("stripSpinner / wrap / wrapWords", () => {
   it("앞 스피너 글리프만 제거, 한글 보존", () => {
@@ -237,5 +237,76 @@ describe("dialImage — 다이얼 렌더", () => {
   it("badge 없으면 우상단 알약 없음", () => {
     const svg = Buffer.from(dialImage("target", "TARGET", "svd", 0).split(",")[1], "base64").toString("utf8");
     expect(svg).not.toContain('x="172" y="6"');
+  });
+
+  it("mode 다이얼은 에이전트 및 모드에 따라 타이틀과 좌측 바 색상이 변경된다", () => {
+    // 1. AGY
+    const agyAccept = Buffer.from(dialImage("mode", "MODE", "accept-edits", 0, false, "agy").split(",")[1], "base64").toString("utf8");
+    expect(agyAccept).toContain('fill="#22c55e"'); // green
+    expect(agyAccept).toContain('>MODE</text>');
+
+    const agyPlan = Buffer.from(dialImage("mode", "MODE", "plan", 0, false, "agy").split(",")[1], "base64").toString("utf8");
+    expect(agyPlan).toContain('fill="#3b82f6"'); // blue
+
+    const agyNothing = Buffer.from(dialImage("mode", "MODE", "default", 0, false, "agy").split(",")[1], "base64").toString("utf8");
+    expect(agyNothing).toContain('fill="#71717a"'); // gray
+
+    // 2. Claude
+    const claudeAuto = Buffer.from(dialImage("mode", "MODE", "auto", 0, false, "claude").split(",")[1], "base64").toString("utf8");
+    expect(claudeAuto).toContain('fill="#eab308"'); // yellowish
+
+    const claudeManual = Buffer.from(dialImage("mode", "MODE", "manual", 0, false, "claude").split(",")[1], "base64").toString("utf8");
+    expect(claudeManual).toContain('fill="#71717a"'); // gray
+
+    const claudeAccept = Buffer.from(dialImage("mode", "MODE", "accept-edits", 0, false, "claude").split(",")[1], "base64").toString("utf8");
+    expect(claudeAccept).toContain('fill="#a855f7"'); // violetish
+
+    const claudePlan = Buffer.from(dialImage("mode", "MODE", "plan", 0, false, "claude").split(",")[1], "base64").toString("utf8");
+    expect(claudePlan).toContain('fill="#3b82f6"'); // blueish
+
+    // 3. Codex
+    const codexWrite = Buffer.from(dialImage("mode", "MODE", "workspace-write", 0, false, "codex").split(",")[1], "base64").toString("utf8");
+    expect(codexWrite).toContain('fill="#10b981"'); // emerald
+
+    const codexRead = Buffer.from(dialImage("mode", "MODE", "read-only", 0, false, "codex").split(",")[1], "base64").toString("utf8");
+    expect(codexRead).toContain('fill="#0ea5e9"'); // cyan
+
+    const codexDanger = Buffer.from(dialImage("mode", "MODE", "danger-full-access", 0, false, "codex").split(",")[1], "base64").toString("utf8");
+    expect(codexDanger).toContain('fill="#ef4444"'); // red
+  });
+});
+
+describe("modeColor — 모드별 색상 매핑", () => {
+  it("AGY 모드 색상: accept-edits=초록, plan=파랑, default/nothing=회색", () => {
+    expect(modeColor("accept-edits", "agy")).toBe("#22c55e");
+    expect(modeColor("accept edits", "antigravity")).toBe("#22c55e");
+    expect(modeColor("plan", "agy")).toBe("#3b82f6");
+    expect(modeColor("default", "agy")).toBe("#71717a");
+    expect(modeColor("nothing", "agy")).toBe("#71717a");
+  });
+
+  it("Claude 모드 색상: auto=노랑, manual/default=회색, accept-edits=보라, plan=파랑", () => {
+    expect(modeColor("auto", "claude")).toBe("#eab308");
+    expect(modeColor("auto-mode", "claude")).toBe("#eab308");
+    expect(modeColor("automode", "claude")).toBe("#eab308");
+    expect(modeColor("manual", "claude")).toBe("#71717a");
+    expect(modeColor("default", "claude")).toBe("#71717a");
+    expect(modeColor("accept-edits", "claude")).toBe("#a855f7");
+    expect(modeColor("accept edits", "claude")).toBe("#a855f7");
+    expect(modeColor("plan", "claude")).toBe("#3b82f6");
+  });
+
+  it("Codex 모드 색상: workspace-write=에메랄드, read-only=하늘, danger-full-access=빨강, plan=파랑", () => {
+    expect(modeColor("workspace-write", "codex")).toBe("#10b981");
+    expect(modeColor("read-only", "codex")).toBe("#0ea5e9");
+    expect(modeColor("danger-full-access", "codex")).toBe("#ef4444");
+    expect(modeColor("plan", "codex")).toBe("#3b82f6");
+  });
+
+  it("OpenCode 모드 색상: build=초록, plan=파랑, review=보라, debug=앰버", () => {
+    expect(modeColor("build", "opencode")).toBe("#22c55e");
+    expect(modeColor("plan", "opencode")).toBe("#3b82f6");
+    expect(modeColor("review", "opencode")).toBe("#a855f7");
+    expect(modeColor("debug", "opencode")).toBe("#f59e0b");
   });
 });

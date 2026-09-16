@@ -54994,14 +54994,68 @@ var DIAL_ACCENT = {
   effort: "#a855f7",
   // 보라
   mode: "#f43f5e",
-  // 로즈
+  // 로즈 (폴백)
   talk: "#14b8a6",
   // 청록
   target: "#f59e0b"
   // 앰버
 };
-function dialImage(role, label, value, tick2 = 0, disabled = false, badge, sub) {
-  const accent = disabled ? "#2e2e34" : DIAL_ACCENT[role] ?? "#8a8a90";
+function modeColor(mode, agentType) {
+  if (!mode || mode === "-" || mode === "\u2026" || mode.trim() === "") return "#71717a";
+  const m = mode.trim().toLowerCase().replace(/[\s_]+/g, "-");
+  const a = (agentType || "").trim().toLowerCase();
+  if (a === "agy" || a === "antigravity") {
+    if (m === "accept-edits" || m === "acceptedits" || m === "yolo") return "#22c55e";
+    if (m === "plan" || m === "plan-mode") return "#3b82f6";
+    if (m === "default" || m === "nothing" || m === "none" || m === "normal") return "#71717a";
+  }
+  if (a === "claude" || a === "claude-agent-teams") {
+    if (m === "auto" || m === "auto-mode" || m === "automode") return "#eab308";
+    if (m === "manual" || m === "normal" || m === "default") return "#71717a";
+    if (m === "accept-edits" || m === "acceptedits" || m === "bypass-permissions" || m === "dont-ask" || m === "yolo") return "#a855f7";
+    if (m === "plan" || m === "plan-mode") return "#3b82f6";
+  }
+  if (a === "codex" || a === "code") {
+    if (m === "workspace-write" || m === "write") return "#10b981";
+    if (m === "read-only" || m === "readonly") return "#0ea5e9";
+    if (m === "danger-full-access" || m === "full-access" || m === "danger" || m === "yolo") return "#ef4444";
+    if (m === "plan" || m === "plan-mode") return "#3b82f6";
+    if (m === "on-request" || m === "ask") return "#f59e0b";
+    if (m === "never" || m === "auto") return "#a855f7";
+  }
+  if (a === "opencode") {
+    if (m === "build") return "#22c55e";
+    if (m === "plan") return "#3b82f6";
+    if (m === "review") return "#a855f7";
+    if (m === "debug") return "#f59e0b";
+  }
+  if (a.startsWith("hermes")) {
+    if (m === "plan") return "#3b82f6";
+    if (m === "default" || m === "normal") return "#71717a";
+  }
+  if (m === "accept-edits" || m === "acceptedits" || m === "build" || m === "write" || m === "workspace-write") {
+    return "#22c55e";
+  }
+  if (m === "plan" || m === "plan-mode" || m === "readonly" || m === "read-only") {
+    return "#3b82f6";
+  }
+  if (m === "auto" || m === "auto-mode" || m === "automode") {
+    return "#eab308";
+  }
+  if (m === "danger" || m === "danger-full-access" || m === "full-access" || m === "yolo") {
+    return "#ef4444";
+  }
+  if (m === "bypass-permissions" || m === "dont-ask" || m === "review") {
+    return "#a855f7";
+  }
+  if (m === "default" || m === "normal" || m === "manual" || m === "nothing" || m === "none") {
+    return "#71717a";
+  }
+  return "#f43f5e";
+}
+function dialImage(role, label, value, tick2 = 0, disabled = false, badge, sub, customColor) {
+  const roleAccent = customColor || (role === "mode" ? modeColor(value, badge) : DIAL_ACCENT[role] ?? "#8a8a90");
+  const accent = disabled ? "#2e2e34" : roleAccent;
   const labelColor = disabled ? "#4a4a52" : accent;
   const valueColor = disabled ? "#4a4a52" : "#ffffff";
   const val = disabled ? value && value !== " " && value !== "\u2026" ? value : "-" : value || " ";

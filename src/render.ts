@@ -266,17 +266,119 @@ export function keyImage(b: Button, tick = 0, isTarget = false, nowMs = 0, dim =
 const DIAL_ACCENT: Record<string, string> = {
   model: "#3b82f6", // 파랑
   effort: "#a855f7", // 보라
-  mode: "#f43f5e", // 로즈
+  mode: "#f43f5e", // 로즈 (폴백)
   talk: "#14b8a6", // 청록
   target: "#f59e0b", // 앰버
 };
 
+/**
+ * 에이전트 및 모드명에 따른 모드 색상 매핑 (타이틀 및 좌측 바):
+ * - AGY:
+ *   - 'accept edits' / 'accept-edits' / 'yolo' -> 초록 (#22c55e)
+ *   - 'plan' -> 파랑 (#3b82f6)
+ *   - 'default' / 'nothing' / 'none' / 'normal' -> 회색 (#71717a)
+ * - Claude:
+ *   - 'auto' / 'auto-mode' / 'automode' -> 노랑 (#eab308)
+ *   - 'manual' / 'default' / 'normal' -> 회색 (#71717a)
+ *   - 'accept edits' / 'accept-edits' / 'bypass-permissions' / 'dont-ask' -> 보라 (#a855f7)
+ *   - 'plan' / 'plan mode' -> 파랑 (#3b82f6)
+ * - Codex:
+ *   - 'workspace-write' / 'write' -> 에메랄드 (#10b981)
+ *   - 'read-only' / 'readonly' -> 하늘/파랑 (#0ea5e9)
+ *   - 'danger-full-access' / 'full-access' / 'danger' / 'yolo' -> 위험 빨강 (#ef4444)
+ *   - 'plan' -> 파랑 (#3b82f6)
+ *   - 'on-request' -> 앰버 (#f59e0b)
+ *   - 'never' -> 보라 (#a855f7)
+ * - OpenCode:
+ *   - 'build' -> 초록 (#22c55e)
+ *   - 'plan' -> 파랑 (#3b82f6)
+ *   - 'review' -> 보라 (#a855f7)
+ *   - 'debug' -> 앰버 (#f59e0b)
+ */
+export function modeColor(mode?: string | null, agentType?: string | null): string {
+  if (!mode || mode === "-" || mode === "…" || mode.trim() === "") return "#71717a";
+  const m = mode.trim().toLowerCase().replace(/[\s_]+/g, "-");
+  const a = (agentType || "").trim().toLowerCase();
+
+  // 1. Antigravity / Agy
+  if (a === "agy" || a === "antigravity") {
+    if (m === "accept-edits" || m === "acceptedits" || m === "yolo") return "#22c55e"; // green
+    if (m === "plan" || m === "plan-mode") return "#3b82f6"; // blue
+    if (m === "default" || m === "nothing" || m === "none" || m === "normal") return "#71717a"; // gray/nothing
+  }
+
+  // 2. Claude
+  if (a === "claude" || a === "claude-agent-teams") {
+    if (m === "auto" || m === "auto-mode" || m === "automode") return "#eab308"; // yellowish
+    if (m === "manual" || m === "normal" || m === "default") return "#71717a"; // gray
+    if (m === "accept-edits" || m === "acceptedits" || m === "bypass-permissions" || m === "dont-ask" || m === "yolo") return "#a855f7"; // violetish
+    if (m === "plan" || m === "plan-mode") return "#3b82f6"; // blueish
+  }
+
+  // 3. Codex
+  if (a === "codex" || a === "code") {
+    if (m === "workspace-write" || m === "write") return "#10b981"; // emerald
+    if (m === "read-only" || m === "readonly") return "#0ea5e9"; // cyan/blue
+    if (m === "danger-full-access" || m === "full-access" || m === "danger" || m === "yolo") return "#ef4444"; // danger red
+    if (m === "plan" || m === "plan-mode") return "#3b82f6"; // blue
+    if (m === "on-request" || m === "ask") return "#f59e0b"; // amber
+    if (m === "never" || m === "auto") return "#a855f7"; // violet
+  }
+
+  // 4. OpenCode
+  if (a === "opencode") {
+    if (m === "build") return "#22c55e"; // green
+    if (m === "plan") return "#3b82f6"; // blue
+    if (m === "review") return "#a855f7"; // violet
+    if (m === "debug") return "#f59e0b"; // amber
+  }
+
+  // 5. Hermes
+  if (a.startsWith("hermes")) {
+    if (m === "plan") return "#3b82f6";
+    if (m === "default" || m === "normal") return "#71717a";
+  }
+
+  // 6. Generic Fallback by keyword
+  if (m === "accept-edits" || m === "acceptedits" || m === "build" || m === "write" || m === "workspace-write") {
+    return "#22c55e";
+  }
+  if (m === "plan" || m === "plan-mode" || m === "readonly" || m === "read-only") {
+    return "#3b82f6";
+  }
+  if (m === "auto" || m === "auto-mode" || m === "automode") {
+    return "#eab308";
+  }
+  if (m === "danger" || m === "danger-full-access" || m === "full-access" || m === "yolo") {
+    return "#ef4444";
+  }
+  if (m === "bypass-permissions" || m === "dont-ask" || m === "review") {
+    return "#a855f7";
+  }
+  if (m === "default" || m === "normal" || m === "manual" || m === "nothing" || m === "none") {
+    return "#71717a";
+  }
+
+  return "#f43f5e";
+}
+
 /** 다이얼 터치스크린(200×100) 커스텀 렌더 — 좌측 색 레일 + 상단 작은 라벨 + 값(가득 채운 3줄 래핑, 위로 정렬).
  *  disabled인 경우 시각적으로 비활성화(어둡고 흐린 레일/라벨/값 + 투명도 딤).
  *  badge가 주어지면 우상단에 에이전트 알약(2글자)을 겹쳐 보여준다(대상 세션 다이얼용).
- *  sub가 주어지면 값 아래에 작은 보조 줄(브랜치 등)을 그린다 — 키(세션 슬롯)와 같은 문법. */
-export function dialImage(role: string, label: string, value: string, tick = 0, disabled = false, badge?: string | null, sub?: string | null): string {
-  const accent = disabled ? "#2e2e34" : (DIAL_ACCENT[role] ?? "#8a8a90");
+ *  sub가 주어지면 값 아래에 작은 보조 줄(브랜치 등)을 그린다 — 키(세션 슬롯)와 같은 문법.
+ *  customColor가 주어지거나 role === "mode"인 경우 모드별 실제 색상을 타이틀/좌측 바에 적용한다. */
+export function dialImage(
+  role: string,
+  label: string,
+  value: string,
+  tick = 0,
+  disabled = false,
+  badge?: string | null,
+  sub?: string | null,
+  customColor?: string | null,
+): string {
+  const roleAccent = customColor || (role === "mode" ? modeColor(value, badge) : (DIAL_ACCENT[role] ?? "#8a8a90"));
+  const accent = disabled ? "#2e2e34" : roleAccent;
   const labelColor = disabled ? "#4a4a52" : accent;
   const valueColor = disabled ? "#4a4a52" : "#ffffff";
   const val = disabled ? (value && value !== " " && value !== "…" ? value : "-") : (value || " ");
