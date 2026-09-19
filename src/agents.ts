@@ -151,8 +151,8 @@ export const CLAUDE_DEFAULT_MODELS = [
   "haiku",
 ];
 
-export const CLAUDE_MODES = ["default", "accept-edits", "plan", "auto"] as const;
-export const CLAUDE_BYPASS_MODES = ["default", "accept-edits", "plan", "bypassPermissions", "auto"] as const;
+export const CLAUDE_MODES = ["default", "accept-edits", "plan"] as const;
+export const CLAUDE_BYPASS_MODES = ["default", "accept-edits", "plan", "bypassPermissions"] as const;
 
 export function isClaudeBypassEnabled(ctx?: AgentContext): boolean {
   if (ctx?.preview) {
@@ -194,7 +194,7 @@ export function getClaudeShiftTabSteps(toMode: string, fromMode?: string, modeLi
   const targetIdx = list.indexOf(target);
   const currentIdx = list.indexOf(current);
   if (targetIdx < 0) {
-    return [{ text: "\x1b[Z", enter: false }];
+    return [];
   }
   const fromIdx = currentIdx < 0 ? 0 : currentIdx;
   const count = (targetIdx - fromIdx + list.length) % list.length;
@@ -403,6 +403,8 @@ export function readClaudeState(ctx?: AgentContext): AgentStateSnapshot {
       state.mode = previewMode;
       if (previewMode === "bypassPermissions") {
         state.modes = [...CLAUDE_BYPASS_MODES];
+      } else if (previewMode === "auto" && !state.modes.includes("auto")) {
+        state.modes.push("auto");
       }
     }
   }
@@ -448,11 +450,15 @@ export function readClaudeState(ctx?: AgentContext): AgentStateSnapshot {
                     state.mode = normalizeClaudeMode(d.permissionMode);
                     if (state.mode === "bypassPermissions") {
                       state.modes = [...CLAUDE_BYPASS_MODES];
+                    } else if (state.mode === "auto" && !state.modes.includes("auto")) {
+                      state.modes.push("auto");
                     }
                   } else if (d.type === "mode" && typeof d.mode === "string") {
                     state.mode = normalizeClaudeMode(d.mode);
                     if (state.mode === "bypassPermissions") {
                       state.modes = [...CLAUDE_BYPASS_MODES];
+                    } else if (state.mode === "auto" && !state.modes.includes("auto")) {
+                      state.modes.push("auto");
                     }
                   }
                 }
@@ -491,6 +497,8 @@ export function readClaudeState(ctx?: AgentContext): AgentStateSnapshot {
           state.mode = parsed.mode;
           if (state.mode === "bypassPermissions") {
             state.modes = [...CLAUDE_BYPASS_MODES];
+          } else if (state.mode === "auto" && !state.modes.includes("auto")) {
+            state.modes.push("auto");
           }
         }
       }
@@ -525,10 +533,13 @@ export class ClaudeAgent extends AbstractAgent {
   }
 
   override getModes(ctx?: AgentContext): string[] {
-    if (isClaudeBypassEnabled(ctx)) {
-      return [...CLAUDE_BYPASS_MODES];
+    const isBypass = isClaudeBypassEnabled(ctx);
+    const hasAuto = ctx?.preview ? parseClaudeModeFromText(ctx.preview) === "auto" : false;
+    const base = isBypass ? [...CLAUDE_BYPASS_MODES] : [...CLAUDE_MODES];
+    if (hasAuto && !base.includes("auto")) {
+      base.push("auto");
     }
-    return [...CLAUDE_MODES];
+    return base;
   }
 
   getApplySteps(kind: ControlKind, value: string, fromValue?: string, modeList?: string[]): ApplyStep[] {
@@ -583,8 +594,8 @@ export function parseCodexModelsCache(jsonText: string): string[] {
     const data = JSON.parse(jsonText);
     if (data && Array.isArray(data.models)) {
       return data.models
-        .map((m: any) => (typeof m === "string" ? m : m?.id || m?.name))
-        .filter((id: any): id is string => typeof id === "string" && id.trim().length > 0);
+        .map((m: any) => (typeof m === "string" ? m : m?.slug || m?.id || m?.name))
+        .filter((id: any): id is string => typeof id === "string" && id.trim().length > 0 && !id.toLowerCase().includes("auto-review"));
     }
   } catch {}
   return [];
@@ -827,7 +838,7 @@ export function getAgyShiftTabSteps(toMode: string, fromMode?: string, modeList?
   const targetIdx = list.indexOf(target);
   const currentIdx = list.indexOf(current);
   if (targetIdx < 0) {
-    return [{ text: "\x1b[Z", enter: false }];
+    return [];
   }
   const fromIdx = currentIdx < 0 ? 0 : currentIdx;
   const count = (targetIdx - fromIdx + list.length) % list.length;

@@ -2,17 +2,17 @@ import { describe, it, expect } from "vitest";
 import { keySvg, agentBadge, stateIcon, keyImage, wrap, wrapWords, stripSpinner, marqueeWindow, dialImage, modeColor } from "../src/render.js";
 
 describe("stripSpinner / wrap / wrapWords", () => {
-  it("앞 스피너 글리프만 제거, 한글 보존", () => {
-    expect(stripSpinner("⠂ 상한가 주식")).toBe("상한가 주식");
-    expect(stripSpinner("정상 제목")).toBe("정상 제목");
+  it("strip leading spinner glyph while preserving text", () => {
+    expect(stripSpinner("⠂ Task in progress")).toBe("Task in progress");
+    expect(stripSpinner("Normal Title")).toBe("Normal Title");
   });
-  it("wrap는 줄당 글자수·최대줄 지키고 넘치면 …", () => {
+  it("wrap preserves max chars per line and applies ellipsis on overflow", () => {
     expect(wrap("abcdefg", 7, 3)).toEqual(["abcdefg"]);
-    const long = wrap("가".repeat(25), 7, 3); // 25 > 7*3 → 절단
+    const long = wrap("A".repeat(25), 7, 3);
     expect(long).toHaveLength(3);
     expect(long[2].endsWith("…")).toBe(true);
   });
-  it("wrapWords는 단어 경계로 줄바꿈하고 최대 줄 수 제한 및 말줄임표 적용", () => {
+  it("wrapWords wraps on word boundaries and enforces line limit with ellipsis", () => {
     expect(wrapWords("Design Feedback URL Browser", 15, 2)).toEqual([
       "Design Feedback",
       "URL Browser",
@@ -26,55 +26,55 @@ describe("stripSpinner / wrap / wrapWords", () => {
 });
 
 describe("marqueeWindow", () => {
-  it("창보다 짧으면 그대로", () => {
+  it("returns original text when shorter than window", () => {
     expect(marqueeWindow("abc", 6, 0)).toBe("abc");
     expect(marqueeWindow("abc", 6, 5)).toBe("abc");
   });
-  it("창보다 길면 tick마다 이동하고 창 크기 유지", () => {
+  it("scrolls by tick and maintains window length when longer than window", () => {
     const s = "0123456789";
     expect([...marqueeWindow(s, 6, 0)]).toHaveLength(6);
     expect(marqueeWindow(s, 6, 0)).toBe("012345");
     expect(marqueeWindow(s, 6, 1)).toBe("123456");
     expect(marqueeWindow(s, 6, 2)).toBe("234567");
   });
-  it("한 주기 뒤 처음으로 순환", () => {
+  it("cycles back to start after one full period", () => {
     const s = "0123456789";
-    const period = [...`${s}   ·   `].length; // 구현과 동일한 주기
+    const period = [...`${s}   ·   `].length;
     expect(marqueeWindow(s, 6, period)).toBe(marqueeWindow(s, 6, 0));
   });
 });
 
 describe("keySvg", () => {
-  it("빈 칸은 어두운 배경", () => {
+  it("empty slot renders dark background", () => {
     expect(keySvg({ empty: true })).toContain("#141416");
   });
-  it("상단 색 띠 + 프로젝트명(가운데) + 브랜치-번호 + 탭 제목 2줄 요약", () => {
+  it("renders top color ribbon + project name + branch-num + 2-line tab title", () => {
     const svg = keySvg({
       empty: false, handle: "term_x", tabTitle: "Design Feedback URL",
       state: "working", color: "blue", repo: "svd", branch: "main", dupIndex: 1,
     });
-    expect(svg).toContain("#3b82f6"); // 상단 색 띠(blue)
-    expect(svg).not.toContain("WORKING"); // 상태 단어 제거
-    expect(svg).toContain("svd"); // 프로젝트명
-    expect(svg).toContain("main-1"); // 브랜치-번호
-    expect(svg).toContain("Design Feedback"); // 탭 제목 1줄
-    expect(svg).toContain("URL"); // 탭 제목 2줄
+    expect(svg).toContain("#3b82f6");
+    expect(svg).not.toContain("WORKING");
+    expect(svg).toContain("svd");
+    expect(svg).toContain("main-1");
+    expect(svg).toContain("Design Feedback");
+    expect(svg).toContain("URL");
   });
 
-  it("대상이면 우측 상단 코랄 점(dot), 비대상은 없음", () => {
+  it("target slot renders top-right coral dot, non-target does not", () => {
     const b = { empty: false as const, handle: "t", label: "x", state: "done", color: "green" as const, repo: "svd", branch: "main" };
     const on = keySvg(b, 0, true);
     const off = keySvg(b, 0, false);
-    expect(on).toContain('<circle cx="124" cy="28" r="8" fill="#d97757"'); // 우측 상단 코랄 점
-    expect(on).toContain("main"); // 브랜치는 일반 텍스트 유지
-    expect(on).toContain('fill="#ffffff"'); // 이름은 흰색
+    expect(on).toContain('<circle cx="124" cy="28" r="8" fill="#d97757"');
+    expect(on).toContain("main");
+    expect(on).toContain('fill="#ffffff"');
     expect(off).not.toContain("#d97757");
   });
 });
 
-describe("agentBadge — 타일마다 에이전트 뱃지(Orca 로고 아이콘 / 폴백)", () => {
-  it("알려진 타입은 Orca 로고 아이콘", () => {
-    expect(agentBadge("claude")).toContain('fill="#D97757"'); // Claude terracotta
+describe("agentBadge — per-tile agent badge", () => {
+  it("known types render Orca logo icons", () => {
+    expect(agentBadge("claude")).toContain('fill="#D97757"');
     expect(agentBadge("claude")).toContain("M4.709");
     expect(agentBadge("opencode")).toContain('fill="#F1ECEC"');
     expect(agentBadge("opencode")).toContain("M180 240H60V120H180V240Z");
@@ -86,97 +86,95 @@ describe("agentBadge — 타일마다 에이전트 뱃지(Orca 로고 아이콘 
     expect(agentBadge("hermes-cli")).toContain('fill="#10B981"');
     expect(agentBadge("hermes-agent")).toContain('fill="#10B981"');
   });
-  it("대소문자 무시", () => {
+  it("case insensitive", () => {
     expect(agentBadge("OpenCode")).toContain('fill="#F1ECEC"');
     expect(agentBadge("Claude")).toContain('fill="#D97757"');
     expect(agentBadge("Hermes")).toContain('fill="#10B981"');
   });
-  it("모르는 타입은 회색 알약 + 앞 2글자, 없으면 물음표", () => {
+  it("unknown types render gray pill with first 2 characters, or question mark", () => {
     const g = agentBadge("grok");
     expect(g).toContain('fill="#4b5563"');
     expect(g).toContain(">GR</text>");
     expect(agentBadge(undefined)).toContain(">?</text>");
     expect(agentBadge(null)).toContain(">?</text>");
   });
-  it("keySvg에 타일마다 에이전트 아이콘 뱃지가 들어간다", () => {
+  it("keySvg embeds agent icon badge", () => {
     const svg = keySvg({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main", agentType: "opencode" });
     expect(svg).toContain("M180 240H60V120H180V240Z");
     expect(svg).toContain('fill="#F1ECEC"');
   });
-  it("빈 칸은 뱃지 없음", () => {
+  it("empty slot has no badge", () => {
     expect(keySvg({ empty: true })).not.toContain("</text>");
   });
 });
 
-describe("stateIcon — 세션 상태 아이콘 (Orca UI 매칭)", () => {
-  it("done은 녹색 체크마크 원", () => {
+describe("stateIcon — session state icons matching Orca UI", () => {
+  it("done is green checkmark circle", () => {
     const icon = stateIcon("done");
     expect(icon).toContain('stroke="#22c55e"');
     expect(icon).toContain("<circle");
     expect(icon).toContain("<path");
   });
-  it("unverifiable(no recent update)는 주황색 점선 원", () => {
+  it("unverifiable (no recent update) is amber dashed circle", () => {
     const icon = stateIcon("unverifiable");
     expect(icon).toContain('stroke="#f59e0b"');
     expect(icon).toContain("stroke-dasharray");
   });
-  it("working은 파란색 스피너 링", () => {
+  it("working is blue spinner ring", () => {
     const icon = stateIcon("working");
     expect(icon).toContain('stroke="#3b82f6"');
     expect(icon).toContain("stroke-dasharray");
   });
-  it("waiting은 앰버 물음표", () => {
+  it("waiting is amber question mark", () => {
     const icon = stateIcon("waiting");
     expect(icon).toContain('stroke="#f59e0b"');
     expect(icon).toContain(">?</text>");
   });
-  it("error/blocked/failed는 빨간색 느낌표", () => {
+  it("error/blocked/failed is red exclamation mark", () => {
     expect(stateIcon("error")).toContain('stroke="#ef4444"');
     expect(stateIcon("blocked")).toContain('stroke="#ef4444"');
     expect(stateIcon("failed")).toContain('stroke="#ef4444"');
   });
-  it("idle 또는 빈 상태는 아이콘 없음(깔끔)", () => {
+  it("idle or empty state has no icon", () => {
     expect(stateIcon("idle")).toBe("");
     expect(stateIcon(undefined)).toBe("");
   });
 });
 
-describe("keySvg 주의 애니메이션(펄스 링)", () => {
+describe("keySvg attention animation (pulse ring)", () => {
   const attn = { empty: false as const, handle: "t", label: "x", state: "waiting", color: "amber" as const, repo: "svd", branch: "main" };
   const calm = { empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main" };
-  it("주의 키는 nowMs에 따라 SVG가 달라진다(애니메이션)", () => {
+  it("attention key changes SVG across nowMs timestamps", () => {
     expect(keySvg(attn, 0, false, 0)).not.toBe(keySvg(attn, 0, false, 320));
   });
-  it("정적(작업중) 키는 nowMs 무관하게 동일(캐시 안정)", () => {
+  it("static (working) key is invariant to nowMs", () => {
     expect(keySvg(calm, 0, false, 0)).toBe(keySvg(calm, 0, false, 999));
   });
-  it("현재 보는 세션(target)의 완료(green)는 이미 보고 있어 애니메이션 안 함(정적)", () => {
+  it("target session done state does not animate", () => {
     const done = { empty: false as const, handle: "t", label: "x", state: "done", color: "green" as const, repo: "svd", branch: "main" };
     expect(keySvg(done, 0, true, 0)).toBe(keySvg(done, 0, true, 500));
   });
-  it("현재 보는 세션(target)이라도 입력대기(amber)는 승인/입력 필요로 애니메이션 유지", () => {
+  it("target session waiting state continues animating for input prompt", () => {
     expect(keySvg(attn, 0, true, 0)).not.toBe(keySvg(attn, 0, true, 320));
   });
-  it("주의 키는 배경이 상태색으로 펄스(글로우 오버레이 — fill 2개 이상)", () => {
-    // amber 주의 키: 배경 글로우 + 상태띠 + 상태아이콘 = fill="#f59e0b" 2개 이상
+  it("attention key pulses background with state color", () => {
     expect((keySvg(attn, 0, false, 200).match(/fill="#f59e0b"/g) || []).length).toBeGreaterThanOrEqual(2);
-    // 비주의(파랑) 키는 상태띠 1개뿐(글로우 없음)
     expect((keySvg(calm, 0, false, 200).match(/fill="#3b82f6"/g) || []).length).toBe(1);
   });
 });
 
-describe("keySvg dim — 주의 없는 키 죽여 대비 만들기", () => {
+describe("keySvg dim — dim non-attention keys for contrast", () => {
   const calm = { empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main" };
-  it("dim이면 키 전체를 어둡게(그룹 opacity)", () => {
+  it("dim applies group opacity", () => {
     expect(keySvg(calm, 0, false, 0, true)).toContain('opacity="0.32"');
   });
-  it("dim 아니면 정상 밝기(죽이지 않음)", () => {
+  it("non-dim preserves normal brightness", () => {
     expect(keySvg(calm, 0, false, 0, false)).not.toContain('opacity="0.32"');
   });
 });
 
-describe("keyImage — 키는 SVG data URI로 내보낸다", () => {
-  it("SVG를 base64 data URI로 반환", () => {
+describe("keyImage — exports SVG data URI", () => {
+  it("returns base64 SVG data URI", () => {
     const img = keyImage({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main", agentType: "opencode" });
     expect(img.startsWith("data:image/svg+xml;base64,")).toBe(true);
     const svg = Buffer.from(img.split(",")[1], "base64").toString("utf8");
@@ -184,100 +182,100 @@ describe("keyImage — 키는 SVG data URI로 내보낸다", () => {
     expect(svg).toContain("M180 240H60V120H180V240Z");
     expect(svg).toContain('fill="#F1ECEC"');
   });
-  it("빈 칸도 SVG data URI", () => {
+  it("empty slot returns SVG data URI", () => {
     expect(keyImage({ empty: true })).toMatch(/^data:image\/svg\+xml;base64,/);
   });
 });
 
-describe("dialImage — 다이얼 렌더", () => {
-  it("렌더 throw 없이 data URI 반환 (한 줄 값)", () => {
+describe("dialImage — dial rendering", () => {
+  it("renders data URI without throwing for single line value", () => {
     const img = dialImage("model", "MODEL", "opus", 0);
     expect(img.startsWith("data:image/svg+xml;base64,")).toBe(true);
   });
-  it("짧은 값은 한 줄 텍스트, 줄당 글자수는 가용 폭(narrow) 기준", () => {
+  it("short value renders as single text line", () => {
     const svg = Buffer.from(dialImage("effort", "EFFORT", "high", 0).split(",")[1], "base64").toString("utf8");
-    expect(svg.match(/<text/g) || []).toHaveLength(2); // label + value (한 줄)
+    expect(svg.match(/<text/g) || []).toHaveLength(2);
     expect(svg).toContain('font-size="28"');
   });
-  it("긴 값은 가용 폭 기준으로 3줄 래핑(모델 라벨 소형)", () => {
+  it("long value wraps up to 3 lines", () => {
     const long = "opencode/claude-opus-4-6-preview-2025-nerf-extra-long";
     const svg = Buffer.from(dialImage("model", "MODEL", long, 0).split(",")[1], "base64").toString("utf8");
-    expect(svg).toContain('font-size="11"'); // model label small
+    expect(svg).toContain('font-size="11"');
     const lines = svg.match(/y="[0-9]+"/g) || [];
-    expect(lines.length).toBe(4); // label + 3 value lines
-    expect(svg).toContain("opencode"); // provider survives full-width wrap
-    expect(svg).toContain("claude-opus"); // model slug survives full-width wrap (not 8-char)
+    expect(lines.length).toBe(4);
+    expect(svg).toContain("opencode");
+    expect(svg).toContain("claude-opus");
   });
-  it("한 줄에 못 들어가는 값은 '/' 경계에서 줄바꿈(마지막 글자 잘림 방지)", () => {
+  it("breaks on '/' delimiter when value does not fit in single line", () => {
     const v = "minimax/minimax-m3";
     const svg = Buffer.from(dialImage("model", "MODEL", v, 0).split(",")[1], "base64").toString("utf8");
     const textY = [...svg.matchAll(/text x="18" y="(\d+)"/g)].map((m) => m[1]);
-    expect(textY.length).toBeGreaterThan(1); // 2줄 이상
+    expect(textY.length).toBeGreaterThan(1);
     expect(svg).toContain(">minimax</text>");
     expect(svg).toContain(">minimax-m3</text>");
   });
-  it("disabled=true인 다이얼은 레일/라벨/값이 어두운 회색이고 투명도 그룹 포함", () => {
+  it("disabled dial renders dark gray rails/labels and opacity group", () => {
     const svg = Buffer.from(dialImage("effort", "EFFORT", "-", 0, true).split(",")[1], "base64").toString("utf8");
-    expect(svg).toContain('fill="#2e2e34"'); // 어두운 레일
-    expect(svg).toContain('fill="#4a4a52"'); // 흐린 라벨 및 값
-    expect(svg).toContain('<g opacity="0.38">'); // 투명도 딤
+    expect(svg).toContain('fill="#2e2e34"');
+    expect(svg).toContain('fill="#4a4a52"');
+    expect(svg).toContain('<g opacity="0.38">');
   });
-  it("badge를 주면 우상단에 에이전트 아이콘 뱃지가 그려진다(대상 다이얼)", () => {
+  it("renders agent icon badge when badge prop is provided", () => {
     const svg = Buffer.from(dialImage("target", "TARGET", "svd", 0, false, "opencode", "main").split(",")[1], "base64").toString("utf8");
     expect(svg).toContain('fill="#F1ECEC"');
     expect(svg).toContain("M180 240H60V120H180V240Z");
     expect(svg).toContain('x="172" y="6"');
   });
-  it("sub(브랜치)를 주면 값 아래 작은 줄로 그린다", () => {
+  it("renders branch subtitle below value when sub is provided", () => {
     const svg = Buffer.from(dialImage("target", "TARGET", "svd", 0, false, "opencode", "main").split(",")[1], "base64").toString("utf8");
-    expect(svg).toContain('fill="#b8b8be"'); // 브랜치 흐린 회색
+    expect(svg).toContain('fill="#b8b8be"');
     expect(svg).toContain(">main</text>");
     expect(svg).toContain('font-size="13" font-weight="600"');
   });
-  it("badge 없으면 우상단 알약 없음", () => {
+  it("omits top-right badge when badge is not passed", () => {
     const svg = Buffer.from(dialImage("target", "TARGET", "svd", 0).split(",")[1], "base64").toString("utf8");
     expect(svg).not.toContain('x="172" y="6"');
   });
 
-  it("mode 다이얼은 에이전트 및 모드에 따라 타이틀과 좌측 바 색상이 변경된다", () => {
+  it("mode dial title and left bar color change according to agent and mode", () => {
     // 1. AGY
     const agyAccept = Buffer.from(dialImage("mode", "MODE", "accept-edits", 0, false, "agy").split(",")[1], "base64").toString("utf8");
-    expect(agyAccept).toContain('fill="#22c55e"'); // green
+    expect(agyAccept).toContain('fill="#22c55e"');
     expect(agyAccept).toContain('>MODE</text>');
 
     const agyPlan = Buffer.from(dialImage("mode", "MODE", "plan", 0, false, "agy").split(",")[1], "base64").toString("utf8");
-    expect(agyPlan).toContain('fill="#3b82f6"'); // blue
+    expect(agyPlan).toContain('fill="#3b82f6"');
 
     const agyNothing = Buffer.from(dialImage("mode", "MODE", "default", 0, false, "agy").split(",")[1], "base64").toString("utf8");
-    expect(agyNothing).toContain('fill="#71717a"'); // gray
+    expect(agyNothing).toContain('fill="#71717a"');
 
     // 2. Claude
     const claudeAuto = Buffer.from(dialImage("mode", "MODE", "auto", 0, false, "claude").split(",")[1], "base64").toString("utf8");
-    expect(claudeAuto).toContain('fill="#eab308"'); // yellowish
+    expect(claudeAuto).toContain('fill="#eab308"');
 
     const claudeManual = Buffer.from(dialImage("mode", "MODE", "manual", 0, false, "claude").split(",")[1], "base64").toString("utf8");
-    expect(claudeManual).toContain('fill="#71717a"'); // gray
+    expect(claudeManual).toContain('fill="#71717a"');
 
     const claudeAccept = Buffer.from(dialImage("mode", "MODE", "accept-edits", 0, false, "claude").split(",")[1], "base64").toString("utf8");
-    expect(claudeAccept).toContain('fill="#a855f7"'); // violetish
+    expect(claudeAccept).toContain('fill="#a855f7"');
 
     const claudePlan = Buffer.from(dialImage("mode", "MODE", "plan", 0, false, "claude").split(",")[1], "base64").toString("utf8");
-    expect(claudePlan).toContain('fill="#3b82f6"'); // blueish
+    expect(claudePlan).toContain('fill="#3b82f6"');
 
     // 3. Codex
     const codexWrite = Buffer.from(dialImage("mode", "MODE", "workspace-write", 0, false, "codex").split(",")[1], "base64").toString("utf8");
-    expect(codexWrite).toContain('fill="#10b981"'); // emerald
+    expect(codexWrite).toContain('fill="#10b981"');
 
     const codexRead = Buffer.from(dialImage("mode", "MODE", "read-only", 0, false, "codex").split(",")[1], "base64").toString("utf8");
-    expect(codexRead).toContain('fill="#0ea5e9"'); // cyan
+    expect(codexRead).toContain('fill="#0ea5e9"');
 
     const codexDanger = Buffer.from(dialImage("mode", "MODE", "danger-full-access", 0, false, "codex").split(",")[1], "base64").toString("utf8");
-    expect(codexDanger).toContain('fill="#ef4444"'); // red
+    expect(codexDanger).toContain('fill="#ef4444"');
   });
 });
 
-describe("modeColor — 모드별 색상 매핑", () => {
-  it("AGY 모드 색상: accept-edits=초록, plan=파랑, default/nothing=회색", () => {
+describe("modeColor — mode to color mapping", () => {
+  it("AGY mode colors: accept-edits=green, plan=blue, default=gray", () => {
     expect(modeColor("accept-edits", "agy")).toBe("#22c55e");
     expect(modeColor("accept edits", "antigravity")).toBe("#22c55e");
     expect(modeColor("plan", "agy")).toBe("#3b82f6");
@@ -285,7 +283,7 @@ describe("modeColor — 모드별 색상 매핑", () => {
     expect(modeColor("nothing", "agy")).toBe("#71717a");
   });
 
-  it("Claude 모드 색상: auto=노랑, manual/default=회색, accept-edits=보라, plan=파랑", () => {
+  it("Claude mode colors: auto=yellow, manual/default=gray, accept-edits=purple, plan=blue", () => {
     expect(modeColor("auto", "claude")).toBe("#eab308");
     expect(modeColor("auto-mode", "claude")).toBe("#eab308");
     expect(modeColor("automode", "claude")).toBe("#eab308");
@@ -296,14 +294,14 @@ describe("modeColor — 모드별 색상 매핑", () => {
     expect(modeColor("plan", "claude")).toBe("#3b82f6");
   });
 
-  it("Codex 모드 색상: workspace-write=에메랄드, read-only=하늘, danger-full-access=빨강, plan=파랑", () => {
+  it("Codex mode colors: workspace-write=emerald, read-only=sky, danger-full-access=red, plan=blue", () => {
     expect(modeColor("workspace-write", "codex")).toBe("#10b981");
     expect(modeColor("read-only", "codex")).toBe("#0ea5e9");
     expect(modeColor("danger-full-access", "codex")).toBe("#ef4444");
     expect(modeColor("plan", "codex")).toBe("#3b82f6");
   });
 
-  it("OpenCode 모드 색상: build=초록, plan=파랑, review=보라, debug=앰버", () => {
+  it("OpenCode mode colors: build=green, plan=blue, review=purple, debug=amber", () => {
     expect(modeColor("build", "opencode")).toBe("#22c55e");
     expect(modeColor("plan", "opencode")).toBe("#3b82f6");
     expect(modeColor("review", "opencode")).toBe("#a855f7");

@@ -33,7 +33,7 @@ npx streamdeck link com.byjw.deep.sdPlugin
 
 ## Action placement (Stream Deck app)
 - **Keypad tab** → **Deep** category on the right → drag **Session Slot** onto the **8 keys** (slot = coordinate, automatic, no setup needed)
-- **Dial tab** → drag onto the dials: **Model / Effort / Talk / Target session selection**
+- **Dial tab** → drag onto the dials: **Model / Effort / Mode / Talk / Target session selection**
 
 ## Usage
 ### Keys (session board)
@@ -50,6 +50,7 @@ npx streamdeck link com.byjw.deep.sdPlugin
 |---|---|---|
 | **Model** | choose opus↔sonnet↔haiku | apply `/model` to the current session |
 | **Effort** | choose low↔…↔ultracode | apply `/effort` to the current session |
+| **Mode** | choose plan↔build↔… | apply mode to the current session |
 | **Talk** | — | push to start recording → speak → push again to stop and send (toggle) |
 | **Target session selection** | walk all sessions (moves focus) | jump to that session |
 
@@ -61,14 +62,14 @@ Talk uses **macOS on-device speech recognition**. You need:
 2. **Allow permissions**: the first Talk push prompts for **Microphone** and **Speech Recognition** permissions → allow
 3. Make sure the input device is your actual mic (System Settings → Sound → Input)
 
-The recognition language follows your **system Dictation language** automatically (it is no longer hardcoded to Korean). To force a specific language, set the `STT_LOCALE` environment variable (e.g. `en-US`) or write the locale into `/tmp/agentdeck-stt.locale`.
+The recognition language follows your **system Dictation language** automatically. To force a specific language, set the `STT_LOCALE` environment variable (e.g. `en-US`) or write the locale into `/tmp/agentdeck-stt.locale`.
 
-If something's wrong, the **Talk dial shows the cause**: `받아쓰기 켜기` (turn on Dictation) / `마이크 권한 켜기` (turn on mic permission) / `음성인식 권한 켜기` (turn on speech-recognition permission).
+If something's wrong, the **Talk dial shows the cause**: `Enable Dictation` / `Enable Mic Permission` / `Enable Speech Recognition`.
 
 ## Limitations
 - **Mac + Orca only**. Other terminals/OSes unsupported.
 - **Keys are 8 slots (1 page)**. With more than 8 sessions, the 9th+ aren't on the keys but remain reachable via the **target dial**.
-- Dial signals are **gated per running agent**: only supported agents (Claude, OpenCode) get a working model/effort dial, and OpenCode's model list is **loaded live** from `opencode models`. Unsupported/unknown agents get the dial blocked (`-`), so no wrong command is ever sent.
+- Dial signals are **gated per running agent**: only supported agents (Claude, OpenCode, Codex, AGY, Hermes) get a working model/effort/mode dial, and model lists are **loaded live** from respective agent configurations and tools. Unsupported/unknown agents get the dial blocked (`-`), so no wrong command is ever sent.
 
 ## Development
 ```bash

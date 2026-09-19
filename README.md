@@ -1,84 +1,83 @@
 # Deep
 
-> **English:** [README.en.md](README.en.md)
+**A physical control surface for directing [Orca](https://orca.computer) Claude (or compatible agent) sessions from a Stream Deck Plus.**
 
-**Stream Deck Plus로 [Orca](https://orca.computer) 위에서 도는 Claude(및 호환 에이전트) 세션을 지휘하는 물리 컨트롤 서피스.**
-
-여러 에이전트를 bypass로 동시에 돌릴 때, 창을 왔다갔다 안 하고 **8칸 상태판**으로 보고 · 눌러서 점프 · 다이얼로 모델/Effort 바꾸고 · **음성으로 지시**한다. OpenAI Codex Micro 컨셉을 Stream Deck으로.
+When running several agents in parallel, instead of hopping between windows, you can **view the 8-slot state board** · **tap to jump** · **change model/effort via dials** · and **direct via voice**. An OpenAI Codex Micro-style concept, on a Stream Deck.
 
 ---
 
-## 요구 사항
+## Requirements
 | | |
 |---|---|
-| **macOS** | 필수 (STT·권한·오디오가 macOS 전용) |
-| **[Orca](https://orca.computer)** | 필수 — 세션 목록·상태·전환·전송이 전부 `orca` CLI 기반 |
-| **Node.js** | 필수 — 시스템 node로 실행 (homebrew/local/nvm 자동 탐색) |
-| **Stream Deck +** | 8키 + 4다이얼 모델 (다이얼 기능은 + 전용) |
-| 에이전트 | Claude Code 권장. 세션판·Talk는 어떤 Orca 에이전트든, **모델·Effort 다이얼은 `/model`·`/effort` 쓰는 에이전트**(Claude 등) |
+| **macOS** | Required (STT, permissions, and audio are macOS-only) |
+| **[Orca](https://orca.computer)** | Required — session listing, state, switching, and sending all go through the `orca` CLI |
+| **Node.js** | Required — runs under the system node (auto-detected via homebrew/local/nvm) |
+| **Stream Deck +** | 8 keys + 4 dials (dial features are +-only) |
+| Agent | Claude Code recommended. The session board and Talk work with any Orca agent; the **model/effort dials** need agents that accept `/model` and `/effort` (e.g. Claude) |
 
-## 다운로드 · 설치 (사용자)
-1. [Releases](https://github.com/Jungwoon/deep/releases)에서 최신 `com.byjw.deep.streamDeckPlugin` 다운로드
-2. 파일 **더블클릭** → Stream Deck 앱 설치창 → 설치
-3. Stream Deck 앱 오른쪽 **Deep** 카테고리 확인 → 아래 [액션 배치](#액션-배치-stream-deck-앱)대로 키·다이얼에 드래그
+## Download · Install (users)
+1. Download the latest `com.byjw.deep.streamDeckPlugin` from [Releases](https://github.com/Jungwoon/deep/releases)
+2. **Double-click** the file → Stream Deck app install window → install
+3. In the Stream Deck app, check the **Deep** category on the right → drag onto keys/dials as in [Action placement](#action-placement-stream-deck-app) below
 
-> 음성(STT) 헬퍼는 Apple 공증(notarized)돼 Gatekeeper 경고 없이 실행됩니다.
+> The voice (STT) helper is Apple-notarized, so it runs without a Gatekeeper warning.
 
-## 소스에서 빌드 (개발)
+## Building from source (developers)
 ```bash
 git clone https://github.com/Jungwoon/deep && cd deep
 npm install
-npm run package                              # 아이콘 + esbuild 번들
+npm run package                              # icons + esbuild bundle
 npx streamdeck link com.byjw.deep.sdPlugin
-# 새 플러그인은 Stream Deck 앱 startup에 스캔 → 앱 1회 재시작
+# New plugins are scanned at Stream Deck app startup → restart the app once
 ```
 
-## 액션 배치 (Stream Deck 앱)
-- **키 탭** → 오른쪽 **Deep** 카테고리 → **Session Slot**을 **키 8칸에** 드래그(슬롯=좌표 자동, 설정 불필요)
-- **다이얼 탭** → 다이얼에 각각 드래그: **모델 / Effort / Talk / 대상 세션 선택**
+## Action placement (Stream Deck app)
+- **Keypad tab** → **Deep** category on the right → drag **Session Slot** onto the **8 keys** (slot = coordinate, automatic, no setup needed)
+- **Dial tab** → drag onto the dials: **Model / Effort / Mode / Talk / Target session selection**
 
-## 사용법
-### 키 (세션판)
-| 요소 | 의미 |
+## Usage
+### Keys (session board)
+| Element | Meaning |
 |---|---|
-| **상단 색 띠** | 🔵 working · 🟡 waiting(입력대기) · 🟢 done · 🔴 error · ⚪ idle |
-| **가운데 흰 글자** | 프로젝트명 (경로에서 추출, 예: `AcmeApp`) |
-| **아래** | 브랜치. **현재 보는 세션은 코랄 칩**으로 강조 |
-| **탭** | 그 세션으로 포커스(`orca terminal switch`) / 이미 그 세션에 포커스되어 있으면 이전 앱으로 OS 전환(슈퍼탭) |
-| **초록 완료 색** | done + 안 읽음 = 초록(확인 필요), 열어보면 흰색(idle) |
+| **Top color ribbon** | 🔵 working · 🟡 waiting (input needed) · 🟢 done · 🔴 error · ⚪ idle |
+| **Center white text** | Project name (extracted from the path, e.g. `AcmeApp`) |
+| **Bottom** | Branch. The session you're currently viewing is highlighted with a coral chip |
+| **Tap** | Focus that session (`orca terminal switch`) / If already focused on that session, toggle back to previous app (OS super-tab) |
+| **Green done color** | done + unread = green (needs checking), fades to white (idle) once reviewed |
 
-### 다이얼
-| 다이얼 | 돌리기 | 누르기 |
+### Dials
+| Dial | Rotate | Push |
 |---|---|---|
-| **모델** | opus↔sonnet↔haiku 고르기 | 현재 세션에 `/model` 적용 |
-| **Effort** | low↔…↔ultracode 고르기 | 현재 세션에 `/effort` 적용 |
-| **Talk** | — | 눌러 녹음 시작 → 말하고 → 다시 눌러 정지·전송(토글) |
-| **대상 세션 선택** | 모든 세션 순회(포커스 이동) | 그 세션으로 점프 |
+| **Model** | choose opus↔sonnet↔haiku | apply `/model` to the current session |
+| **Effort** | choose low↔…↔ultracode | apply `/effort` to the current session |
+| **Mode** | choose plan↔build↔… | apply mode to the current session |
+| **Talk** | — | push to start recording → speak → push again to stop and send (toggle) |
+| **Target session selection** | walk all sessions (moves focus) | jump to that session |
 
-> 다이얼은 **지금 보고 있는(포커스된) 세션**에 작용한다. 코랄 칩이 대상 표시.
+> Dials act on the **session you're currently viewing (focused)**. The coral chip marks the target.
 
-## 🎤 Talk (음성 입력) 설정 — 처음 한 번
-Talk는 **macOS 온디바이스 음성인식**을 쓴다. 다음이 필요:
-1. **받아쓰기 켜기**: 시스템 설정 → 키보드 → **받아쓰기 On**
-2. **권한 허용**: 처음 Talk 누르면 **마이크**·**음성 인식** 권한 프롬프트 → 허용
-3. 입력 장치가 실제 마이크인지 확인(시스템 설정 → 소리 → 입력)
+## 🎤 Talk (voice input) setup — first time only
+Talk uses **macOS on-device speech recognition**. You need:
+1. **Turn on Dictation**: System Settings → Keyboard → **Dictation On**
+2. **Allow permissions**: the first Talk push prompts for **Microphone** and **Speech Recognition** permissions → allow
+3. Make sure the input device is your actual mic (System Settings → Sound → Input)
 
-인식 언어는 **시스템 받아쓰기 언어**를 자동으로 따릅니다(한국어 고정 아님). 특정 언어로 강제하려면 플러그인 bin 폴더에서 `STT_LOCALE`(예: `en-US`) 환경변수 또는 `/tmp/agentdeck-stt.locale` 파일에 로케일을 지정하세요.
+The recognition language follows your **system Dictation language** automatically. To force a specific language, set the `STT_LOCALE` environment variable (e.g. `en-US`) or write the locale into `/tmp/agentdeck-stt.locale`.
 
-문제가 있으면 **Talk 다이얼에 원인이 표시**된다: `받아쓰기 켜기` / `마이크 권한 켜기` / `음성인식 권한 켜기`.
+If something's wrong, the **Talk dial shows the cause**: `Enable Dictation` / `Enable Mic Permission` / `Enable Speech Recognition`.
 
-## 한계
-- **Mac + Orca 전용**. 다른 터미널·OS 미지원.
-- **키는 8칸(1페이지)**. 세션 8개 초과 시 9번째+는 키에 안 보이지만 **대상 다이얼로 접근 가능**.
-- 실행 중인 에이전트에 따라 자동으로 **게이팅**: 지원하는 에이전트(Claude·OpenCode)만 모델/Effort 다이얼이 동작하고, OpenCode의 모델 목록은 **실시간 로드**(`opencode models`). 나머지/모르는 에이전트는 다이얼이 `-`로 차단.
+## Limitations
+- **Mac + Orca only**. Other terminals/OSes unsupported.
+- **Keys are 8 slots (1 page)**. With more than 8 sessions, the 9th+ aren't on the keys but remain reachable via the **target dial**.
+- Dial signals are **gated per running agent**: only supported agents (Claude, OpenCode, Codex, AGY, Hermes) get a working model/effort/mode dial, and model lists are **loaded live** from respective agent configurations and tools. Unsupported/unknown agents get the dial blocked (`-`), so no wrong command is ever sent.
 
-## 개발
+## Development
 ```bash
-npm test          # 코어 유닛테스트(Vitest)
+npm test          # core unit tests (Vitest)
 npm run build     # esbuild → com.byjw.deep.sdPlugin/bin/plugin.js
-npm run poll      # 실제 orca 세션을 콘솔 상태판으로 미리보기
-# STT 헬퍼(Swift): swiftc src/stt-helper.swift → .app 번들, Developer ID 서명 필요
+npm run poll      # preview real orca sessions as a console state board
+# STT helper (Swift): swiftc src/stt-helper.swift → .app bundle, requires Developer ID signing
 ```
-- **Node 실행**: Elgato 관리형 Node 대신 `bin/launch.sh`가 시스템 node로 실행(런타임 미설치 우회).
-- **STT**: 서명된 `.app` 번들이라야 macOS TCC가 마이크/음성인식 usage description 신뢰. 배포엔 **notarization** 필요.
-- 디버그: `/tmp/agentdeck-*.json`·`.log`(폴링 상태·인식결과·실패코드).
+- **Node execution**: `bin/launch.sh` runs with the system node instead of the Elgato-managed Node (avoids a missing runtime).
+- **STT**: must be a signed `.app` bundle so macOS TCC trusts the mic/speech usage descriptions. Distribution needs **notarization**.
+- Debug: `/tmp/agentdeck-*.json`·`.log` (poll state, recognition results, failure codes).

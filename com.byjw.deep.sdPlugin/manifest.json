@@ -4,7 +4,7 @@
   "Name": "Deep",
   "Version": "0.1.0.0",
   "Author": "BYJW Studio",
-  "Description": "Orca에서 도는 Claude 세션을 8칸 상태판으로. 색=상태, 탭=포커스.",
+  "Description": "Control Orca agent sessions on an 8-slot status board. Color=State, Tap=Focus.",
   "Category": "Deep",
   "CategoryIcon": "imgs/plugin/category",
   "Icon": "imgs/plugin/marketplace",
@@ -24,7 +24,7 @@
       "Name": "Session Slot",
       "UUID": "com.byjw.deep.slot",
       "Icon": "imgs/actions/slot/icon",
-      "Tooltip": "세션 상태 표시 · 탭하면 해당 Orca 터미널로 포커스",
+      "Tooltip": "Display session state · Tap to focus corresponding Orca terminal",
       "Controllers": [
         "Keypad"
       ],
@@ -35,10 +35,10 @@
       ]
     },
     {
-      "Name": "모델 (Model)",
+      "Name": "Model",
       "UUID": "com.byjw.deep.model",
       "Icon": "imgs/actions/model/icon",
-      "Tooltip": "돌려서 모델 고르고 눌러 적용 (대상 세션에 /model)",
+      "Tooltip": "Rotate to select model, push to apply (/model in target session)",
       "Controllers": [
         "Encoder"
       ],
@@ -56,7 +56,7 @@
       "Name": "Effort",
       "UUID": "com.byjw.deep.effort",
       "Icon": "imgs/actions/effort/icon",
-      "Tooltip": "돌려서 effort 고르고 눌러 적용 (대상 세션에 /effort)",
+      "Tooltip": "Rotate to select effort, push to apply (/effort in target session)",
       "Controllers": [
         "Encoder"
       ],
@@ -71,10 +71,10 @@
       }
     },
     {
-      "Name": "모드 (Mode)",
+      "Name": "Mode",
       "UUID": "com.byjw.deep.mode",
       "Icon": "imgs/actions/model/icon",
-      "Tooltip": "돌려서 모드/에이전트 고르고 눌러 적용 (빌드·플랜 등)",
+      "Tooltip": "Rotate to select mode/agent, push to apply (plan, build, etc.)",
       "Controllers": [
         "Encoder"
       ],
@@ -89,10 +89,10 @@
       }
     },
     {
-      "Name": "Talk (말하기)",
+      "Name": "Talk",
       "UUID": "com.byjw.deep.talk",
       "Icon": "imgs/actions/talk/icon",
-      "Tooltip": "눌러서 말하기 (whisper STT — 설정 필요)",
+      "Tooltip": "Push to talk (Speech-to-Text)",
       "Controllers": [
         "Encoder"
       ],
@@ -107,10 +107,10 @@
       }
     },
     {
-      "Name": "대상 세션 선택",
+      "Name": "Target Session",
       "UUID": "com.byjw.deep.target",
       "Icon": "imgs/actions/target/icon",
-      "Tooltip": "돌려서 대상 세션 이동, 눌러서 그 세션으로 점프",
+      "Tooltip": "Rotate to walk sessions, push to jump to that session",
       "Controllers": [
         "Encoder"
       ],

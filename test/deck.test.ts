@@ -1,50 +1,50 @@
 import { describe, it, expect } from "vitest";
 import { buildDeck, colorFor, projectOf, needsAttention, findActivePaneInLayout, resolveActiveTerminal, nextWorktreeName, extractTabTitlesFromLayouts } from "../src/deck.js";
 
-describe("needsAttention — 주의 필요 세션 판정(애니메이션 트리거)", () => {
+describe("needsAttention — session attention check for animation triggers", () => {
   const b = (color: any, unread?: boolean) => ({ empty: false as const, handle: "t", label: "x", state: "s" as any, color, unread });
-  it("입력대기(amber)·완료미확인(green)·에러(red)는 다른 세션일 때 주의 필요", () => {
+  it("waiting (amber), unread done (green), and error (red) require attention for non-target sessions", () => {
     expect(needsAttention(b("amber"), false)).toBe(true);
     expect(needsAttention(b("green", true), false)).toBe(true);
     expect(needsAttention(b("red"), false)).toBe(true);
   });
-  it("작업중(blue)·idle(white)·빈칸은 주의 불필요", () => {
+  it("working (blue), idle (white), and empty slots do not require attention", () => {
     expect(needsAttention(b("blue"), false)).toBe(false);
     expect(needsAttention(b("white"), false)).toBe(false);
     expect(needsAttention({ empty: true }, false)).toBe(false);
   });
-  it("현재 보는 세션(target)이라도 입력대기(amber)나 에러(red)는 행동이 필요하므로 주의 필요", () => {
+  it("waiting (amber) or error (red) on target session still requires attention for user action", () => {
     expect(needsAttention(b("amber"), true)).toBe(true);
     expect(needsAttention(b("red"), true)).toBe(true);
   });
-  it("현재 보는 세션(target)의 완료(green)는 이미 보고 있으므로 주의 불필요", () => {
+  it("done (green) on target session does not require attention as user is viewing it", () => {
     expect(needsAttention(b("green", true), true)).toBe(false);
     expect(needsAttention(b("blue"), true)).toBe(false);
   });
 });
 
-// orca terminal list --json  →  result.terminals[]
+// orca terminal list --json -> result.terminals[]
 const terminals = [
-  { handle: "term_A", tabId: "tab1", leafId: "leaf1", title: "unparkxing 포스팅", worktreePath: "/x/unparkxing" },
-  { handle: "term_B", tabId: "tab2", leafId: "leaf2", title: "policy 약관 작업", worktreePath: "/x/policy" },
-  // 에이전트 없는 순수 셸 터미널 — 세션판에서 제외돼야 함
+  { handle: "term_A", tabId: "tab1", leafId: "leaf1", title: "unparkxing post", worktreePath: "/x/unparkxing" },
+  { handle: "term_B", tabId: "tab2", leafId: "leaf2", title: "policy terms work", worktreePath: "/x/policy" },
+  // Shell terminal without agent — should be excluded
   { handle: "term_shell", tabId: "tab3", leafId: "leaf3", title: "Terminal 1", worktreePath: "" },
 ];
 
-// orca worktree ps --json  →  result.worktrees[].agents[]  (paneKey = `${tabId}:${leafId}`)
+// orca worktree ps --json -> result.worktrees[].agents[] (paneKey = `${tabId}:${leafId}`)
 const worktrees = [
   { agents: [{ paneKey: "tab1:leaf1", state: "working", agentType: "claude" }] },
   { agents: [{ paneKey: "tab2:leaf2", state: "waiting", agentType: "opencode" }] },
 ];
 
-describe("buildDeck — 에이전트 타입 스레딩 + 게이팅용 메타 + 탭 제목", () => {
-  it("버튼에 paneKey 매칭 agentType이 담긴다", () => {
+describe("buildDeck — agent type threading + gating meta + tab title", () => {
+  it("slots contain matched agentType by paneKey", () => {
     const slots = buildDeck({ terminals, worktrees }).slots as any[];
     expect(slots[0].agentType).toBe("claude");
     expect(slots[1].agentType).toBe("opencode");
   });
 
-  it("visualLayouts에서 탭 제목(tabTitle)을 추출하여 버튼에 채운다", () => {
+  it("extracts tabTitle from visualLayouts and fills slot", () => {
     const visualLayouts = [
       {
         worktreeId: "wt1",
@@ -67,41 +67,41 @@ describe("buildDeck — 에이전트 타입 스레딩 + 게이팅용 메타 + �
   });
 });
 
-describe("colorFor — 상태→색 매핑", () => {
-  it("관측된 상태를 색으로", () => {
+describe("colorFor — state to color mapping", () => {
+  it("maps observed states to colors", () => {
     expect(colorFor("working")).toBe("blue");
     expect(colorFor("waiting")).toBe("amber");
     expect(colorFor("done")).toBe("green");
   });
-  it("error는 방어적으로 빨강, blocked는 주황(amber)", () => {
+  it("maps error to red and blocked to amber", () => {
     expect(colorFor("error")).toBe("red");
     expect(colorFor("blocked")).toBe("amber");
   });
-  it("모르는/빈 상태는 기본 흰색", () => {
+  it("unknown/empty state defaults to white", () => {
     expect(colorFor("weird")).toBe("white");
     expect(colorFor(undefined)).toBe("white");
   });
 });
 
-describe("projectOf — 경로에서 프로젝트명", () => {
-  it("Projects 하위 중첩 레포는 상위 프로젝트명", () => {
+describe("projectOf — extract project name from path", () => {
+  it("nested repos under Projects return parent project name", () => {
     expect(projectOf("/Users/j/Projects/AcmeApp/ko", "ko")).toBe("AcmeApp");
     expect(projectOf("/Users/j/Projects/AcmeApp/us", "us")).toBe("AcmeApp");
   });
-  it("일반 레포는 폴더명", () => {
+  it("standard repo returns directory name", () => {
     expect(projectOf("/Users/j/Projects/sandbox", "sandbox")).toBe("sandbox");
     expect(projectOf("/Users/j/Library/x/Notes", "Notes")).toBe("Notes");
   });
-  it("경로 없으면 repo fallback", () => {
+  it("falls back to repo when path is missing", () => {
     expect(projectOf(undefined, "svd")).toBe("svd");
   });
 });
 
-describe("중복 프로젝트 순번(dupIndex)", () => {
-  it("같은 프로젝트+브랜치는 0,1,2… 부여", () => {
+describe("duplicate project index (dupIndex)", () => {
+  it("assigns 0, 1, 2... for matching project and branch", () => {
     const terms = [
-      { handle: "term_A", tabId: "t1", leafId: "l1", title: "국내", worktreePath: "/x/Projects/AcmeApp/ko", worktreeId: "wt1", lastOutputAt: 3 },
-      { handle: "term_B", tabId: "t2", leafId: "l2", title: "미국", worktreePath: "/x/Projects/AcmeApp/us", worktreeId: "wt2", lastOutputAt: 2 },
+      { handle: "term_A", tabId: "t1", leafId: "l1", title: "Domestic", worktreePath: "/x/Projects/AcmeApp/ko", worktreeId: "wt1", lastOutputAt: 3 },
+      { handle: "term_B", tabId: "t2", leafId: "l2", title: "US", worktreePath: "/x/Projects/AcmeApp/us", worktreeId: "wt2", lastOutputAt: 2 },
     ];
     const wts = [
       { worktreeId: "wt1", repo: "ko", displayName: "main", agents: [{ paneKey: "t1:l1", state: "working" }] },
@@ -113,23 +113,23 @@ describe("중복 프로젝트 순번(dupIndex)", () => {
   });
 });
 
-describe("unread & staleness — 완료 및 비활성 감쇠 상태", () => {
+describe("unread & staleness — completion and staleness decay", () => {
   const mk = (state: string, unread: boolean, updatedAt?: number, now?: number) => {
     const terms = [{ handle: "term_A", tabId: "t1", leafId: "l1", title: "x", worktreePath: "/x", worktreeId: "wt1" }];
     const wts = [{ worktreeId: "wt1", repo: "x", displayName: "main", unread, agents: [{ paneKey: "t1:l1", state, updatedAt }] }];
     return buildDeck({ terminals: terms, worktrees: wts }, { now }).slots[0] as any;
   };
-  it("done은 읽음 여부와 무관하게 초록(green) 유지", () => {
+  it("done maintains green regardless of read status", () => {
     expect(mk("done", true).color).toBe("green");
     expect(mk("done", false).color).toBe("green");
   });
-  it("done + 안읽음은 주의 필요(needsAttention: true), 읽음은 주의 불필요(false)", () => {
+  it("done + unread needs attention, read does not", () => {
     const unreadSlot = mk("done", true);
     const readSlot = mk("done", false);
     expect(needsAttention(unreadSlot, false)).toBe(true);
     expect(needsAttention(readSlot, false)).toBe(false);
   });
-  it("working 상태에서 30분 초과 시 unverifiable(주황/amber)로 감쇠", () => {
+  it("working state past 30m decays to unverifiable (amber)", () => {
     const now = 10000000;
     const fresh = mk("working", false, now - 10 * 60 * 1000, now);
     expect(fresh.state).toBe("working");
@@ -138,27 +138,24 @@ describe("unread & staleness — 완료 및 비활성 감쇠 상태", () => {
     const stale = mk("working", false, now - 35 * 60 * 1000, now);
     expect(stale.state).toBe("unverifiable");
     expect(stale.color).toBe("amber");
-    expect(needsAttention(stale, false)).toBe(false); // unverifiable은 조용히(펄스 없음)
+    expect(needsAttention(stale, false)).toBe(false);
   });
 });
 
-describe("buildDeck — 열려 있는 에이전트(agentIdentity)가 worktree ps보다 먼저 감지되면", () => {
-  it("worktree ps가 아직 안 보고했어도 터미널의 agentIdentity로 세션 표시", () => {
+describe("buildDeck — when open agent (agentIdentity) is detected before worktree ps", () => {
+  it("shows session using terminal agentIdentity even before worktree ps reports", () => {
     const ts = [
-      // worktree ps에 agent 없음(에이전트 방금 열림, 아직 생각 안 함) + agentIdentity 있음
       { handle: "term_fresh", tabId: "t1", leafId: "l1", title: "Terminal 1", worktreePath: "/x/deep", worktreeId: "wt1", agentIdentity: "opencode" },
-      // 순수 셸 — agentIdentity 없음 → 제외
       { handle: "term_shell", tabId: "t2", leafId: "l2", title: "Terminal 2", worktreePath: "", worktreeId: "wt2", agentIdentity: null },
     ];
-    const wts = [{ worktreeId: "wt1", repo: "deep", displayName: "main" }]; // agents 배열 자체가 없음
+    const wts = [{ worktreeId: "wt1", repo: "deep", displayName: "main" }];
     const deck = buildDeck({ terminals: ts, worktrees: wts });
     const handles = deck.slots.filter((s) => !s.empty).map((s: any) => s.handle);
     expect(handles).toEqual(["term_fresh"]);
-    // 아직 활성 작업이나 훅이 없으므로 기본 idle(white) — 다이얼 게이팅이 살아있고 불필요한 깜빡임 방지
     expect(deck.slots[0]).toMatchObject({ state: "idle", color: "white", agentType: "opencode" });
   });
 
-  it("worktree ps가 상태를 보고하면 그 상태를 우선한다", () => {
+  it("prioritizes worktree ps state once reported", () => {
     const ts = [
       { handle: "term_fresh", tabId: "t1", leafId: "l1", title: "T", worktreePath: "/x/deep", worktreeId: "wt1", agentIdentity: "opencode" },
     ];
@@ -169,14 +166,14 @@ describe("buildDeck — 열려 있는 에이전트(agentIdentity)가 worktree ps
     expect(a.agentType).toBe("opencode");
   });
 
-  it("agentIdentity 없이 worktree ps agent도 기존처럼 동작", () => {
+  it("handles worktree ps agent without agentIdentity as before", () => {
     const ts = [{ handle: "term_old", tabId: "t1", leafId: "l1", title: "T", worktreePath: "/x", worktreeId: "wt1" }];
     const wts = [{ worktreeId: "wt1", repo: "x", agents: [{ paneKey: "t1:l1", state: "done", agentType: "claude" }] }];
     const a = buildDeck({ terminals: ts, worktrees: wts }).slots[0] as any;
     expect(a).toMatchObject({ state: "done", agentType: "claude" });
   });
 
-  it("agy/antigravity가 working 상태라도 PreToolUse 훅 이벤트가 있으면 waiting(amber)으로 전환", () => {
+  it("transitions agy/antigravity working state to waiting (amber) on PreToolUse hook event", () => {
     const ts = [{ handle: "term_agy", tabId: "t1", leafId: "l1", title: "Agy", worktreePath: "/x", worktreeId: "wt1", agentIdentity: "agy" }];
     const wts = [{ worktreeId: "wt1", repo: "x", agents: [{ paneKey: "t1:l1", state: "working", agentType: "antigravity" }] }];
     const hookEvents = new Map([["t1:l1", "PreToolUse"]]);
@@ -185,7 +182,7 @@ describe("buildDeck — 열려 있는 에이전트(agentIdentity)가 worktree ps
     expect(a.color).toBe("amber");
   });
 
-  it("agy/antigravity 훅 이벤트가 PostToolUse면 원래의 working(blue) 유지", () => {
+  it("maintains working (blue) on PostToolUse hook event", () => {
     const ts = [{ handle: "term_agy", tabId: "t1", leafId: "l1", title: "Agy", worktreePath: "/x", worktreeId: "wt1", agentIdentity: "agy" }];
     const wts = [{ worktreeId: "wt1", repo: "x", agents: [{ paneKey: "t1:l1", state: "working", agentType: "antigravity" }] }];
     const hookEvents = new Map([["t1:l1", "PostToolUse"]]);
@@ -194,27 +191,24 @@ describe("buildDeck — 열려 있는 에이전트(agentIdentity)가 worktree ps
     expect(a.color).toBe("blue");
   });
 
-  it("terminal.agentIdentity가 claude로 잘못 추정되어도 hookEventsByPane의 agentType(antigravity)을 우선한다", () => {
+  it("prioritizes hookEventsByPane agentType over misinferred terminal.agentIdentity", () => {
     const ts = [{ handle: "term_agy", tabId: "t1", leafId: "l1", title: "Agy", worktreePath: "/x", worktreeId: "wt1", agentIdentity: "claude" }];
-    const wts = [{ worktreeId: "wt1", repo: "x" }]; // worktree ps agent 아직 없음
+    const wts = [{ worktreeId: "wt1", repo: "x" }];
     const hookEvents = new Map([["t1:l1", { hookEventName: "PreInvocation", agentType: "antigravity" }]]);
     const a = buildDeck({ terminals: ts, worktrees: wts, hookEventsByPane: hookEvents }).slots[0] as any;
     expect(a.agentType).toBe("antigravity");
   });
 
-  it("에이전트가 종료된 셸 터미널은 이전 훅 이벤트 잔여물이 있어도 세션판에 표시하지 않음(노란 불 깜빡임 방지)", () => {
-    // hermes 종료 후 일반 셸 터미널: agentIdentity=null, worktree ps에 agent 없음
+  it("excludes exited agent shell terminal even if stale hook leftovers exist", () => {
     const ts = [{ handle: "term_closed", tabId: "t1", leafId: "l1", title: "Shell", worktreePath: "/x", worktreeId: "wt1", agentIdentity: null }];
-    const wts = [{ worktreeId: "wt1", repo: "x" }]; // worktree ps agent 없음
-    // last-status.json에 남아있던 이전 훅 잔여물
+    const wts = [{ worktreeId: "wt1", repo: "x" }];
     const hookEvents = new Map([["t1:l1", { hookEventName: "PreInvocation", agentType: "hermes" }]]);
     const deck = buildDeck({ terminals: ts, worktrees: wts, hookEventsByPane: hookEvents });
-    // 빈 칸이어야 함 — 세션으로 부활하거나 waiting(amber)으로 깜빡이지 않아야 함
     expect(deck.slots[0]).toEqual({ empty: true });
     expect(deck.total).toBe(0);
   });
 
-  it("hermes CLI 실행 시 agentIdentity로 세션 표시", () => {
+  it("shows session with agentIdentity when hermes CLI runs", () => {
     const ts = [{ handle: "term_hermes", tabId: "t1", leafId: "l1", title: "Hermes", worktreePath: "/x", worktreeId: "wt1", agentIdentity: "hermes" }];
     const wts = [{ worktreeId: "wt1", repo: "x" }];
     const deck = buildDeck({ terminals: ts, worktrees: wts });
@@ -226,26 +220,26 @@ describe("buildDeck — 열려 있는 에이전트(agentIdentity)가 worktree ps
   });
 });
 
-describe("buildDeck — orca 두 소스를 8칸 버튼 모델로", () => {
-  it("항상 8칸 고정, 앞 2칸만 채워지고 나머진 빈칸", () => {
+describe("buildDeck — merges orca sources into 8-slot button model", () => {
+  it("always fixes to 8 slots, populating first 2 and leaving remainder empty", () => {
     const deck = buildDeck({ terminals, worktrees });
     expect(deck.slots).toHaveLength(8);
     expect(deck.slots.slice(2).every((s) => s.empty)).toBe(true);
     expect(deck.total).toBe(2);
   });
 
-  it("handle(터미널) + state(워크트리)를 paneKey로 병합", () => {
+  it("merges handle (terminal) and state (worktree) via paneKey", () => {
     const deck = buildDeck({ terminals, worktrees });
     const a = deck.slots[0];
     expect(a.empty).toBe(false);
-    expect(a).toMatchObject({ handle: "term_A", state: "working", color: "blue", label: "unparkxing 포스팅" });
+    expect(a).toMatchObject({ handle: "term_A", state: "working", color: "blue", label: "unparkxing post" });
     const b = deck.slots[1];
     expect(b).toMatchObject({ handle: "term_B", state: "waiting", color: "amber" });
   });
 
-  it("worktreeId로 repo·branch를 붙임(displayName 우선, refs/heads/ 제거)", () => {
+  it("attaches repo and branch via worktreeId", () => {
     const terms = [
-      { handle: "term_A", tabId: "t1", leafId: "l1", title: "작업", worktreePath: "/p/unparkxing", worktreeId: "wt1" },
+      { handle: "term_A", tabId: "t1", leafId: "l1", title: "Task", worktreePath: "/p/unparkxing", worktreeId: "wt1" },
     ];
     const wts = [
       { worktreeId: "wt1", repo: "unparkxing", branch: "refs/heads/feat/login", displayName: "feat/login", agents: [{ paneKey: "t1:l1", state: "working" }] },
@@ -255,18 +249,18 @@ describe("buildDeck — orca 두 소스를 8칸 버튼 모델로", () => {
     expect(a.branch).toBe("feat/login");
   });
 
-  it("에이전트 없는 셸 터미널은 세션판에서 제외", () => {
+  it("excludes shell terminals without agents", () => {
     const deck = buildDeck({ terminals, worktrees });
     const handles = deck.slots.filter((s) => !s.empty).map((s) => s.handle);
     expect(handles).not.toContain("term_shell");
   });
 
-  it("빈 칸은 { empty: true }", () => {
+  it("empty slots are { empty: true }", () => {
     const deck = buildDeck({ terminals, worktrees });
     expect(deck.slots[7]).toEqual({ empty: true });
   });
 
-  it("위치 고정 — handle 기준 안정 정렬(활동 순서 무관)", () => {
+  it("stable slot ordering sorted by handle", () => {
     const ts = [
       { handle: "term_c", tabId: "t1", leafId: "l1", title: "c", worktreePath: "/x", lastOutputAt: 100 },
       { handle: "term_a", tabId: "t2", leafId: "l2", title: "a", worktreePath: "/x", lastOutputAt: 999 },
@@ -274,11 +268,10 @@ describe("buildDeck — orca 두 소스를 8칸 버튼 모델로", () => {
     ];
     const wts = ts.map((t) => ({ agents: [{ paneKey: `${t.tabId}:${t.leafId}`, state: "done" }] }));
     const deck = buildDeck({ terminals: ts, worktrees: wts });
-    // lastOutputAt과 무관하게 handle 순서(a,b,c)로 고정
     expect(deck.slots.slice(0, 3).map((s: any) => s.handle)).toEqual(["term_a", "term_b", "term_c"]);
   });
 
-  it("페이지네이션 — 8칸 초과 시 페이지 분할", () => {
+  it("pagination: splits pages when session count exceeds capacity", () => {
     const many = Array.from({ length: 3 }, (_, i) => ({
       handle: `term_${i}`, tabId: `t${i}`, leafId: `l${i}`, title: `s${i}`, worktreePath: `/p/${i}`,
     }));
@@ -294,7 +287,7 @@ describe("buildDeck — orca 두 소스를 8칸 버튼 모델로", () => {
   });
 });
 
-describe("findActivePaneInLayout & resolveActiveTerminal — 활성 터미널 감지 및 타깃 유지", () => {
+describe("findActivePaneInLayout & resolveActiveTerminal — active terminal detection and target persistence", () => {
   const terms = [
     { handle: "term_1", tabId: "tab_1", leafId: "leaf_1", title: "T1", worktreeId: "wt_1", lastOutputAt: 9999 },
     { handle: "term_2", tabId: "tab_2", leafId: "leaf_2", title: "T2", worktreeId: "wt_1", lastOutputAt: 1000 },
@@ -304,7 +297,7 @@ describe("findActivePaneInLayout & resolveActiveTerminal — 활성 터미널 �
     { worktreeId: "wt_2", isActive: false },
   ];
 
-  it("visualLayouts에서 activeTabId가 지정된 터미널을 정확히 반환한다", () => {
+  it("returns terminal specified by activeTabId in visualLayouts", () => {
     const visualLayouts = [
       {
         worktreeId: "wt_1",
@@ -319,41 +312,39 @@ describe("findActivePaneInLayout & resolveActiveTerminal — 활성 터미널 �
       },
     ];
 
-    // term_1의 lastOutputAt이 더 크더라도, activeTabId가 tab_2면 term_2가 선택되어야 한다 (1번 세션으로 튕기지 않음)
     const active = resolveActiveTerminal(wts, terms, visualLayouts, "term_2");
     expect(active).toBe("term_2");
   });
 
-  it("visualLayouts가 없더라도 현재 타깃이 활성 워크트리에 있으면 유지한다", () => {
-    // visualLayouts가 없는 환경에서도 term_1의 출력시간이 더 높다는 이유로 term_2에서 튕기면 안 됨
+  it("maintains current target in active worktree even without visualLayouts", () => {
     const active = resolveActiveTerminal(wts, terms, undefined, "term_2");
     expect(active).toBe("term_2");
   });
 
-  it("현재 타깃이 다른 워크트리에 있으면 활성 워크트리의 최신 터미널을 선택한다", () => {
+  it("selects latest terminal of active worktree when current target is in different worktree", () => {
     const active = resolveActiveTerminal(wts, terms, undefined, "term_other");
     expect(active).toBe("term_1");
   });
 
-  it("활성 워크트리가 없으면 undefined를 반환한다", () => {
+  it("returns undefined when no active worktree exists", () => {
     const inactiveWts = [{ worktreeId: "wt_1", isActive: false }];
     expect(resolveActiveTerminal(inactiveWts, terms, undefined, "term_1")).toBeUndefined();
   });
 });
 
-describe("nextWorktreeName — 빈 슬롯 새 워크트리 이름 생성", () => {
-  it("repo만 있으면 repo-2부터 시작", () => {
+describe("nextWorktreeName — generate name for new worktree slot", () => {
+  it("starts from repo-2 when only repo name exists", () => {
     expect(nextWorktreeName("deep", ["main"])).toBe("deep-2");
     expect(nextWorktreeName("deep", [])).toBe("deep-2");
   });
-  it("기존 repo-N 번호의 최대값 + 1", () => {
+  it("increments highest existing repo-N number", () => {
     expect(nextWorktreeName("deep", ["main", "deep-2", "deep-3"])).toBe("deep-4");
     expect(nextWorktreeName("deep", ["deep-2", "deep-5", "deep-3"])).toBe("deep-6");
   });
-  it("repo-N 패턴이 아닌 이름은 무시하고 repo-2부터", () => {
+  it("ignores non repo-N pattern names and defaults to repo-2", () => {
     expect(nextWorktreeName("deep", ["algo width", "desktop app"])).toBe("deep-2");
   });
-  it("다른 repo의 이름은 세지 않는다", () => {
+  it("does not count other repo names", () => {
     expect(nextWorktreeName("deep", ["main", "other-2", "deep-7"])).toBe("deep-8");
   });
 });

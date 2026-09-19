@@ -54991,15 +54991,15 @@ function keyImage(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
 }
 var DIAL_ACCENT = {
   model: "#3b82f6",
-  // 파랑
+  // blue
   effort: "#a855f7",
-  // 보라
+  // purple
   mode: "#f43f5e",
-  // 로즈 (폴백)
+  // rose (fallback)
   talk: "#14b8a6",
-  // 청록
+  // teal
   target: "#f59e0b"
-  // 앰버
+  // amber
 };
 function modeColor(mode, agentType) {
   if (!mode || mode === "-" || mode === "\u2026" || mode.trim() === "") return "#71717a";
@@ -55132,54 +55132,54 @@ var import_node_fs5 = require("node:fs");
 var import_node_path7 = require("node:path");
 var import_node_os2 = require("node:os");
 var AbstractAgent = class {
-  /** 사용 가능한 모델 목록 (정적 폴백 또는 기본값) */
+  /** Available model list (static fallback or defaults) */
   getModels() {
     return [];
   }
-  /** 사용 가능한 effort 목록 */
+  /** Available effort list */
   getEfforts(_modelId) {
     return [];
   }
-  /** 사용 가능한 모드/에이전트 목록 */
+  /** Available modes/agents list */
   getModes(_ctx) {
     return [];
   }
-  /** 모델 목록을 가져올 호스트 CLI (인자 배열) */
+  /** Host CLI command to discover models (array of arguments) */
   getDiscoverModelCmd() {
     return void 0;
   }
-  /** 모드 목록을 가져올 호스트 CLI */
+  /** Host CLI command to discover modes */
   getDiscoverAgentCmd() {
     return void 0;
   }
-  /** 모델별 변형(effort)을 가져올 호스트 CLI */
+  /** Host CLI command to discover model variants (efforts) */
   getDiscoverVariantCmd() {
     return void 0;
   }
-  /** CLI 출력에서 모델 목록 파싱 */
+  /** Parse model list from CLI output */
   parseDiscoveredModels(stdout) {
     return parseModels(stdout);
   }
-  /** CLI 출력에서 모드 목록 파싱 */
+  /** Parse mode list from CLI output */
   parseDiscoveredModes(stdout) {
     return parsePrimaryAgents(stdout);
   }
-  /** CLI 출력에서 모델별 변형(effort) 파싱 */
+  /** Parse model variants (efforts) from CLI output */
   parseDiscoveredEfforts(stdout, modelId) {
     return parseModelVariants(stdout, modelId);
   }
-  /** 로컬 상태 파일/설정 또는 작업공간 로그에서 현재 선택된 상태 읽기 */
+  /** Read currently selected state from local state files/configs or workspace logs */
   readCurrentState(_ctx) {
     return {};
   }
-  /** 모델 선택 시 해당 모델에 귀속되거나 내포된 effort(변형)가 있다면 반환 */
+  /** Return effort/variant bound to or inferred by a selected model */
   getEffortForModel(_model) {
     return void 0;
   }
-  /** 발견된 모델 id→표시이름 맵 설정 (opencode 등 — 픽커 필터 텍스트에 사용) */
+  /** Set discovered model id -> display name map (e.g. OpenCode picker filter) */
   setModelNames(_names) {
   }
-  /** 발견 출력에서 모델 id→표시이름 맵 추출 */
+  /** Extract model id -> display name map from discovery output */
   parseDiscoveredModelNames(_stdout) {
     return {};
   }
@@ -55220,8 +55220,8 @@ var CLAUDE_DEFAULT_MODELS = [
   "sonnet",
   "haiku"
 ];
-var CLAUDE_MODES = ["default", "accept-edits", "plan", "auto"];
-var CLAUDE_BYPASS_MODES = ["default", "accept-edits", "plan", "bypassPermissions", "auto"];
+var CLAUDE_MODES = ["default", "accept-edits", "plan"];
+var CLAUDE_BYPASS_MODES = ["default", "accept-edits", "plan", "bypassPermissions"];
 function isClaudeBypassEnabled(ctx) {
   if (ctx?.preview) {
     const p = ctx.preview.toLowerCase();
@@ -55250,7 +55250,7 @@ function getClaudeShiftTabSteps(toMode, fromMode, modeList) {
   const targetIdx = list.indexOf(target);
   const currentIdx = list.indexOf(current);
   if (targetIdx < 0) {
-    return [{ text: "\x1B[Z", enter: false }];
+    return [];
   }
   const fromIdx = currentIdx < 0 ? 0 : currentIdx;
   const count = (targetIdx - fromIdx + list.length) % list.length;
@@ -55415,6 +55415,8 @@ function readClaudeState(ctx) {
       state.mode = previewMode;
       if (previewMode === "bypassPermissions") {
         state.modes = [...CLAUDE_BYPASS_MODES];
+      } else if (previewMode === "auto" && !state.modes.includes("auto")) {
+        state.modes.push("auto");
       }
     }
   }
@@ -55453,11 +55455,15 @@ function readClaudeState(ctx) {
                     state.mode = normalizeClaudeMode(d.permissionMode);
                     if (state.mode === "bypassPermissions") {
                       state.modes = [...CLAUDE_BYPASS_MODES];
+                    } else if (state.mode === "auto" && !state.modes.includes("auto")) {
+                      state.modes.push("auto");
                     }
                   } else if (d.type === "mode" && typeof d.mode === "string") {
                     state.mode = normalizeClaudeMode(d.mode);
                     if (state.mode === "bypassPermissions") {
                       state.modes = [...CLAUDE_BYPASS_MODES];
+                    } else if (state.mode === "auto" && !state.modes.includes("auto")) {
+                      state.modes.push("auto");
                     }
                   }
                 }
@@ -55496,6 +55502,8 @@ function readClaudeState(ctx) {
           state.mode = parsed.mode;
           if (state.mode === "bypassPermissions") {
             state.modes = [...CLAUDE_BYPASS_MODES];
+          } else if (state.mode === "auto" && !state.modes.includes("auto")) {
+            state.modes.push("auto");
           }
         }
       }
@@ -55527,10 +55535,13 @@ var ClaudeAgent = class extends AbstractAgent {
     return ["low", "medium", "high", "xhigh", "max"];
   }
   getModes(ctx) {
-    if (isClaudeBypassEnabled(ctx)) {
-      return [...CLAUDE_BYPASS_MODES];
+    const isBypass = isClaudeBypassEnabled(ctx);
+    const hasAuto = ctx?.preview ? parseClaudeModeFromText(ctx.preview) === "auto" : false;
+    const base = isBypass ? [...CLAUDE_BYPASS_MODES] : [...CLAUDE_MODES];
+    if (hasAuto && !base.includes("auto")) {
+      base.push("auto");
     }
-    return [...CLAUDE_MODES];
+    return base;
   }
   getApplySteps(kind, value, fromValue, modeList) {
     if (kind === "model") {
@@ -55557,21 +55568,23 @@ var CODEX_DEFAULT_MODELS = [
   "gpt-5.4-mini",
   "gpt-reserve"
 ];
-function parseCodexConfig(toml) {
-  const modelMatch = /^model\s*=\s*"([^"]+)"/m.exec(toml || "");
-  const effortMatch = /^model_reasoning_effort\s*=\s*"([^"]+)"/m.exec(toml || "");
-  const modeMatch = /^(?:sandbox_mode|approval_policy|mode)\s*=\s*"([^"]+)"/m.exec(toml || "");
-  return {
-    model: modelMatch ? modelMatch[1] : void 0,
-    effort: effortMatch ? effortMatch[1] : void 0,
-    mode: modeMatch ? modeMatch[1] : void 0
-  };
+function parseCodexConfig(tomlText) {
+  let model;
+  let effort;
+  let mode;
+  const modelMatch = /model\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
+  if (modelMatch) model = modelMatch[1];
+  const effortMatch = /model_reasoning_effort\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
+  if (effortMatch) effort = effortMatch[1];
+  const modeMatch = /sandbox_mode\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
+  if (modeMatch) mode = modeMatch[1];
+  return { model, effort, mode };
 }
-function parseCodexModelsCache(text) {
+function parseCodexModelsCache(jsonText) {
   try {
-    const j = JSON.parse(text);
-    if (Array.isArray(j?.models)) {
-      return j.models.map((m) => m?.slug).filter((s) => typeof s === "string" && s && !s.includes("auto-review"));
+    const data = JSON.parse(jsonText);
+    if (data && Array.isArray(data.models)) {
+      return data.models.map((m) => typeof m === "string" ? m : m?.slug || m?.id || m?.name).filter((id) => typeof id === "string" && id.trim().length > 0 && !id.toLowerCase().includes("auto-review"));
     }
   } catch {
   }
@@ -55783,7 +55796,7 @@ function getAgyShiftTabSteps(toMode, fromMode, modeList) {
   const targetIdx = list.indexOf(target);
   const currentIdx = list.indexOf(current);
   if (targetIdx < 0) {
-    return [{ text: "\x1B[Z", enter: false }];
+    return [];
   }
   const fromIdx = currentIdx < 0 ? 0 : currentIdx;
   const count = (targetIdx - fromIdx + list.length) % list.length;
@@ -56198,7 +56211,7 @@ var UnsupportedAgent = class extends AbstractAgent {
   constructor() {
     super(...arguments);
     this.agentType = "";
-    this.label = "\uBBF8\uC9C0\uC6D0";
+    this.label = "Unsupported";
   }
   supports(_kind) {
     return false;
@@ -56401,13 +56414,13 @@ var STT_STATUS = "/tmp/agentdeck-stt.status";
 var OPENCODE_STATE2 = (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".local", "state", "opencode", "model.json");
 var OPENCODE_TUI2 = (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".local", "state", "opencode", "tui");
 var TALK_HINT = {
-  MIC_DENIED: "\uB9C8\uC774\uD06C \uAD8C\uD55C \uCF1C\uAE30",
-  SPEECH_DENIED: "\uC74C\uC131\uC778\uC2DD \uAD8C\uD55C \uCF1C\uAE30",
-  DICTATION_OFF: "\uBC1B\uC544\uC4F0\uAE30 \uCF1C\uAE30",
-  NO_RECOGNIZER: "STT \uC5B8\uC5B4 \uC5C6\uC74C",
-  MIC_ERR: "\uB9C8\uC774\uD06C \uC624\uB958"
+  MIC_DENIED: "Enable Mic Perm",
+  SPEECH_DENIED: "Enable Speech Rec",
+  DICTATION_OFF: "Enable Dictation",
+  NO_RECOGNIZER: "No STT Locale",
+  MIC_ERR: "Mic Error"
 };
-var talkHint = (code) => TALK_HINT[code] ?? "STT \uC624\uB958";
+var talkHint = (code) => TALK_HINT[code] ?? "STT Error";
 var EXEC = { maxBuffer: 64 * 1024 * 1024 };
 async function orcaJson(args) {
   const { stdout } = await execFileP(ORCA, [...args, "--json"], EXEC);
@@ -57095,7 +57108,7 @@ async function spawnSession(ev) {
   const b = t ? sessionByHandle.get(t) : void 0;
   const wtId = b ? b.worktreeId : void 0;
   if (!b || !wtId) {
-    plugin_default.logger.info("spawn: \uB300\uC0C1 \uC6CC\uD06C\uD2B8\uB9AC\uB97C \uC54C \uC218 \uC5C6\uC74C(\uD504\uB85C\uC81D\uD2B8 \uC5C6\uC74C) \u2014 \uC0DD\uC131 \uBD88\uAC00");
+    plugin_default.logger.info("spawn: unknown target worktree (no project) \u2014 cannot spawn");
     ev.action.showAlert?.();
     return;
   }
@@ -57103,7 +57116,7 @@ async function spawnSession(ev) {
   const repo = b.repo || repoId;
   const agent = agentByHandle.get(t) || "";
   if (!agent) {
-    plugin_default.logger.info("spawn: \uB300\uC0C1 \uC5D0\uC774\uC804\uD2B8\uB97C \uC54C \uC218 \uC5C6\uC74C \u2014 \uC0DD\uC131 \uBD88\uAC00");
+    plugin_default.logger.info("spawn: unknown target agent \u2014 cannot spawn");
     ev.action.showAlert?.();
     return;
   }

@@ -3,14 +3,14 @@ import { resolveLucideSvg, resolveRepoBgIcon, resolveLocalIconUri } from "../src
 import { buildDeck } from "../src/deck.js";
 import { keySvg, renderBgIcon } from "../src/render.js";
 
-describe("icons — Lucide SVG 및 저장소 아이콘 리졸버", () => {
-  it("Lucide 아이콘 이름을 SVG 내부 경로로 변환한다", () => {
+describe("icons — Lucide SVG and repository icon resolver", () => {
+  it("converts Lucide icon name to SVG inner path", () => {
     const rocket = resolveLucideSvg("Rocket");
     expect(rocket).toBeDefined();
     expect(rocket).toContain("path");
     expect(rocket).toContain("M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5");
 
-    // 소문자 / kebab-case도 지원
+    // Lowercase / kebab-case support
     const rocketLower = resolveLucideSvg("rocket");
     expect(rocketLower).toBe(rocket);
 
@@ -18,12 +18,12 @@ describe("icons — Lucide SVG 및 저장소 아이콘 리졸버", () => {
     expect(folderGit).toBeDefined();
     expect(folderGit).toContain("circle");
 
-    // 없는 이름은 undefined
+    // Returns undefined for non-existent name
     expect(resolveLucideSvg("non_existent_icon_xyz")).toBeUndefined();
     expect(resolveLucideSvg(undefined)).toBeUndefined();
   });
 
-  it("resolveRepoBgIcon은 Lucide 타입을 바로 변환한다", () => {
+  it("resolveRepoBgIcon directly converts Lucide type", () => {
     const icon = resolveRepoBgIcon({
       id: "repo-1",
       displayName: "bls-web",
@@ -34,7 +34,7 @@ describe("icons — Lucide SVG 및 저장소 아이콘 리졸버", () => {
     expect(icon.lucide).toContain("M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5");
   });
 
-  it("resolveRepoBgIcon은 Emoji 타입을 반환한다", () => {
+  it("resolveRepoBgIcon returns Emoji type", () => {
     const icon = resolveRepoBgIcon({
       id: "repo-2",
       displayName: "my-tool",
@@ -44,7 +44,7 @@ describe("icons — Lucide SVG 및 저장소 아이콘 리졸버", () => {
   });
 });
 
-describe("buildDeck — repoIcon 및 배경 아이콘 데이터 스레딩", () => {
+describe("buildDeck — repoIcon and background icon data threading", () => {
   const terminals = [
     { handle: "term_1", tabId: "t1", leafId: "l1", title: "App", worktreeId: "repo-bls::/ws/bls-web", worktreePath: "/ws/bls-web" },
   ];
@@ -55,7 +55,7 @@ describe("buildDeck — repoIcon 및 배경 아이콘 데이터 스레딩", () =
     { id: "repo-bls", displayName: "bls-web", badgeColor: "#ef4444", repoIcon: { type: "lucide", name: "Rocket" } },
   ];
 
-  it("buildDeck에서 repos의 repoIcon과 badgeColor가 Button으로 전파된다", () => {
+  it("propagates repos repoIcon and badgeColor to Button in buildDeck", () => {
     const deck = buildDeck({ terminals, worktrees, repos });
     const slot = deck.slots[0];
     expect(slot.empty).toBe(false);
@@ -68,8 +68,8 @@ describe("buildDeck — repoIcon 및 배경 아이콘 데이터 스레딩", () =
   });
 });
 
-describe("renderBgIcon 및 keySvg 배경 워터마크 렌더링", () => {
-  it("Lucide 아이콘이 있으면 keySvg에 stroke와 scale(6) 그룹으로 렌더된다", () => {
+describe("renderBgIcon and keySvg background watermark rendering", () => {
+  it("renders Lucide icon in keySvg with stroke and scale(6) group", () => {
     const lucideSvg = resolveLucideSvg("Rocket");
     const svg = keySvg({
       empty: false,
@@ -86,7 +86,7 @@ describe("renderBgIcon 및 keySvg 배경 워터마크 렌더링", () => {
     expect(svg).toContain('opacity="0.25"');
   });
 
-  it("이미지 URI가 있으면 keySvg에 144x144 및 preserveAspectRatio slice로 렌더된다", () => {
+  it("renders image URI in keySvg with 144x144 and preserveAspectRatio slice", () => {
     const dataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
     const svg = keySvg({
       empty: false,
@@ -103,7 +103,7 @@ describe("renderBgIcon 및 keySvg 배경 워터마크 렌더링", () => {
     expect(svg).toContain('opacity="0.25"');
   });
 
-  it("이모지가 있으면 text 태그로 렌더된다", () => {
+  it("renders emoji with text tag in keySvg", () => {
     const svg = keySvg({
       empty: false,
       handle: "term_3",

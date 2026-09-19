@@ -1,5 +1,5 @@
-// 의존성 없이 단색 PNG를 만들어 Stream Deck manifest가 요구하는 아이콘을 채운다.
-// (키 위 실제 그림은 런타임에 SVG로 그리므로 이 PNG들은 플레이스홀더)
+// Generate solid color PNGs with no dependencies to satisfy Stream Deck manifest requirements.
+// (Actual icons on keys are rendered at runtime via SVG; these PNGs serve as placeholders)
 import { deflateSync } from "node:zlib";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";

@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Stream Deck Plus로 Orca에서 도는 Claude Code 에이전트 세션을 상태판으로 지휘",
+  "description": "Stream Deck Plus control surface for agent sessions running in Orca",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",

@@ -60,8 +60,8 @@ import {
   UNSUPPORTED_PROFILE,
 } from "../src/agents.js";
 
-describe("agentFor / profileFor — 에이전트 타입 → 추상 인터페이스 및 프로파일", () => {
-  it("알려진 에이전트는 해당 구체 클래스 인스턴스 반환", () => {
+describe("agentFor / profileFor — agent type to abstract interface and profile", () => {
+  it("known agents return concrete class instances", () => {
     expect(agentFor("claude")).toBeInstanceOf(ClaudeAgent);
     expect(agentFor("codex")).toBeInstanceOf(CodexAgent);
     expect(agentFor("opencode")).toBeInstanceOf(OpenCodeAgent);
@@ -76,24 +76,24 @@ describe("agentFor / profileFor — 에이전트 타입 → 추상 인터페이�
     expect(profileFor("agy").label).toBe("Agy");
     expect(profileFor("hermes").label).toBe("Hermes");
   });
-  it("대소문자 및 공백 허용", () => {
+  it("case and whitespace insensitive", () => {
     expect(agentFor(" Claude ")).toBeInstanceOf(ClaudeAgent);
     expect(agentFor("OpenCode")).toBeInstanceOf(OpenCodeAgent);
     expect(agentFor("AGY")).toBeInstanceOf(AgyAgent);
     expect(agentFor(" Hermes ")).toBeInstanceOf(HermesAgent);
   });
-  it("모르는 에이전트(null/빈 값 포함)는 미지원 에이전트", () => {
+  it("unknown agents (null/empty) map to unsupported", () => {
     expect(agentFor("grok")).toBe(UNSUPPORTED_AGENT);
     expect(agentFor("")).toBe(UNSUPPORTED_AGENT);
     expect(agentFor(undefined)).toBe(UNSUPPORTED_AGENT);
     expect(agentFor(null)).toBe(UNSUPPORTED_AGENT);
 
-    expect(profileFor("grok").label).toBe("미지원");
+    expect(profileFor("grok").label).toBe("Unsupported");
   });
 });
 
-describe("supported — 에이전트별 기능 게이팅", () => {
-  it("claude: 모델·effort·모드 모두 지원", () => {
+describe("supported — per-agent capability gating", () => {
+  it("claude: supports model, effort, and mode", () => {
     const a = agentFor("claude");
     expect(a.supports("model")).toBe(true);
     expect(a.supports("effort")).toBe(true);
@@ -102,7 +102,7 @@ describe("supported — 에이전트별 기능 게이팅", () => {
     expect(supported(a, "effort")).toBe(true);
     expect(supported(a, "mode")).toBe(true);
   });
-  it("codex: 모델·effort·모드 모두 지원", () => {
+  it("codex: supports model, effort, and mode", () => {
     const a = agentFor("codex");
     expect(a.supports("model")).toBe(true);
     expect(a.supports("effort")).toBe(true);
@@ -111,25 +111,25 @@ describe("supported — 에이전트별 기능 게이팅", () => {
     expect(supported(a, "effort")).toBe(true);
     expect(supported(a, "mode")).toBe(true);
   });
-  it("opencode: 모델·effort·모드 모두 지원(픽커)", () => {
+  it("opencode: supports model, effort, and mode (pickers)", () => {
     const a = agentFor("opencode");
     expect(a.supports("model")).toBe(true);
     expect(a.supports("effort")).toBe(true);
     expect(a.supports("mode")).toBe(true);
   });
-  it("agy: 모델·effort·모드(/agents) 모두 지원", () => {
+  it("agy: supports model, effort, and mode", () => {
     const a = agentFor("agy");
     expect(a.supports("model")).toBe(true);
     expect(a.supports("effort")).toBe(true);
     expect(a.supports("mode")).toBe(true);
   });
-  it("hermes: 모델·effort 지원, 모드는 미지원(비활성화)", () => {
+  it("hermes: supports model and effort, mode unsupported", () => {
     const a = agentFor("hermes");
     expect(a.supports("model")).toBe(true);
     expect(a.supports("effort")).toBe(true);
     expect(a.supports("mode")).toBe(false);
   });
-  it("미지원 에이전트는 전부 차단", () => {
+  it("unsupported agents are completely blocked", () => {
     const a = agentFor("grok");
     expect(a.supports("model")).toBe(false);
     expect(a.supports("effort")).toBe(false);
@@ -137,8 +137,8 @@ describe("supported — 에이전트별 기능 게이팅", () => {
   });
 });
 
-describe("stepsFor — 적용 명령 시퀀스", () => {
-  it("claude: 슬래시 명령(/model <m>, /effort <e>) 및 Shift+Tab 모드 순환", () => {
+describe("stepsFor — apply command sequences", () => {
+  it("claude: slash commands (/model <m>, /effort <e>) and Shift+Tab mode cycling", () => {
     const a = agentFor("claude");
     expect(stepsFor(a, "model", "claude-sonnet-5")).toEqual([
       { text: "/model claude-sonnet-5", enter: true, delayMs: 120 },
@@ -155,26 +155,16 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
       { text: "\x1b[Z", enter: false },
       { text: "\x1b[Z", enter: false, delayMs: 120 },
     ]);
-    // default -> auto (3 steps)
-    expect(stepsFor(a, "mode", "auto", "default")).toEqual([
+    // plan -> default (1 step)
+    expect(stepsFor(a, "mode", "default", "plan")).toEqual([
       { text: "\x1b[Z", enter: false },
-      { text: "\x1b[Z", enter: false, delayMs: 120 },
-      { text: "\x1b[Z", enter: false, delayMs: 120 },
     ]);
     // accept-edits -> plan (1 step)
     expect(stepsFor(a, "mode", "plan", "accept-edits")).toEqual([
       { text: "\x1b[Z", enter: false },
     ]);
-    // plan -> auto (1 step)
-    expect(stepsFor(a, "mode", "auto", "plan")).toEqual([
-      { text: "\x1b[Z", enter: false },
-    ]);
-    // auto -> default (1 step)
-    expect(stepsFor(a, "mode", "default", "auto")).toEqual([
-      { text: "\x1b[Z", enter: false },
-    ]);
   });
-  it("codex: 슬래시 명령(/model <m>, /effort <e>, /permissions <m>)", () => {
+  it("codex: slash commands (/model <m>, /effort <e>, /permissions <m>)", () => {
     const a = agentFor("codex");
     expect(stepsFor(a, "model", "gpt-5.6-luna")).toEqual([
       { text: "/model gpt-5.6-luna", enter: true, delayMs: 120 },
@@ -186,7 +176,7 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
       { text: "/permissions workspace-write", enter: true, delayMs: 120 },
     ]);
   });
-  it("opencode: 모델 픽커(리더+m) → 프로바이더 포함 필터 입력, Enter는 사용자가 확인", () => {
+  it("opencode: model picker (leader+m) -> provider-qualified filter text", () => {
     const a = agentFor("opencode");
     a.setModelNames({ "openrouter/minimax/minimax-m3": "MiniMax-M3" });
     expect(stepsFor(a, "model", "openrouter/minimax/minimax-m3")).toEqual([
@@ -196,27 +186,27 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
     ]);
     a.setModelNames({});
   });
-  it("opencode: 이름을 모르는 모델이면 프로바이더만 필터로 남긴다", () => {
+  it("opencode: unknown model name falls back to provider filter", () => {
     expect(stepsFor(new OpenCodeAgent(), "model", "openrouter/minimax/minimax-m3")).toEqual([
       { text: "\x18", enter: false, delayMs: 300 },
       { text: "m", enter: false, delayMs: 450 },
       { text: "openrouter", enter: false },
     ]);
   });
-  it("opencode effort: /variants 픽커", () => {
+  it("opencode effort: /variants picker", () => {
     expect(stepsFor(agentFor("opencode"), "effort", "high")).toEqual([
       { text: "/variants", enter: true, delayMs: 450 },
       { text: "high", enter: true },
     ]);
   });
-  it("opencode mode: 리더(ctrl+x)→a→모드명→Enter", () => {
+  it("opencode mode: leader (ctrl+x) -> a -> mode name -> enter", () => {
     expect(stepsFor(agentFor("opencode"), "mode", "plan")).toEqual([
       { text: "\x18", enter: false, delayMs: 300 },
       { text: "a", enter: false, delayMs: 450 },
       { text: "plan", enter: true },
     ]);
   });
-  it("agy: 슬래시 명령(/model <m>, /effort <e>) 및 Shift-Tab 모드 전환(default -> accept-edits -> plan)", () => {
+  it("agy: slash commands (/model <m>, /effort <e>) and Shift+Tab mode cycling (default -> accept-edits -> plan)", () => {
     const a = agentFor("agy");
     expect(stepsFor(a, "model", "gemini-3.8-flash-medium")).toEqual([
       { text: "/model gemini-3.8-flash-medium", enter: true, delayMs: 120 },
@@ -241,10 +231,10 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
     expect(stepsFor(a, "mode", "default", "plan")).toEqual([
       { text: "\x1b[Z", enter: false },
     ]);
-    // 동일 모드: 변경 없음
+    // same mode: no change
     expect(stepsFor(a, "mode", "plan", "plan")).toEqual([]);
   });
-  it("hermes: 슬래시 명령(/model <m>, /reasoning <e>), 모드는 미지원 빈 배열", () => {
+  it("hermes: slash commands (/model <m>, /reasoning <e>), mode is unsupported empty array", () => {
     const a = agentFor("hermes");
     expect(stepsFor(a, "model", "deepseek/deepseek-v4-flash-0731")).toEqual([
       { text: "/model deepseek/deepseek-v4-flash-0731", enter: true, delayMs: 120 },
@@ -254,21 +244,21 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
     ]);
     expect(stepsFor(a, "mode", "plan")).toEqual([]);
   });
-  it("미지원 에이전트는 빈 시퀀스", () => {
+  it("unsupported agents return empty step sequence", () => {
     expect(stepsFor(agentFor("grok"), "model", "x")).toEqual([]);
     expect(stepsFor(agentFor("grok"), "mode", "plan")).toEqual([]);
   });
 });
 
-describe("discoverModelCmd / parseModels — 라이브 모델 발견", () => {
-  it("opencode와 agy는 발견 CLI 보유, claude/codex/미지원은 없음", () => {
+describe("discoverModelCmd / parseModels — live model discovery", () => {
+  it("opencode and agy have discovery CLI, claude/codex/unsupported do not", () => {
     expect(discoverModelCmd("opencode")).toEqual(["opencode", "models", "--verbose"]);
     expect(discoverModelCmd("agy")).toEqual(["agy", "models"]);
     expect(discoverModelCmd("claude")).toBeUndefined();
     expect(discoverModelCmd("codex")).toBeUndefined();
     expect(discoverModelCmd(undefined)).toBeUndefined();
   });
-  it("parseModels: 줄 단위 + 빈 줄/ANSI 제거 + 중복 제거", () => {
+  it("parseModels: line by line + strip empty lines / ANSI + deduplicate", () => {
     const out = parseModels("opencode/claude-opus-4-7\r\nopencode/claude-sonnet-4-5\n\nopencode/claude-opus-4-7\n\x1b[32mopencode/gpt-5\x1b[0m\n");
     expect(out).toEqual([
       "opencode/claude-opus-4-7",
@@ -276,7 +266,7 @@ describe("discoverModelCmd / parseModels — 라이브 모델 발견", () => {
       "opencode/gpt-5",
     ]);
   });
-  it("parseModelIdLines: --verbose 출력에서 provider/model 줄만 추출(JSON 본문 제외)", () => {
+  it("parseModelIdLines: extract provider/model lines from --verbose output (excluding JSON body)", () => {
     const stdout = `opencode/claude-opus-4-7
 {
   "id": "claude-opus-4-7",
@@ -297,7 +287,7 @@ openrouter/nvidia/nemotron-3.5-lightning:free
       "openrouter/nvidia/nemotron-3.5-lightning:free",
     ]);
   });
-  it("parseOpenCodeModelNames: --verbose JSON 블록에서 id→표시이름 추출", () => {
+  it("parseOpenCodeModelNames: extract id to display name mapping from --verbose JSON blocks", () => {
     const stdout = `opencode/claude-opus-4-7
 {
   "id": "claude-opus-4-7",
@@ -316,13 +306,13 @@ openrouter/minimax/minimax-m3
       "openrouter/minimax/minimax-m3": "MiniMax-M3",
     });
   });
-  it("modelFilterText: 프로바이더 + 표시이름, 이름 없으면 프로바이더만", () => {
+  it("modelFilterText: provider + display name, or provider only if name missing", () => {
     expect(modelFilterText("openrouter/minimax/minimax-m3", "MiniMax-M3")).toBe("openrouter MiniMax-M3");
     expect(modelFilterText("opencode/minimax-m3", "MiniMax-M3")).toBe("opencode MiniMax-M3");
     expect(modelFilterText("openrouter/minimax/minimax-m3")).toBe("openrouter");
     expect(modelFilterText("gpt-5", "GPT-5")).toBe("gpt-5 GPT-5");
   });
-  it("parseOpenCodeState: 최근 모델 + variant 추출", () => {
+  it("parseOpenCodeState: extract recent model and variant", () => {
     const s = parseOpenCodeState(JSON.stringify({
       recent: [{ providerID: "openrouter", modelID: "deepseek/deepseek-v4-flash-0731" }],
       variant: { "openrouter/deepseek/deepseek-v4-flash-0731": "high" },
@@ -330,12 +320,12 @@ openrouter/minimax/minimax-m3
     expect(s.model).toEqual({ providerID: "openrouter", modelID: "deepseek/deepseek-v4-flash-0731" });
     expect(s.variant?.["openrouter/deepseek/deepseek-v4-flash-0731"]).toBe("high");
   });
-  it("parseOpenCodeState: recent 없거나 파싱 불가면 비어있음", () => {
+  it("parseOpenCodeState: empty when recent is missing or unparseable", () => {
     expect(parseOpenCodeState("{}").model).toBeUndefined();
     expect(parseOpenCodeState("[").model).toBeUndefined();
     expect(parseOpenCodeState(JSON.stringify({ recent: [] })).model).toBeUndefined();
   });
-  it("parseOpenCodeState: recent/favorites 배열을 providerID/modelID 문자열로", () => {
+  it("parseOpenCodeState: convert recent/favorites array to providerID/modelID strings", () => {
     const s = parseOpenCodeState(JSON.stringify({
       recent: [{ providerID: "openrouter", modelID: "a/" },
                { providerID: "opencode", modelID: "b" }],
@@ -345,7 +335,7 @@ openrouter/minimax/minimax-m3
     expect(s.recent?.[1]).toBe("opencode/b");
     expect(s.favorites).toEqual(["openrouter/x"]);
   });
-  it("parseTuiAgent: TOML에서 agent=… 뽑는다", () => {
+  it("parseTuiAgent: extract agent from TOML", () => {
     const toml = `theme = "opencode"
 provider = "opencode"
 model = "grok-code"
@@ -353,54 +343,54 @@ agent = "plan"
 `;
     expect(parseTuiAgent(toml)).toBe("plan");
   });
-  it("parseTuiAgent: agent 없거나 비어 있으면 undefined", () => {
+  it("parseTuiAgent: undefined if agent is missing or empty", () => {
     expect(parseTuiAgent("")).toBeUndefined();
     expect(parseTuiAgent("theme = \"x\"\nmodel = \"y\"")).toBeUndefined();
   });
-  it("parsePrimaryAgents: 숨김 내부(compaction/summary/title) 제외한 프라이머리만", () => {
+  it("parsePrimaryAgents: only primary agents excluding internal helpers (compaction/summary/title)", () => {
     const out = parsePrimaryAgents(
       "build (primary)\n  [\n  ...permissions...\ncompaction (primary)\n  [\nplan (primary)\n  [\nexplore (subagent)\n  [\nsummary (primary)\n  [\ntitle (primary)\n  [\n"
     );
     expect(out).toEqual(["build", "plan"]);
   });
-  it("parsePrimaryAgents: ANSI/공백/빈 줄 방어, subagent 제외", () => {
+  it("parsePrimaryAgents: handle ANSI/whitespace/empty lines and exclude subagents", () => {
     expect(parsePrimaryAgents("\x1b[32mbuild (primary)\x1b[0m\n\ncustom (primary)\nexplore (subagent)\n")).toEqual(["build", "custom"]);
   });
-  it("discoverAgentCmd: opencode와 agy는 CLI 보유, claude/미지원은 없음", () => {
+  it("discoverAgentCmd: opencode and agy have CLI, claude/unsupported do not", () => {
     expect(discoverAgentCmd("opencode")).toEqual(["opencode", "agent", "list"]);
     expect(discoverAgentCmd("agy")).toEqual(["agy", "--help"]);
     expect(discoverAgentCmd("claude")).toBeUndefined();
     expect(discoverAgentCmd(undefined)).toBeUndefined();
   });
-  it("discoverVariantCmd: opencode는 verbose 모델 CLI 보유", () => {
+  it("discoverVariantCmd: opencode has verbose models CLI", () => {
     expect(discoverVariantCmd("opencode")).toEqual(["opencode", "models", "--verbose"]);
     expect(discoverVariantCmd("claude")).toBeUndefined();
   });
-  it("parseModelVariants: 해당 모델의 variants 키 + 앞에 default", () => {
+  it("parseModelVariants: model variants keys with default prepended", () => {
     const stdout = `deepseek/deepseek-v4-flash-0731\n{\n  "id": "deepseek/deepseek-v4-flash-0731",\n  "variants": { "low": {"reasoning":{"effort":"low"}}, "high": {"reasoning":{"effort":"high"}}, "max": {"reasoning":{"effort":"max"}} }\n}\nsome-other\n{\n  "id": "x/y",\n  "variants": {}\n}\n`;
     expect(parseModelVariants(stdout, "deepseek/deepseek-v4-flash-0731")).toEqual(["default", "low", "high", "max"]);
   });
-  it("parseModelVariants: variants 없거나 모델 없으면 빈 배열", () => {
+  it("parseModelVariants: empty array when variants or model missing", () => {
     expect(parseModelVariants("", "a/b")).toEqual([]);
     expect(parseModelVariants('{"id":"x","variants":{}}', "x")).toEqual([]);
     expect(parseModelVariants('{"id":"x","variants":{"low":{}}}', "nope")).toEqual([]);
   });
-  it("sortModels: 즐겨찾기 우선 → 최근 순 → 나머지, 중복·발견 외 제거", () => {
+  it("sortModels: favorites first -> recent -> remaining, deduplicated", () => {
     const discovered = ["openrouter/a", "openrouter/b", "openrouter/c", "openrouter/d"];
     const sorted = sortModels(discovered,
-      ["openrouter/b", "openrouter/d"], // 최근
-      ["openrouter/d", "openrouter/z"], // 즐겨찾기(z는 발견 없음 → 건너뜀)
+      ["openrouter/b", "openrouter/d"], // recent
+      ["openrouter/d", "openrouter/z"], // favorites (z not in discovered -> skipped)
     );
     expect(sorted).toEqual(["openrouter/d", "openrouter/b", "openrouter/a", "openrouter/c"]);
   });
-  it("sortModels: 정보 없으면 발견 순서 그대로", () => {
+  it("sortModels: preserve discovered order when no history", () => {
     expect(sortModels(["openrouter/a", "openrouter/b"])).toEqual(["openrouter/a", "openrouter/b"]);
-    expect(sortModels(["openrouter/a"], ["openrouter/a"])).toEqual(["openrouter/a"]); // 중복 방지
+    expect(sortModels(["openrouter/a"], ["openrouter/a"])).toEqual(["openrouter/a"]);
   });
 });
 
-describe("Claude 파서 및 모델/상태 리더", () => {
-  it("parseClaudeSettings: settings.json에서 model, effortLevel, permissionMode 추출", () => {
+describe("Claude parser and state reader", () => {
+  it("parseClaudeSettings: extract model, effortLevel, permissionMode from settings.json", () => {
     const json1 = JSON.stringify({
       model: "claude-sonnet-5",
       effortLevel: "medium",
@@ -426,7 +416,7 @@ describe("Claude 파서 및 모델/상태 리더", () => {
     expect(parseClaudeSettings("invalid")).toEqual({});
   });
 
-  it("parseClaudeModelCatalog: format A (catalog.config.models) 파싱", () => {
+  it("parseClaudeModelCatalog: format A (catalog.config.models) parsing", () => {
     const json = JSON.stringify({
       catalog: {
         config: {
@@ -458,7 +448,7 @@ describe("Claude 파서 및 모델/상태 리더", () => {
     expect(parsed.effortsByModel["claude-haiku-4-5-20251001"]).toBeUndefined();
   });
 
-  it("parseClaudeModelCatalog: format B (document.surfaces.cc.model_selector_config) 파싱", () => {
+  it("parseClaudeModelCatalog: format B (document.surfaces.cc.model_selector_config) parsing", () => {
     const json = JSON.stringify({
       document: {
         surfaces: {
@@ -488,16 +478,16 @@ describe("Claude 파서 및 모델/상태 리더", () => {
     expect(parsed.effortsByModel["claude-opus-5"]).toEqual(["low", "high"]);
   });
 
-  it("ClaudeAgent: getModels, getEfforts, getModes 기본 동작", () => {
+  it("ClaudeAgent: getModels, getEfforts, getModes default behavior", () => {
     const a = agentFor("claude");
     const models = a.getModels();
     expect(models.length).toBeGreaterThan(0);
     expect(a.getEfforts("claude-opus-5")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(a.getEfforts("claude-haiku-4-5-20251001")).toEqual([]);
-    expect(a.getModes()).toEqual(["default", "accept-edits", "plan", "auto"]);
+    expect(a.getModes()).toEqual(["default", "accept-edits", "plan"]);
   });
 
-  it("normalizeClaudeMode: 별칭 정규화", () => {
+  it("normalizeClaudeMode: alias normalization", () => {
     expect(normalizeClaudeMode("manual")).toBe("default");
     expect(normalizeClaudeMode("default")).toBe("default");
     expect(normalizeClaudeMode("accept-edits")).toBe("accept-edits");
@@ -509,41 +499,30 @@ describe("Claude 파서 및 모델/상태 리더", () => {
     expect(normalizeClaudeMode("bypass-permissions")).toBe("bypassPermissions");
   });
 
-  it("getClaudeShiftTabSteps: 정확한 Shift+Tab 횟수 계산 (4개 모드)", () => {
-    // default -> accept-edits: 1회
+  it("getClaudeShiftTabSteps: calculate exact Shift+Tab count (3 modes default)", () => {
+    // default -> accept-edits: 1 step
     expect(getClaudeShiftTabSteps("accept-edits", "default")).toEqual([
       { text: "\x1b[Z", enter: false },
     ]);
-    // default -> plan: 2회
+    // default -> plan: 2 steps
     expect(getClaudeShiftTabSteps("plan", "default")).toEqual([
       { text: "\x1b[Z", enter: false },
       { text: "\x1b[Z", enter: false, delayMs: 120 },
     ]);
-    // default -> auto: 3회
-    expect(getClaudeShiftTabSteps("auto", "default")).toEqual([
-      { text: "\x1b[Z", enter: false },
-      { text: "\x1b[Z", enter: false, delayMs: 120 },
-      { text: "\x1b[Z", enter: false, delayMs: 120 },
-    ]);
-    // accept-edits -> plan: 1회
+    // accept-edits -> plan: 1 step
     expect(getClaudeShiftTabSteps("plan", "accept-edits")).toEqual([
       { text: "\x1b[Z", enter: false },
     ]);
-    // plan -> auto: 1회
-    expect(getClaudeShiftTabSteps("auto", "plan")).toEqual([
+    // plan -> default: 1 step
+    expect(getClaudeShiftTabSteps("default", "plan")).toEqual([
       { text: "\x1b[Z", enter: false },
     ]);
-    // auto -> default: 1회
-    expect(getClaudeShiftTabSteps("default", "auto")).toEqual([
-      { text: "\x1b[Z", enter: false },
-    ]);
-    // 동일 모드: 0회
+    // same mode: 0 steps
     expect(getClaudeShiftTabSteps("default", "default")).toEqual([]);
     expect(getClaudeShiftTabSteps("plan", "plan")).toEqual([]);
-    expect(getClaudeShiftTabSteps("auto", "auto")).toEqual([]);
   });
 
-  it("parseClaudeModeFromText: 실시간 터미널 출력/미리보기에서 현재 모드 감지 (bypassPermissions 포함)", () => {
+  it("parseClaudeModeFromText: detect current mode from live terminal preview (including bypassPermissions)", () => {
     expect(parseClaudeModeFromText("⏵⏵ auto mode on (shift+tab to cycle) · ← for agents")).toBe("auto");
     expect(parseClaudeModeFromText("⏸ plan mode on (shift+tab to cycle) · ← for agents")).toBe("plan");
     expect(parseClaudeModeFromText("⏵⏵ accept edits on (shift+tab to cycle) · ← for agents")).toBe("accept-edits");
@@ -559,36 +538,36 @@ describe("Claude 파서 및 모델/상태 리더", () => {
     expect(parseClaudeModeFromText("just some text with no mode")).toBeUndefined();
   });
 
-  it("isClaudeBypassEnabled: dangerously-skip-permissions 또는 bypass permissions 감지", () => {
+  it("isClaudeBypassEnabled: detect dangerously-skip-permissions or bypass permissions", () => {
     expect(isClaudeBypassEnabled({ preview: "claude '--dangerously-skip-permissions'" })).toBe(true);
     expect(isClaudeBypassEnabled({ preview: "⏵⏵ bypass permissions on" })).toBe(true);
     expect(isClaudeBypassEnabled({ preview: "claude" })).toBe(false);
     expect(isClaudeBypassEnabled(undefined)).toBe(false);
   });
 
-  it("getClaudeShiftTabSteps: bypassPermissions 활성화 시 5개 모드 순환 계산", () => {
-    const bypassList = [...CLAUDE_BYPASS_MODES]; // ["default", "accept-edits", "plan", "bypassPermissions", "auto"]
-    // plan -> auto: 2회 (bypassPermissions 거침)
-    expect(getClaudeShiftTabSteps("auto", "plan", bypassList)).toEqual([
-      { text: "\x1b[Z", enter: false },
-      { text: "\x1b[Z", enter: false, delayMs: 120 },
-    ]);
-    // plan -> bypassPermissions: 1회
+  it("getClaudeShiftTabSteps: 4-mode cycle calculation when bypassPermissions is active", () => {
+    const bypassList = [...CLAUDE_BYPASS_MODES]; // ["default", "accept-edits", "plan", "bypassPermissions"]
+    // plan -> bypassPermissions: 1 step
     expect(getClaudeShiftTabSteps("bypassPermissions", "plan", bypassList)).toEqual([
       { text: "\x1b[Z", enter: false },
     ]);
-    // bypassPermissions -> auto: 1회
-    expect(getClaudeShiftTabSteps("auto", "bypassPermissions", bypassList)).toEqual([
+    // bypassPermissions -> default: 1 step
+    expect(getClaudeShiftTabSteps("default", "bypassPermissions", bypassList)).toEqual([
       { text: "\x1b[Z", enter: false },
     ]);
-    // bypassPermissions -> default: 2회 (auto 거침)
-    expect(getClaudeShiftTabSteps("default", "bypassPermissions", bypassList)).toEqual([
+    // plan -> default: 2 steps (via bypassPermissions)
+    expect(getClaudeShiftTabSteps("default", "plan", bypassList)).toEqual([
+      { text: "\x1b[Z", enter: false },
+      { text: "\x1b[Z", enter: false, delayMs: 120 },
+    ]);
+    // bypassPermissions -> accept-edits: 2 steps (via default)
+    expect(getClaudeShiftTabSteps("accept-edits", "bypassPermissions", bypassList)).toEqual([
       { text: "\x1b[Z", enter: false },
       { text: "\x1b[Z", enter: false, delayMs: 120 },
     ]);
   });
 
-  it("readClaudeState: ctx.preview가 있으면 실시간 TUI 모드가 최우선 반영됨", () => {
+  it("readClaudeState: prioritize real-time TUI mode when ctx.preview is present", () => {
     const st = readClaudeState({ preview: "⏸ plan mode on (shift+tab to cycle) · ← for agents" });
     expect(st.mode).toBe("plan");
 
@@ -600,21 +579,21 @@ describe("Claude 파서 및 모델/상태 리더", () => {
 
     const stBypass = readClaudeState({ preview: "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents" });
     expect(stBypass.mode).toBe("bypassPermissions");
-    expect(stBypass.modes).toEqual(["default", "accept-edits", "plan", "bypassPermissions", "auto"]);
+    expect(stBypass.modes).toEqual(["default", "accept-edits", "plan", "bypassPermissions"]);
 
     const stManual = readClaudeState({ preview: "⏸ manual mode on · ← for agents" });
     expect(stManual.mode).toBe("default");
   });
 
-  it("readClaudeState: 로컬 상태 및 작업공간 상태 읽기", () => {
+  it("readClaudeState: read local and workspace state", () => {
     const st = readClaudeState({ worktreePath: "/Users/ben/Workspaces/Tools/deep" });
     expect(st).toBeDefined();
     expect(typeof st).toBe("object");
   });
 });
 
-describe("Codex & Agy 파서 및 상태 리더", () => {
-  it("parseCodexConfig: TOML에서 model, model_reasoning_effort, sandbox_mode 추출", () => {
+describe("Codex & Agy parser and state reader", () => {
+  it("parseCodexConfig: extract model, model_reasoning_effort, sandbox_mode from TOML", () => {
     const toml = `model = "gpt-5.6-luna"\nmodel_reasoning_effort = "medium"\nsandbox_mode = "workspace-write"\n`;
     expect(parseCodexConfig(toml)).toEqual({
       model: "gpt-5.6-luna",
@@ -622,10 +601,10 @@ describe("Codex & Agy 파서 및 상태 리더", () => {
       mode: "workspace-write",
     });
   });
-  it("parseCodexConfig: 누락 시 undefined", () => {
+  it("parseCodexConfig: undefined when missing", () => {
     expect(parseCodexConfig("")).toEqual({ model: undefined, effort: undefined, mode: undefined });
   });
-  it("parseCodexModelsCache: JSON 캐시에서 auto-review 제외 모델 slug 추출", () => {
+  it("parseCodexModelsCache: extract model slugs excluding auto-review from JSON cache", () => {
     const json = JSON.stringify({
       models: [
         { slug: "gpt-reserve" },
@@ -635,18 +614,18 @@ describe("Codex & Agy 파서 및 상태 리더", () => {
     });
     expect(parseCodexModelsCache(json)).toEqual(["gpt-reserve", "gpt-5.6-luna"]);
   });
-  it("CodexAgent: getModels, getEfforts, getModes 기본 동작", () => {
+  it("CodexAgent: getModels, getEfforts, getModes default behavior", () => {
     const a = agentFor("codex");
     expect(a.getModels().length).toBeGreaterThan(0);
     expect(a.getEfforts()).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
     expect(a.getModes()).toEqual(["workspace-write", "read-only", "danger-full-access"]);
   });
-  it("readCodexState: 로컬 상태 읽기", () => {
+  it("readCodexState: read local state", () => {
     const st = readCodexState();
     expect(st).toBeDefined();
     expect(typeof st).toBe("object");
   });
-  it("parseAgyModels: 'Fetching...' 제거 및 tab 앞 ID 추출", () => {
+  it("parseAgyModels: strip 'Fetching...' and extract ID before tab", () => {
     const stdout = `Fetching available models...
 gemini-3.8-flash-high\tGemini 3.8 Flash (High)
 gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)
@@ -658,7 +637,7 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
       "claude-sonnet-4-6",
     ]);
   });
-  it("parseAgySettings: settings.json에서 model 및 mode/agent 추출 및 정규화", () => {
+  it("parseAgySettings: extract and normalize model and mode/agent from settings.json", () => {
     expect(parseAgySettings(JSON.stringify({ model: "Gemini 3.8 Flash (Medium)" }))).toEqual({
       model: "Gemini 3.8 Flash (Medium)",
     });
@@ -682,7 +661,7 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
     expect(parseAgySettings("invalid")).toEqual({});
   });
 
-  it("normalizeAgyMode: 모드 문자열을 default / plan / accept-edits로 정규화", () => {
+  it("normalizeAgyMode: normalize mode string to default / plan / accept-edits", () => {
     expect(normalizeAgyMode("")).toBe("default");
     expect(normalizeAgyMode(undefined)).toBe("default");
     expect(normalizeAgyMode("nothing")).toBe("default");
@@ -694,35 +673,35 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
     expect(normalizeAgyMode("acceptedits")).toBe("accept-edits");
   });
 
-  it("AgyAgent.getModes: default, accept-edits, plan 반환", () => {
+  it("AgyAgent.getModes: return default, accept-edits, plan", () => {
     expect(agentFor("agy").getModes()).toEqual(["default", "accept-edits", "plan"]);
     expect(AGY_MODES).toEqual(["default", "accept-edits", "plan"]);
   });
 
-  it("getAgyShiftTabSteps: 정확한 Shift+Tab 횟수 계산", () => {
-    // default -> accept-edits: 1회
+  it("getAgyShiftTabSteps: calculate exact Shift+Tab count", () => {
+    // default -> accept-edits: 1 step
     expect(getAgyShiftTabSteps("accept-edits", "default")).toEqual([
       { text: "\x1b[Z", enter: false },
     ]);
-    // default -> plan: 2회
+    // default -> plan: 2 steps
     expect(getAgyShiftTabSteps("plan", "default")).toEqual([
       { text: "\x1b[Z", enter: false },
       { text: "\x1b[Z", enter: false, delayMs: 120 },
     ]);
-    // accept-edits -> plan: 1회
+    // accept-edits -> plan: 1 step
     expect(getAgyShiftTabSteps("plan", "accept-edits")).toEqual([
       { text: "\x1b[Z", enter: false },
     ]);
-    // plan -> default: 1회
+    // plan -> default: 1 step
     expect(getAgyShiftTabSteps("default", "plan")).toEqual([
       { text: "\x1b[Z", enter: false },
     ]);
-    // 동일 모드: 0회
+    // same mode: 0 steps
     expect(getAgyShiftTabSteps("default", "default")).toEqual([]);
     expect(getAgyShiftTabSteps("plan", "plan")).toEqual([]);
   });
 
-  it("parseAgyHelpModes: agy --help 출력에서 모드 파싱", () => {
+  it("parseAgyHelpModes: parse modes from agy --help output", () => {
     const helpText = `Usage of agy:
   --add-dir                       Add a directory to the workspace (repeatable) (default [])
   --mode                          Set the agent execution mode for this session (accept-edits, plan)
@@ -733,7 +712,7 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
     expect(parseAgyHelpModes("no mode flag here")).toEqual([]);
   });
 
-  it("extractEffortFromModel: 모델명 또는 슬러그에서 내포된 effort 추출", () => {
+  it("extractEffortFromModel: extract implicit effort from model name or slug", () => {
     expect(extractEffortFromModel("Gemini 3.8 Flash (High)")).toBe("high");
     expect(extractEffortFromModel("Gemini 3.8 Flash (Medium)")).toBe("medium");
     expect(extractEffortFromModel("Gemini 3.8 Flash (Low)")).toBe("low");
@@ -748,14 +727,14 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
     expect(extractEffortFromModel(undefined)).toBeUndefined();
   });
 
-  it("AgyAgent.getEffortForModel: 모델명에 내포된 effort 반환", () => {
+  it("AgyAgent.getEffortForModel: return implicit effort in model name", () => {
     const agy = agentFor("agy");
     expect(agy.getEffortForModel("gemini-3.8-flash-high")).toBe("high");
     expect(agy.getEffortForModel("Gemini 3.8 Flash (Medium)")).toBe("medium");
     expect(agy.getEffortForModel("claude-sonnet-4-6")).toBeUndefined();
   });
 
-  it("parseAgyLogWorkspace: 로그 헤더에서 workspaceDirs 및 store manager 경로 추출", () => {
+  it("parseAgyLogWorkspace: extract workspaceDirs and store manager paths from log header", () => {
     const header1 = `I0913 16:36:45.100430       1 server.go:299] Creating CLI server backend: product=antigravity workspaceDirs=[/Users/ben/Workspaces/Tools/deep] appDataDir=/Users/ben/.gemini/antigravity-cli cascadeManager=true codeAssist=true`;
     expect(parseAgyLogWorkspace(header1)).toEqual(["/Users/ben/Workspaces/Tools/deep"]);
 
@@ -766,7 +745,7 @@ I0912 02:17:26.378614       1 manager.go:426] Initializing CLI store manager for
     expect(parseAgyLogWorkspace("")).toEqual([]);
   });
 
-  it("isMatchingWorkspace: 작업공간 경로 매칭 및 정규화", () => {
+  it("isMatchingWorkspace: workspace path matching and normalization", () => {
     expect(isMatchingWorkspace("/Users/ben/Workspaces/Tools/deep", "/Users/ben/Workspaces/Tools/deep")).toBe(true);
     expect(isMatchingWorkspace("/Users/ben/Workspaces/Tools/deep/", "/Users/ben/Workspaces/Tools/deep")).toBe(true);
     expect(isMatchingWorkspace("/Users/ben/Workspaces/Tools/deep", "/Users/ben/Workspaces/Tools/deep/.orca/worktrees/feat")).toBe(true);
@@ -775,7 +754,7 @@ I0912 02:17:26.378614       1 manager.go:426] Initializing CLI store manager for
     expect(isMatchingWorkspace("", "/Users/ben/Workspaces/Tools/deep")).toBe(false);
   });
 
-  it("parseAgyLogModel: CLI 로그에서 모델 오버라이드 및 유저 입력 파싱", () => {
+  it("parseAgyLogModel: parse model override and user input from CLI log", () => {
     const log1 = `I0913 16:48:15.672433   11525 model_config_manager.go:327] Propagating selected model override to backend: label="Gemini 3.7 Flash (High)"`;
     expect(parseAgyLogModel(log1)).toBe("Gemini 3.7 Flash (High)");
 
@@ -788,7 +767,7 @@ I0912 02:17:26.378614       1 manager.go:426] Initializing CLI store manager for
     expect(parseAgyLogModel("")).toBeUndefined();
   });
 
-  it("parseAgyLogEffort: CLI 로그에서 /effort 명령 파싱", () => {
+  it("parseAgyLogEffort: parse /effort command from CLI log", () => {
     const log1 = `I0913 16:48:15.672342   11525 input_loop.go:94] HandleUserInput called with text: "/effort high"`;
     expect(parseAgyLogEffort(log1)).toBe("high");
 
@@ -798,7 +777,7 @@ I0912 02:17:26.378614       1 manager.go:426] Initializing CLI store manager for
     expect(parseAgyLogEffort("")).toBeUndefined();
   });
 
-  it("parseAgyLogMode: CLI 로그에서 SetCycleMode, /mode, /agent 파싱", () => {
+  it("parseAgyLogMode: parse SetCycleMode, /mode, and /agent from CLI log", () => {
     const log1 = `ERROR: logging before google.Init: I0908 00:02:47.642897       1 manager.go:1341] SetCycleMode called: accept-edits`;
     expect(parseAgyLogMode(log1)).toBe("accept-edits");
 
@@ -813,7 +792,7 @@ ERROR: logging before google.Init: I0908 00:00:46.631352       1 manager.go:1341
     expect(parseAgyLogMode("random log content")).toBeUndefined();
   });
 
-  it("parseAgyModeFromText: 실시간 터미널 출력/미리보기에서 현재 모드 감지", () => {
+  it("parseAgyModeFromText: detect current mode from live terminal preview", () => {
     expect(parseAgyModeFromText("> Plan mode: research & plan only to-approved (shift+tab to cycle)")).toBe("plan");
     expect(parseAgyModeFromText("> Auto-approve edits on (shift+tab to cycle)")).toBe("accept-edits");
     expect(parseAgyModeFromText("> Default mode on (shift+tab to cycle)")).toBe("default");
@@ -823,7 +802,7 @@ ERROR: logging before google.Init: I0908 00:00:46.631352       1 manager.go:1341
     expect(parseAgyModeFromText("regular terminal output")).toBeUndefined();
   });
 
-  it("readAgyState: ctx.preview가 있으면 실시간 TUI 모드가 최우선 반영됨", () => {
+  it("readAgyState: prioritize real-time TUI mode when ctx.preview is present", () => {
     const st = readAgyState({ preview: "> Plan mode: research & plan only to-approved (shift+tab to cycle)" });
     expect(st.mode).toBe("plan");
 
@@ -831,7 +810,7 @@ ERROR: logging before google.Init: I0908 00:00:46.631352       1 manager.go:1341
     expect(stAccept.mode).toBe("accept-edits");
   });
 
-  it("readAgyState: 현재 실행 중인 agy 세션의 상태 읽기 (작업공간별 분리 검증)", () => {
+  it("readAgyState: read currently running agy session state per workspace", () => {
     const stDeep = readAgyState({ worktreePath: "/Users/ben/Workspaces/Tools/deep" });
     expect(stDeep).toBeDefined();
     expect(typeof stDeep).toBe("object");
@@ -841,15 +820,14 @@ ERROR: logging before google.Init: I0908 00:00:46.631352       1 manager.go:1341
     expect(typeof stAlt).toBe("object");
 
     if (stDeep.effort && stAlt.effort) {
-      // deep과 AltReady 작업공간이 서로 다른 effort를 가질 때 각각 올바르게 분리되어 읽힘
       expect(typeof stDeep.effort).toBe("string");
       expect(typeof stAlt.effort).toBe("string");
     }
   });
 });
 
-describe("Hermes 파서 및 모델 캐시", () => {
-  it("parseHermesConfig: config.yaml에서 default model 및 reasoning_effort 추출", () => {
+describe("Hermes parser and models cache", () => {
+  it("parseHermesConfig: extract default model and reasoning_effort from config.yaml", () => {
     const yaml1 = `model:
   default: deepseek/deepseek-v4-flash-0731
   provider: openrouter
@@ -868,11 +846,11 @@ agent:
     });
   });
 
-  it("parseHermesConfig: 누락 시 undefined", () => {
+  it("parseHermesConfig: undefined when missing", () => {
     expect(parseHermesConfig("")).toEqual({ model: undefined, effort: undefined });
   });
 
-  it("parseHermesModelsCache: provider_models_cache.json에서 중복 없는 모델 목록 추출", () => {
+  it("parseHermesModelsCache: extract deduplicated models from provider_models_cache.json", () => {
     const json = JSON.stringify({
       openrouter: {
         models: ["deepseek/deepseek-v4-flash-0731", "minimax/minimax-m3"],
@@ -888,7 +866,7 @@ agent:
     ]);
   });
 
-  it("HermesAgent.getEfforts: hermes 지원 reasoning levels 반환", () => {
+  it("HermesAgent.getEfforts: return hermes supported reasoning levels", () => {
     expect(agentFor("hermes").getEfforts()).toEqual([
       "none",
       "minimal",

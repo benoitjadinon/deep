@@ -1,5 +1,5 @@
-// 실 데이터 스모크: orca에서 라이브로 읽어 8칸 상태판을 콘솔에 그린다.
-// Stream Deck 실물 대신 터미널에 미리보기. `npm run poll` 또는 `node scripts/poll.mjs`.
+// Live data smoke test: poll orca live and render 8-slot status board to console.
+// Terminal preview without hardware Stream Deck. `npm run poll` or `node scripts/poll.mjs`.
 import { execFileSync } from "node:child_process";
 import { buildDeck } from "../src/deck.ts";
 
@@ -25,13 +25,13 @@ const cell = (b) => {
   const dot = b.state === "unverifiable" ? "🟠" : (DOT[b.color] ?? "⚪");
   return `${dot} ${clip(b.label, 14)}`;
 };
-console.log(`\n  AgentDeck — page ${deck.page + 1}/${deck.pageCount} · 세션 ${deck.total}개\n`);
+console.log(`\n  AgentDeck — page ${deck.page + 1}/${deck.pageCount} · Sessions: ${deck.total}\n`);
 for (let r = 0; r < 2; r++) {
   const row = deck.slots.slice(r * 4, r * 4 + 4).map(cell);
   console.log("  " + row.map((c) => `[ ${c} ]`).join(" "));
 }
 console.log("\n  🔵working 🟡waiting 🟠no recent update 🟢done 🔴error ⚪idle/empty\n");
-// 탭 매핑 참고용: 각 버튼이 어떤 handle로 switch/send 될지
+// Reference for tap mapping: which handle each button switches/sends to
 deck.slots.forEach((b, i) => {
   if (!b.empty) console.log(`  S${i + 1} → orca terminal switch --terminal ${b.handle}`);
 });
