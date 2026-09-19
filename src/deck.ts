@@ -1,16 +1,16 @@
-// AgentDeck 코어: orca의 두 소스(terminal list + worktree ps)를
-// Stream Deck Plus 버튼 8칸 모델로 변환하는 순수 함수.
-// 실물 Stream Deck 없이도 이 계층은 전부 테스트 가능하다.
+// AgentDeck core: Pure function converting Orca's two sources (terminal list + worktree ps)
+// into a Stream Deck Plus 8-slot button model.
+// This layer is fully testable without physical hardware.
 
 import { resolveRepoBgIcon, type ResolvedBgIcon } from "./icons.ts";
 
 export type AgentState = "working" | "waiting" | "done" | "error" | "unverifiable" | "idle" | string | undefined;
 export type Color = "blue" | "amber" | "green" | "red" | "white";
 
-/** Orca와 동일한 비활성 상태 감쇠 시간 (30분) */
+/** Inactivity decay duration matching Orca (30 minutes) */
 export const AGENT_STATUS_STALE_AFTER_MS = 30 * 60 * 1000;
 
-/** orca terminal list --json → result.terminals[] 중 우리가 쓰는 필드 */
+/** Fields used from `orca terminal list --json` -> `result.terminals[]` */
 export interface OrcaTerminal {
   handle: string;
   tabId: string;
@@ -19,17 +19,17 @@ export interface OrcaTerminal {
   worktreePath?: string;
   worktreeId?: string;
   lastOutputAt?: number | null;
-  /** 터미널에 에이전트가 살아 있는지 — orca가 worktree ps에 보고하기 전이라도 즉시 감지. null/없음 = 순수 셸. */
+  /** Whether agent process is alive in terminal — detected immediately before worktree ps reports it. null/undefined = pure shell. */
   agentIdentity?: string | null;
 }
 
-/** orca worktree ps --json → result.worktrees[] 중 우리가 쓰는 필드 */
+/** Fields used from `orca worktree ps --json` -> `result.worktrees[]` */
 export interface OrcaWorktree {
   worktreeId?: string;
   repo?: string;
   branch?: string;
   displayName?: string;
-  unread?: boolean; // 사용자가 최신 출력을 아직 안 봤으면 true (Orca가 열람 시 자동 false)
+  unread?: boolean; // true if user hasn't viewed latest output yet (automatically set to false when viewed in Orca)
   agents?: Array<{
     paneKey: string;
     state?: AgentState;
@@ -40,7 +40,7 @@ export interface OrcaWorktree {
   }>;
 }
 
-/** orca repo list --json / project list --json 중 아이콘/색상 관련 필드 */
+/** Icon/color fields from `orca repo list --json` / `project list --json` */
 export interface OrcaRepoIcon {
   type?: "image" | "lucide" | "emoji" | string;
   src?: string;
@@ -87,22 +87,23 @@ export type Button =
       empty: false;
       handle: string;
       label: string;
-      tabTitle?: string; // Orca 탭 제목 (2줄 요약 렌더용)
+      tabTitle?: string; // Orca tab title (for 2-line summary rendering)
       state: AgentState;
       color: Color;
       worktreePath?: string;
-      worktreeId?: string; // `<repoId>::<path>` — 빈 슬롯에서 같은 repo에 새 워크트리를 만들 때 repoId 추출용
+      worktreeId?: string; // `<repoId>::<path>` — used to extract repoId when spawning a new worktree in the same repo from an empty slot
+      preview?: string; // Live terminal preview text (for mode/state detection)
       lastOutputAt?: number | null;
       repo?: string;
       branch?: string;
-      dupIndex?: number; // 같은 repo(branch) 내 순번 (0=첫째, 1↑는 -N 표기)
-      unread?: boolean; // 완료됐지만 아직 안 본 상태 표시용
-      agentType?: string; // orca가 보고한 에이전트 종류 (claude/codex/opencode/…) — 다이얼 게이팅에 사용
-      badgeColor?: string; // orca 프로젝트 뱃지 색상 (예: #ef4444)
-      repoIcon?: OrcaRepoIcon | null; // orca 프로젝트 원본 아이콘 메타
-      bgIconUri?: string; // 타일 배경에 그릴 이미지 Data URI (GitHub 아바타, 로컬 icon.png)
-      bgIconLucide?: string; // 타일 배경에 그릴 Lucide SVG 내부 태그 (Rocket, Folder 등)
-      bgIconEmoji?: string; // 타일 배경에 그릴 이모지
+      dupIndex?: number; // Sequence index within same repo/branch (0=first, >=1 shows -N suffix)
+      unread?: boolean; // Indicates completed session not yet viewed
+      agentType?: string; // Agent type reported by Orca (claude/codex/opencode/...) — used for dial gating
+      badgeColor?: string; // Orca project badge color (e.g. #ef4444)
+      repoIcon?: OrcaRepoIcon | null; // Orca project original icon metadata
+      bgIconUri?: string; // Image Data URI to draw in tile background (GitHub avatar, local icon.png)
+      bgIconLucide?: string; // Lucide SVG inner tags to draw in tile background (Rocket, Folder, etc.)
+      bgIconEmoji?: string; // Emoji to draw in tile background
     };
 
 export interface Deck {
@@ -123,9 +124,9 @@ const STATE_COLOR: Record<string, Color> = {
 };
 
 /**
- * 경로에서 사람이 아는 "프로젝트명"을 뽑는다.
- * `/Projects/<X>/...` 면 X (예: AcmeApp/ko → "AcmeApp"),
- * 아니면 마지막 폴더명(예: .../Notes → "Notes"), 그것도 없으면 orca repo.
+ * Extract human-readable project name from path.
+ * If `/Projects/<X>/...`, returns X (e.g. AcmeApp/ko -> "AcmeApp"),
+ * otherwise the last folder name (e.g. .../Notes -> "Notes"), or fallback to orca repo.
  */
 export function projectOf(path?: string, repo?: string): string | undefined {
   if (path) {
@@ -137,15 +138,15 @@ export function projectOf(path?: string, repo?: string): string | undefined {
   return repo;
 }
 
-/** 상태 → 버튼 색. 모르는/빈 상태는 흰색(기본). */
+/** State -> button color mapping. Unknown/empty state defaults to white. */
 export function colorFor(state: AgentState): Color {
   if (state && STATE_COLOR[state]) return STATE_COLOR[state];
   return "white";
 }
 
 /**
- * 같은 repo에 이미 있는 워크트리 이름들 중 `repo-N` 번호 최대값 + 1로 새 워크트리 이름을 만든다.
- * repo 자체가 1번이라고 보고 첫 새 워크트리는 `repo-2`가 된다. 이름은 곧 브랜치/표시명이 된다.
+ * Generate a new worktree name with max existing `repo-N` index + 1.
+ * Considering the base repo as 1, the first new worktree will be `repo-2`.
  */
 export function nextWorktreeName(repo: string, existingNames: string[]): string {
   const prefix = `${repo}-`;
@@ -160,10 +161,10 @@ export function nextWorktreeName(repo: string, existingNames: string[]): string 
 }
 
 /**
- * 주의(애니메이션)가 필요한 세션인지 — orca가 "다 됐다/대답 필요"를 알릴 때 키가 확 띄게.
- * 대상 = 입력대기(amber)·완료 미확인(green)·에러(red). 작업중(blue)·idle(white)·stale(unverifiable)은 조용히.
- * 현재 보고 있는 세션(target)이라도 대답/승인 필요(amber)나 에러(red)는 행동이 필요하므로 펄스 유지.
- * 완료 미확인(green)은 이미 보고 있으므로 제외, 이미 읽은 완료 세션(unread===false)도 펄스 불필요.
+ * Check whether a session requires attention (animation/pulse) — draws eye when Orca signals done or awaiting reply.
+ * Targets: waiting (amber), unread done (green), error (red). Working (blue), idle (white), stale (unverifiable) stay quiet.
+ * Even if currently focused (target), waiting (amber) and error (red) maintain pulse since they require action.
+ * Unread done (green) on the active target does not pulse because the user is already viewing it.
  */
 export function needsAttention(b: Button, isTarget: boolean): boolean {
   if (b.empty) return false;
@@ -176,11 +177,11 @@ export function needsAttention(b: Button, isTarget: boolean): boolean {
 const EMPTY: Button = { empty: true };
 
 /**
- * orca 두 소스를 병합해 8칸(기본) 버튼 모델을 만든다.
- * - paneKey(`tabId:leafId`)로 terminal(handle)과 worktree agent(state)를 join
- * - 에이전트 상태가 없는 순수 셸 터미널은 세션판에서 제외
- * - handle 기준 안정 정렬(활동에 따라 버튼이 춤추지 않도록 = 근육 기억 보존)
- * - perPage(기본 8) 단위 페이지네이션, 빈 칸은 { empty: true }로 패딩
+ * Merge two Orca sources into an 8-slot (default) button model.
+ * - Join terminal (handle) and worktree agent (state) by paneKey (`tabId:leafId`).
+ * - Exclude pure shell terminals without agent state.
+ * - Stable sort by handle (keeps buttons steady across turns to preserve muscle memory).
+ * - Paginate by perPage (default 8), padding empty slots with `{ empty: true }`.
  */
 export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   const page = opts.page ?? 0;
@@ -198,7 +199,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
     return raw;
   };
 
-  // paneKey → state 맵 + 폴백 에이전트 타입 + worktreeId → {repo, branch} 메타
+  // paneKey -> state map + fallback agent type + worktreeId -> {repo, branch} metadata
   const stateByPane = new Map<string, AgentState>();
   const agentByPane = new Map<string, string>();
   const metaByWt = new Map<string, { repo?: string; branch?: string; unread?: boolean }>();
@@ -217,7 +218,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
         st = "unverifiable";
       }
       stateByPane.set(a.paneKey, st);
-      // 같은 paneKey의 에이전트가 여럿일 수 있으니 첫 번째만 (폴백), 보통 0~1개
+      // If multiple agents on same paneKey, keep first as fallback (normally 0-1)
       if (!agentByPane.has(a.paneKey)) agentByPane.set(a.paneKey, a.agentType ?? "");
     }
     if (wt.worktreeId) {
@@ -238,25 +239,21 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
     return tabTitlesFromLayouts.get(tabId);
   };
 
-  // 에이전트가 붙은 터미널만 세션으로. 위치 고정 = handle 기준 안정 정렬.
-  // (최근순으로 하면 세션이 출력할 때마다 자리가 바뀌어 헷갈림 → 세션 수명 동안 자리 고정)
-  // 판정: worktree ps가 그 paneKey의 에이전트를 아직 안 보고했더라도
-  // 터미널의 agentIdentity가 있으면 "열려 있는 에이전트"로 취급한다.
+  // Keep only agent-bearing terminals as sessions. Fixed position = stable sort by handle.
+  // Validation: session is recognized if reported by worktree ps (hasWt) or active agent process detected (t.agentIdentity).
   const sessions = (input.terminals ?? [])
     .map((t) => {
       const pane = `${t.tabId}:${t.leafId}`;
       const hasWt = stateByPane.has(pane);
       const idFromWt = agentByPane.get(pane);
       const hook = getHook(pane);
-      // 에이전트 세션 유효성 판정:
-      // worktree ps에 에이전트가 있거나(hasWt) 터미널에 활성 에이전트 프로세스가 감지된 경우(t.agentIdentity)만 인정.
-      // 이미 종료된 셸 터미널에 이전 세션의 훅 잔여물이 있더라도 세션으로 부활시키지 않는다.
+
       const hasAgent = hasWt || Boolean(t.agentIdentity);
       if (!hasAgent) {
         return null;
       }
 
-      // 우선순위: worktree ps 등록 에이전트 > 훅 원본 에이전트 > 터미널 프로세스 추정치
+      // Priority: worktree ps registered agent > hook original agent > terminal process estimate
       const agent = idFromWt || hook?.agentType || t.agentIdentity || "";
       const hookEvent = hook?.hookEventName;
       const tabTitle = getTabTitle(t.tabId) || t.title || undefined;
@@ -264,8 +261,8 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       let state: AgentState;
       if (hasWt) {
         state = stateByPane.get(pane) || "idle";
-        // PreToolUse/Notification 단계는 도구 실행 승인/응답 대기 중이므로 waiting(amber)으로 표시
-        // 단, 이미 unverifiable(비활성 감쇠)이거나 done인 경우 오래된 훅 이벤트 잔여물로 덮어쓰지 않음
+        // PreToolUse/Notification phase awaits tool approval/response -> waiting (amber)
+        // Does not overwrite unverifiable (stale) or done states with old hook remnants
         if (state !== "unverifiable" && state !== "done") {
           if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
             state = "waiting";
@@ -274,7 +271,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
           }
         }
       } else {
-        // worktree ps 보고 전이지만 터미널 agentIdentity로 감지된 경우
+        // Detected via terminal agentIdentity before worktree ps reports
         if (hook?.state) {
           let st = hook.state;
           if (
@@ -311,7 +308,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
     .filter((x): x is NonNullable<typeof x> => x !== null)
     .sort((a, b) => a.t.handle.localeCompare(b.t.handle));
 
-  // 저장소 메타 색인: repoId, path, displayName 기준
+  // Repository metadata index by repoId, path, and displayName
   const repoById = new Map<string, OrcaRepo>();
   const repoByPath = new Map<string, OrcaRepo>();
   const repoByName = new Map<string, OrcaRepo>();
@@ -321,7 +318,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
     if (r.displayName) repoByName.set(r.displayName.toLowerCase(), r);
   }
 
-  // 프로젝트명·브랜치·중복순번을 전체(정렬된) 세션 기준으로 부여 → 페이지 넘어도 안정
+  // Assign project name, branch, and dupIndex across entire (sorted) session list -> stable across pages
   const dupCount = new Map<string, number>();
   const enriched = sessions.map((item) => {
     const meta = item.t.worktreeId ? metaByWt.get(item.t.worktreeId) : undefined;
@@ -362,6 +359,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       color: colorFor(e.item.state),
       worktreePath: e.item.t.worktreePath,
       worktreeId: e.item.t.worktreeId,
+      preview: e.item.t.preview,
       lastOutputAt: e.item.t.lastOutputAt,
       repo: e.project,
       branch: e.branch,
@@ -379,7 +377,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   return { slots, page, pageCount, total };
 }
 
-/** visualLayouts 트리에서 모든 탭의 (tabId -> title) 맵을 추출 */
+/** Extract (tabId -> title) map of all tabs from visualLayouts tree */
 export function extractTabTitlesFromLayouts(visualLayouts?: any[]): Map<string, string> {
   const map = new Map<string, string>();
   if (!visualLayouts) return map;
@@ -405,7 +403,7 @@ export function extractTabTitlesFromLayouts(visualLayouts?: any[]): Map<string, 
   return map;
 }
 
-/** visualLayouts의 pane/tab 트리에서 모든 활성 탭/터미널 정보(tabId, leafId, handle)를 재귀 탐색 */
+/** Recursively find all active tab/terminal info (tabId, leafId, handle) from visualLayouts pane/tab tree */
 export function findAllActivePanesInLayout(node: any): Array<{ tabId?: string; leafId?: string; handle?: string }> {
   if (!node) return [];
   if (node.type === "terminal" && node.active) {
@@ -439,18 +437,18 @@ export function findAllActivePanesInLayout(node: any): Array<{ tabId?: string; l
   return results;
 }
 
-/** visualLayouts의 pane/tab 트리에서 첫 번째 활성 터미널 정보 탐색 (하위 호환) */
+/** Find first active terminal info in visualLayouts pane/tab tree (backwards compatibility) */
 export function findActivePaneInLayout(node: any): { tabId?: string; leafId?: string; handle?: string } | undefined {
   const all = findAllActivePanesInLayout(node);
   return all[0];
 }
 
 /**
- * Orca의 worktrees, terminals, visualLayouts 정보를 종합하여
- * 현재 사용자가 보고 있는(활성화된) 터미널 handle을 찾아낸다.
- * - visualLayouts에서 활성 탭/터미널 목록을 추출 (스플릿 레이아웃 포함).
- * - 현재 타깃이 레이아웃의 활성 탭들 중 하나라면 그대로 유지 (스플릿의 다른 쪽 탭으로 튕기지 않음).
- * - visualLayouts가 없더라도 현재 타깃이 이미 활성 워크트리에 있다면 튕기지 않고 유지.
+ * Resolve the terminal handle that the user is currently viewing/focused on,
+ * merging Orca worktrees, terminals, and visualLayouts.
+ * - Extracts active tabs/terminals from visualLayouts (including split layouts).
+ * - If current target is one of the active tabs in the layout, preserves it (avoids bouncing).
+ * - Even without visualLayouts, if current target belongs to active worktree, preserves it.
  */
 export function resolveActiveTerminal(
   worktrees: OrcaWorktree[],
@@ -462,7 +460,7 @@ export function resolveActiveTerminal(
   const activeWtId = activeWt?.worktreeId;
   if (!activeWtId) return undefined;
 
-  // 1. visualLayouts가 있으면 해당 워크트리의 모든 활성 탭/터미널을 찾는다
+  // 1. If visualLayouts exist, find all active panes in that worktree
   if (visualLayouts && visualLayouts.length > 0) {
     const vl = visualLayouts.find((v: any) => v.worktreeId === activeWtId);
     if (vl?.root) {
@@ -481,7 +479,7 @@ export function resolveActiveTerminal(
           }
         }
       }
-      // 현재 선택된 타깃이 레이아웃의 활성 탭들 중 하나라면 유지
+      // If currently selected target is one of the active tabs, preserve it
       if (currentTargetHandle && activeHandles.includes(currentTargetHandle)) {
         return currentTargetHandle;
       }
@@ -491,14 +489,14 @@ export function resolveActiveTerminal(
     }
   }
 
-  // 2. visualLayouts가 없거나 판별 불가인 경우:
-  // 현재 타깃이 이미 활성 워크트리에 속해 있다면 유지 (불필요하게 1번째 세션으로 튕기지 않음)
+  // 2. If visualLayouts unavailable or indeterminate:
+  // If current target belongs to active worktree, preserve it
   const termsInWt = terminals.filter((t) => t.worktreeId === activeWtId);
   if (currentTargetHandle && termsInWt.some((t) => t.handle === currentTargetHandle)) {
     return currentTargetHandle;
   }
 
-  // 3. 현재 타깃이 다른 워크트리에 있는 경우에만 최신 출력 또는 첫 번째 터미널 선택
+  // 3. Fallback to latest output terminal or first terminal in worktree
   const sorted = termsInWt.slice().sort((a, b) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0));
   return sorted[0]?.handle;
 }

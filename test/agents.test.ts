@@ -27,6 +27,12 @@ import {
   readClaudeModelEffortsCache,
   readClaudeState,
   CLAUDE_DEFAULT_MODELS,
+  CLAUDE_MODES,
+  CLAUDE_BYPASS_MODES,
+  isClaudeBypassEnabled,
+  normalizeClaudeMode,
+  getClaudeShiftTabSteps,
+  parseClaudeModeFromText,
   parseAgyModels,
   parseAgyAgents,
   parseAgySettings,
@@ -36,6 +42,7 @@ import {
   parseAgyLogModel,
   parseAgyLogEffort,
   parseAgyLogMode,
+  parseAgyModeFromText,
   readAgyState,
   extractEffortFromModel,
   AGY_MODES,
@@ -131,7 +138,7 @@ describe("supported — 에이전트별 기능 게이팅", () => {
 });
 
 describe("stepsFor — 적용 명령 시퀀스", () => {
-  it("claude: 슬래시 명령(/model <m>, /effort <e>, /mode <m>)", () => {
+  it("claude: 슬래시 명령(/model <m>, /effort <e>) 및 Shift+Tab 모드 순환", () => {
     const a = agentFor("claude");
     expect(stepsFor(a, "model", "claude-sonnet-5")).toEqual([
       { text: "/model claude-sonnet-5", enter: true, delayMs: 120 },
@@ -139,8 +146,32 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
     expect(stepsFor(a, "effort", "high")).toEqual([
       { text: "/effort high", enter: true, delayMs: 120 },
     ]);
-    expect(stepsFor(a, "mode", "plan")).toEqual([
-      { text: "/mode plan", enter: true, delayMs: 120 },
+    // default -> accept-edits (1 step)
+    expect(stepsFor(a, "mode", "accept-edits", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // default -> plan (2 steps)
+    expect(stepsFor(a, "mode", "plan", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
+      { text: "\x1b[Z", enter: false, delayMs: 120 },
+    ]);
+    // default -> auto (3 steps)
+    expect(stepsFor(a, "mode", "auto", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
+      { text: "\x1b[Z", enter: false, delayMs: 120 },
+      { text: "\x1b[Z", enter: false, delayMs: 120 },
+    ]);
+    // accept-edits -> plan (1 step)
+    expect(stepsFor(a, "mode", "plan", "accept-edits")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // plan -> auto (1 step)
+    expect(stepsFor(a, "mode", "auto", "plan")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // auto -> default (1 step)
+    expect(stepsFor(a, "mode", "default", "auto")).toEqual([
+      { text: "\x1b[Z", enter: false },
     ]);
   });
   it("codex: 슬래시 명령(/model <m>, /effort <e>, /permissions <m>)", () => {
@@ -185,7 +216,7 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
       { text: "plan", enter: true },
     ]);
   });
-  it("agy: 슬래시 명령(/model <m>, /effort <e>) 및 Shift-Tab 모드 전환(default -> plan -> accept-edits)", () => {
+  it("agy: 슬래시 명령(/model <m>, /effort <e>) 및 Shift-Tab 모드 전환(default -> accept-edits -> plan)", () => {
     const a = agentFor("agy");
     expect(stepsFor(a, "model", "gemini-3.8-flash-medium")).toEqual([
       { text: "/model gemini-3.8-flash-medium", enter: true, delayMs: 120 },
@@ -193,17 +224,21 @@ describe("stepsFor — 적용 명령 시퀀스", () => {
     expect(stepsFor(a, "effort", "high")).toEqual([
       { text: "/effort high", enter: true, delayMs: 120 },
     ]);
-    // default -> plan: 1x Shift-Tab
-    expect(stepsFor(a, "mode", "plan", "default")).toEqual([
+    // default -> accept-edits: 1x Shift-Tab
+    expect(stepsFor(a, "mode", "accept-edits", "default")).toEqual([
       { text: "\x1b[Z", enter: false },
     ]);
-    // default -> accept-edits: 2x Shift-Tab
-    expect(stepsFor(a, "mode", "accept-edits", "default")).toEqual([
+    // default -> plan: 2x Shift-Tab
+    expect(stepsFor(a, "mode", "plan", "default")).toEqual([
       { text: "\x1b[Z", enter: false },
       { text: "\x1b[Z", enter: false, delayMs: 120 },
     ]);
-    // accept-edits -> default: 1x Shift-Tab
-    expect(stepsFor(a, "mode", "default", "accept-edits")).toEqual([
+    // accept-edits -> plan: 1x Shift-Tab
+    expect(stepsFor(a, "mode", "plan", "accept-edits")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // plan -> default: 1x Shift-Tab
+    expect(stepsFor(a, "mode", "default", "plan")).toEqual([
       { text: "\x1b[Z", enter: false },
     ]);
     // 동일 모드: 변경 없음
@@ -459,7 +494,116 @@ describe("Claude 파서 및 모델/상태 리더", () => {
     expect(models.length).toBeGreaterThan(0);
     expect(a.getEfforts("claude-opus-5")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(a.getEfforts("claude-haiku-4-5-20251001")).toEqual([]);
-    expect(a.getModes()).toEqual(["default", "plan", "accept-edits"]);
+    expect(a.getModes()).toEqual(["default", "accept-edits", "plan", "auto"]);
+  });
+
+  it("normalizeClaudeMode: 별칭 정규화", () => {
+    expect(normalizeClaudeMode("manual")).toBe("default");
+    expect(normalizeClaudeMode("default")).toBe("default");
+    expect(normalizeClaudeMode("accept-edits")).toBe("accept-edits");
+    expect(normalizeClaudeMode("acceptedits")).toBe("accept-edits");
+    expect(normalizeClaudeMode("accept_edits")).toBe("accept-edits");
+    expect(normalizeClaudeMode("plan")).toBe("plan");
+    expect(normalizeClaudeMode("plan-mode")).toBe("plan");
+    expect(normalizeClaudeMode("auto")).toBe("auto");
+    expect(normalizeClaudeMode("bypass-permissions")).toBe("bypassPermissions");
+  });
+
+  it("getClaudeShiftTabSteps: 정확한 Shift+Tab 횟수 계산 (4개 모드)", () => {
+    // default -> accept-edits: 1회
+    expect(getClaudeShiftTabSteps("accept-edits", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // default -> plan: 2회
+    expect(getClaudeShiftTabSteps("plan", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
+      { text: "\x1b[Z", enter: false, delayMs: 120 },
+    ]);
+    // default -> auto: 3회
+    expect(getClaudeShiftTabSteps("auto", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
+      { text: "\x1b[Z", enter: false, delayMs: 120 },
+      { text: "\x1b[Z", enter: false, delayMs: 120 },
+    ]);
+    // accept-edits -> plan: 1회
+    expect(getClaudeShiftTabSteps("plan", "accept-edits")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // plan -> auto: 1회
+    expect(getClaudeShiftTabSteps("auto", "plan")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // auto -> default: 1회
+    expect(getClaudeShiftTabSteps("default", "auto")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // 동일 모드: 0회
+    expect(getClaudeShiftTabSteps("default", "default")).toEqual([]);
+    expect(getClaudeShiftTabSteps("plan", "plan")).toEqual([]);
+    expect(getClaudeShiftTabSteps("auto", "auto")).toEqual([]);
+  });
+
+  it("parseClaudeModeFromText: 실시간 터미널 출력/미리보기에서 현재 모드 감지 (bypassPermissions 포함)", () => {
+    expect(parseClaudeModeFromText("⏵⏵ auto mode on (shift+tab to cycle) · ← for agents")).toBe("auto");
+    expect(parseClaudeModeFromText("⏸ plan mode on (shift+tab to cycle) · ← for agents")).toBe("plan");
+    expect(parseClaudeModeFromText("⏵⏵ accept edits on (shift+tab to cycle) · ← for agents")).toBe("accept-edits");
+    expect(parseClaudeModeFromText("⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents")).toBe("bypassPermissions");
+    expect(parseClaudeModeFromText("⏸ manual mode on · ← for agents")).toBe("default");
+    expect(parseClaudeModeFromText("[auto mode on]")).toBe("auto");
+    expect(parseClaudeModeFromText("[plan mode on]")).toBe("plan");
+    expect(parseClaudeModeFromText("[accept edits on]")).toBe("accept-edits");
+    expect(parseClaudeModeFromText("[bypass permissions on]")).toBe("bypassPermissions");
+    expect(parseClaudeModeFromText("[manual mode on]")).toBe("default");
+    expect(parseClaudeModeFromText("\x1b[33m⏵⏵ auto mode on (shift+tab to cycle)\x1b[0m")).toBe("auto");
+    expect(parseClaudeModeFromText("")).toBeUndefined();
+    expect(parseClaudeModeFromText("just some text with no mode")).toBeUndefined();
+  });
+
+  it("isClaudeBypassEnabled: dangerously-skip-permissions 또는 bypass permissions 감지", () => {
+    expect(isClaudeBypassEnabled({ preview: "claude '--dangerously-skip-permissions'" })).toBe(true);
+    expect(isClaudeBypassEnabled({ preview: "⏵⏵ bypass permissions on" })).toBe(true);
+    expect(isClaudeBypassEnabled({ preview: "claude" })).toBe(false);
+    expect(isClaudeBypassEnabled(undefined)).toBe(false);
+  });
+
+  it("getClaudeShiftTabSteps: bypassPermissions 활성화 시 5개 모드 순환 계산", () => {
+    const bypassList = [...CLAUDE_BYPASS_MODES]; // ["default", "accept-edits", "plan", "bypassPermissions", "auto"]
+    // plan -> auto: 2회 (bypassPermissions 거침)
+    expect(getClaudeShiftTabSteps("auto", "plan", bypassList)).toEqual([
+      { text: "\x1b[Z", enter: false },
+      { text: "\x1b[Z", enter: false, delayMs: 120 },
+    ]);
+    // plan -> bypassPermissions: 1회
+    expect(getClaudeShiftTabSteps("bypassPermissions", "plan", bypassList)).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // bypassPermissions -> auto: 1회
+    expect(getClaudeShiftTabSteps("auto", "bypassPermissions", bypassList)).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // bypassPermissions -> default: 2회 (auto 거침)
+    expect(getClaudeShiftTabSteps("default", "bypassPermissions", bypassList)).toEqual([
+      { text: "\x1b[Z", enter: false },
+      { text: "\x1b[Z", enter: false, delayMs: 120 },
+    ]);
+  });
+
+  it("readClaudeState: ctx.preview가 있으면 실시간 TUI 모드가 최우선 반영됨", () => {
+    const st = readClaudeState({ preview: "⏸ plan mode on (shift+tab to cycle) · ← for agents" });
+    expect(st.mode).toBe("plan");
+
+    const stAuto = readClaudeState({ preview: "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents" });
+    expect(stAuto.mode).toBe("auto");
+
+    const stAccept = readClaudeState({ preview: "⏵⏵ accept edits on (shift+tab to cycle) · ← for agents" });
+    expect(stAccept.mode).toBe("accept-edits");
+
+    const stBypass = readClaudeState({ preview: "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents" });
+    expect(stBypass.mode).toBe("bypassPermissions");
+    expect(stBypass.modes).toEqual(["default", "accept-edits", "plan", "bypassPermissions", "auto"]);
+
+    const stManual = readClaudeState({ preview: "⏸ manual mode on · ← for agents" });
+    expect(stManual.mode).toBe("default");
   });
 
   it("readClaudeState: 로컬 상태 및 작업공간 상태 읽기", () => {
@@ -550,9 +694,32 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
     expect(normalizeAgyMode("acceptedits")).toBe("accept-edits");
   });
 
-  it("AgyAgent.getModes: default, plan, accept-edits 반환", () => {
-    expect(agentFor("agy").getModes()).toEqual(["default", "plan", "accept-edits"]);
-    expect(AGY_MODES).toEqual(["default", "plan", "accept-edits"]);
+  it("AgyAgent.getModes: default, accept-edits, plan 반환", () => {
+    expect(agentFor("agy").getModes()).toEqual(["default", "accept-edits", "plan"]);
+    expect(AGY_MODES).toEqual(["default", "accept-edits", "plan"]);
+  });
+
+  it("getAgyShiftTabSteps: 정확한 Shift+Tab 횟수 계산", () => {
+    // default -> accept-edits: 1회
+    expect(getAgyShiftTabSteps("accept-edits", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // default -> plan: 2회
+    expect(getAgyShiftTabSteps("plan", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
+      { text: "\x1b[Z", enter: false, delayMs: 120 },
+    ]);
+    // accept-edits -> plan: 1회
+    expect(getAgyShiftTabSteps("plan", "accept-edits")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // plan -> default: 1회
+    expect(getAgyShiftTabSteps("default", "plan")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    // 동일 모드: 0회
+    expect(getAgyShiftTabSteps("default", "default")).toEqual([]);
+    expect(getAgyShiftTabSteps("plan", "plan")).toEqual([]);
   });
 
   it("parseAgyHelpModes: agy --help 출력에서 모드 파싱", () => {
@@ -561,7 +728,7 @@ claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
   --mode                          Set the agent execution mode for this session (accept-edits, plan)
   --model                         Model for the current CLI session
 `;
-    expect(parseAgyHelpModes(helpText)).toEqual(["default", "plan", "accept-edits"]);
+    expect(parseAgyHelpModes(helpText)).toEqual(["default", "accept-edits", "plan"]);
     expect(parseAgyHelpModes("")).toEqual([]);
     expect(parseAgyHelpModes("no mode flag here")).toEqual([]);
   });
@@ -644,6 +811,24 @@ ERROR: logging before google.Init: I0908 00:00:46.631352       1 manager.go:1341
 
     expect(parseAgyLogMode("")).toBeUndefined();
     expect(parseAgyLogMode("random log content")).toBeUndefined();
+  });
+
+  it("parseAgyModeFromText: 실시간 터미널 출력/미리보기에서 현재 모드 감지", () => {
+    expect(parseAgyModeFromText("> Plan mode: research & plan only to-approved (shift+tab to cycle)")).toBe("plan");
+    expect(parseAgyModeFromText("> Auto-approve edits on (shift+tab to cycle)")).toBe("accept-edits");
+    expect(parseAgyModeFromText("> Default mode on (shift+tab to cycle)")).toBe("default");
+    expect(parseAgyModeFromText("> Manual mode on")).toBe("default");
+    expect(parseAgyModeFromText("\x1b[32m> Plan mode: active\x1b[0m")).toBe("plan");
+    expect(parseAgyModeFromText("")).toBeUndefined();
+    expect(parseAgyModeFromText("regular terminal output")).toBeUndefined();
+  });
+
+  it("readAgyState: ctx.preview가 있으면 실시간 TUI 모드가 최우선 반영됨", () => {
+    const st = readAgyState({ preview: "> Plan mode: research & plan only to-approved (shift+tab to cycle)" });
+    expect(st.mode).toBe("plan");
+
+    const stAccept = readAgyState({ preview: "> Auto-approve edits on (shift+tab to cycle)" });
+    expect(stAccept.mode).toBe("accept-edits");
   });
 
   it("readAgyState: 현재 실행 중인 agy 세션의 상태 읽기 (작업공간별 분리 검증)", () => {

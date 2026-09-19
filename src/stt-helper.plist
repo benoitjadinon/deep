@@ -7,8 +7,8 @@
   <key>CFBundleName</key>
   <string>AgentDeck STT</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>AgentDeck가 음성을 받아 대상 세션에 입력하기 위해 마이크를 사용합니다.</string>
+  <string>AgentDeck uses the microphone to capture voice input for agent sessions.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>AgentDeck가 말한 내용을 텍스트로 변환하기 위해 음성 인식을 사용합니다.</string>
+  <string>AgentDeck uses speech recognition to transcribe spoken input into text.</string>
 </dict>
 </plist>

@@ -1,6 +1,6 @@
-// AgentDeck Stream Deck 플러그인 진입점.
-// orca를 폴링해 8칸에 세션 상태를 그리고, keyDown/다이얼로 orca를 조작한다.
-// 다이얼은 위치(열)로 역할 결정: 0=모델 1=Effort 2=Talk 3=대상선택.
+// AgentDeck Stream Deck plugin entrypoint.
+// Polls Orca to render session states across 8 slots, and handles keyDown / dials to control Orca.
+// Dial roles determined by physical position (column): 0=Model 1=Effort 2=Talk 3=Target.
 import streamDeck, { action, SingletonAction } from "@elgato/streamdeck";
 import { execFile } from "node:child_process";
 import { writeFileSync, readFileSync, existsSync, unlinkSync, watch } from "node:fs";
@@ -35,39 +35,37 @@ import {
 } from "./agents";
 
 const execFileP = promisify(execFile);
-// 머신마다 설치 위치가 다르므로 공통 경로를 탐색(하드코딩 제거 = 다른 맥에서도 동작)
+// Search common paths across different machines (eliminating hardcoded paths)
 function firstExisting(candidates: string[], fallback: string): string {
   for (const p of candidates) if (existsSync(p)) return p;
   return fallback;
 }
 const ORCA = firstExisting(["/usr/local/bin/orca", "/opt/homebrew/bin/orca"], "orca");
-// opencode 전체 경로 — Orca의 opencode 런처가 못 쓰는 --permissions 인자를 주입하므로
-// 전체 경로로 직접 띄워 그 주입을 우회한다 (조건: bare `opencode`일 때만 Orca가 주입).
+// Full path to opencode — avoids injection of unsupported --permissions arguments from Orca's opencode launcher
 const OPENCODE_CMD = firstExisting([
   "/opt/homebrew/bin/opencode",
   "/usr/local/bin/opencode",
   "/opt/local/bin/opencode",
 ], "opencode");
-// Apple Speech STT 헬퍼 — plugin.js와 같은 bin/ 폴더에 동봉(상대 경로)
+// Apple Speech STT helper — bundled in the same bin/ directory alongside plugin.js
 const STT_APP = join(__dirname, "SttHelper.app");
 const STT_TXT = "/tmp/agentdeck-stt.txt";
 const STT_PID = "/tmp/agentdeck-stt.pid";
-const STT_PARTIAL = "/tmp/agentdeck-stt.partial"; // 실시간 부분 인식결과
-const STT_STATUS = "/tmp/agentdeck-stt.status"; // 실패 원인 코드
-// opencode가 마지막에 기록한 현재 선택 모델/변형(ef) — TUI에서 바꾸면 이 파일에 반영됨.
-// 최신 순(recent[0]) = 가장 최근 선택 모델. variant[모델ID] = 그 모델의 현재 effort.
+const STT_PARTIAL = "/tmp/agentdeck-stt.partial"; // Real-time partial recognition result
+const STT_STATUS = "/tmp/agentdeck-stt.status"; // Failure status code
+// Last selected model/variant recorded by opencode (reflects TUI changes)
 const OPENCODE_STATE = join(homedir(), ".local", "state", "opencode", "model.json");
-// opencode 현재 에이전트/모드 — TUI TOML(agent = "build" 등). 세션에서 바꾸면 갱신된다.
+// Current opencode agent/mode from TUI TOML (e.g. agent = "build")
 const OPENCODE_TUI = join(homedir(), ".local", "state", "opencode", "tui");
-// 실패 코드 → 다이얼에 띄울 한글 안내
+// Failure code -> dial guidance label
 const TALK_HINT: Record<string, string> = {
-  MIC_DENIED: "마이크 권한 켜기",
-  SPEECH_DENIED: "음성인식 권한 켜기",
-  DICTATION_OFF: "받아쓰기 켜기",
-  NO_RECOGNIZER: "STT 언어 없음",
-  MIC_ERR: "마이크 오류",
+  MIC_DENIED: "Enable Mic Perm",
+  SPEECH_DENIED: "Enable Speech Rec",
+  DICTATION_OFF: "Enable Dictation",
+  NO_RECOGNIZER: "No STT Locale",
+  MIC_ERR: "Mic Error",
 };
-const talkHint = (code: string) => TALK_HINT[code] ?? "STT 오류";
+const talkHint = (code: string) => TALK_HINT[code] ?? "STT Error";
 const EXEC = { maxBuffer: 64 * 1024 * 1024 } as const;
 
 async function orcaJson(args: string[]): Promise<any> {
@@ -178,7 +176,7 @@ async function hideOrca(): Promise<void> {
   } catch {}
 }
 
-// 이전에 보던 앱으로 OS 전환 (슈퍼탭: Cmd+Tab / Alt+Tab 토글 효과)
+// OS-level switch to previously focused app (Super-Tab: Cmd+Tab / Alt+Tab toggle effect)
 async function switchToPreviousApp(): Promise<void> {
   try {
     if (lastNonOrcaApp) {
@@ -196,8 +194,7 @@ async function switchToPreviousApp(): Promise<void> {
   }
 }
 
-// Orca가 백그라운드(다른 앱에 포커스)면 앞으로 가져온다 — 키 탭/대상 점프 시 창이 안 뜨는 문제 해결.
-// 이미 앞이면 no-op. `open -b <bundle>`은 실행중이면 activate, 아니면 실행.
+// Bring Orca forward if it's in the background (focused on another app)
 async function focusOrca(): Promise<void> {
   try {
     const frontApp = await getFrontmostApp();
@@ -210,15 +207,17 @@ async function focusOrca(): Promise<void> {
   }
 }
 
-// 수동 이동(다이얼 회전/키 탭) 시각 — 직후 poll 자동추적이 수동 선택을 덮어쓰지 않게 하는 유예용.
+// Timestamp of manual navigation (dial rotate / key tap) — prevents poll auto-tracking from overwriting manual selection immediately
 let lastNav = 0;
-// 대상 다이얼을 빠르게 돌릴 때 매 틱 orca switch를 쏘면 포커스가 밀림 → 마지막 선택으로 디바운스(180ms).
+// Debounce rapid target dial rotation (180ms)
 let targetSwitchTimer: ReturnType<typeof setTimeout> | null = null;
 function switchTargetSoon(handle: string): void {
   if (targetSwitchTimer) clearTimeout(targetSwitchTimer);
   targetSwitchTimer = setTimeout(() => {
     targetSwitchTimer = null;
-    orcaRun(["terminal", "switch", "--terminal", handle]).catch(() => {});
+    orcaRun(["terminal", "switch", "--terminal", handle]).then(() => {
+      pollDebounced(50);
+    }).catch(() => {});
   }, 180);
 }
 
@@ -226,34 +225,33 @@ let currentPage = 0;
 let deck: Deck = buildDeck({ terminals: [], worktrees: [] }, { page: 0, perPage: 8 });
 let tick = 0;
 
-// 다이얼 대상/설정 상태
-let targetHandle: string | undefined; // 다이얼이 작용할 세션(키 탭 or 4번 다이얼로 선택)
-let pendingEffort = ""; // 2번 다이얼로 '고른' effort(누르기 전엔 미적용) — 에이전트 프로파일에서 채움
-let pendingModel = ""; // 1번 다이얼로 '고른' 모델(누르기 전엔 미적용)
-let pendingMode = ""; // 모드 다이얼로 '고른' 모드(빌드/플랜 등, 누르기 전엔 미적용)
-const modelByHandle = new Map<string, string>(); // 세션별 마지막 '적용'된 모델
-const effortByHandle = new Map<string, string>(); // 세션별 마지막 '적용'된 effort
-const modeByHandle = new Map<string, string>(); // 세션별 마지막 '적용'된 모드
-// 세션별 '현재 선택' 모델/effort/모드 — 디스크(opencode model.json/tui)에서 정기 리드한 값(TUI 변경 추적용)
+// Dial target / configuration state
+let targetHandle: string | undefined; // Target session affected by dials (selected via key tap or dial 4)
+let pendingEffort = ""; // Selected effort on dial 2 before pushing
+let pendingModel = ""; // Selected model on dial 1 before pushing
+let pendingMode = ""; // Selected mode on mode dial before pushing
+const modelByHandle = new Map<string, string>(); // Last applied model per session
+const effortByHandle = new Map<string, string>(); // Last applied effort per session
+const modeByHandle = new Map<string, string>(); // Last applied mode per session
+// Currently active model/effort/mode per session read periodically from disk
 const currentModelByHandle = new Map<string, string>();
 const currentEffortByHandle = new Map<string, string>();
 const currentModeByHandle = new Map<string, string>();
-// 다이얼을 방금 돌려 '고른' 시각 — 이 구간엔 자동 동기화가 사용자 선택을 덮어쓰지 않도록 유예
+// Timestamp when dial was rotated — gives grace period so auto-poll doesn't overwrite user selection
 const pickAt = { model: 0, effort: 0, mode: 0 };
 const PICK_GRACE = 2500;
-// 에이전트 타입별 게이팅/발견 상태: agentType → 프로파일 · 발견된 라이브 목록
-const agentByHandle = new Map<string, string>(); // 세션 → agentType (orca worktree ps)
-const agentInstanceByHandle = new Map<string, AbstractAgent>(); // 세션 → 에이전트 인터페이스 구현체
-const modelsByHandle = new Map<string, string[]>(); // 세션 → 발견된 모델 목록(opencode 등)
-const modesByHandle = new Map<string, string[]>(); // 세션 → 발견된 모드/에이전트 목록(opencode hidden 제외)
-const effortsByHandle = new Map<string, string[]>(); // 세션 → 발견된 effort(변형) 목록(모델별)
-let allHandles: string[] = []; // 모든 세션(최근순) 핸들 — 8키 페이지와 무관, 사이드바 전체
-const sessionByHandle = new Map<string, any>(); // 핸들 → 버튼(라벨 조회용)
+// Gating / discovery state per agent: agentType -> profile / discovered live list
+const agentByHandle = new Map<string, string>(); // session -> agentType (orca worktree ps)
+const agentInstanceByHandle = new Map<string, AbstractAgent>(); // session -> abstract agent instance
+const modelsByHandle = new Map<string, string[]>(); // session -> discovered model list
+const modesByHandle = new Map<string, string[]>(); // session -> discovered mode list
+const effortsByHandle = new Map<string, string[]>(); // session -> discovered effort list
+let allHandles: string[] = []; // All session handles (sidebar total, independent of 8-slot page)
+const sessionByHandle = new Map<string, any>(); // handle -> button metadata
 
-// Push-to-talk 상태 — Apple Speech STT 헬퍼(.app) 사용.
-// 헬퍼는 서명된 앱이라 자체 마이크/음성인식 권한 보유 → Stream Deck 권한 문제/ffmpeg 노이즈 회피.
+// Push-to-talk state — uses Apple Speech STT helper (.app)
 let recording = false;
-let talkState = "hold"; // hold | ● REC | <실시간 텍스트> | mic err | STT err
+let talkState = "hold"; // hold | ● REC | <live text> | mic err | STT err
 let recPoll: ReturnType<typeof setInterval> | null = null;
 
 async function startRecording(): Promise<void> {
@@ -263,9 +261,9 @@ async function startRecording(): Promise<void> {
   renderAll();
   try {
     for (const f of [STT_TXT, STT_PID, STT_PARTIAL, STT_STATUS]) if (existsSync(f)) try { unlinkSync(f); } catch {}
-    // open으로 실행 = LaunchServices/TCC가 번들 권한으로 라이브 인식 시작
+    // Launch helper via open (starts live recognition with bundle permissions)
     await execFileP("/usr/bin/open", [STT_APP]);
-    // 말하는 동안 부분 인식결과를 다이얼에 실시간 표시 + 실패 원인 안내
+    // Show partial transcription in real-time on dial
     recPoll = setInterval(() => {
       try {
         if (existsSync(STT_STATUS)) {
@@ -295,10 +293,10 @@ async function stopAndSend(target?: string): Promise<void> {
   talkState = "processing";
   renderAll();
   try {
-    // 헬퍼 PID로 SIGINT → 인식 확정·결과 기록
+    // Send SIGINT to helper PID to finalize recognition
     const pid = existsSync(STT_PID) ? readFileSync(STT_PID, "utf8").trim() : "";
     if (pid) try { await execFileP("/bin/kill", ["-INT", pid]); } catch {}
-    // 결과 파일이 채워질 때까지 대기(최대 ~3s)
+    // Wait for output file to populate (up to ~3s)
     let txt = "";
     for (let i = 0; i < 15; i++) {
       await new Promise((r) => setTimeout(r, 200));
@@ -307,7 +305,7 @@ async function stopAndSend(target?: string): Promise<void> {
         if (txt) break;
       }
     }
-    // 인식이 비었고 실패 원인이 있으면 다이얼에 안내(받아쓰기/권한 등)
+    // If empty transcript and failure status exists, surface hint on dial
     if (!txt && existsSync(STT_STATUS)) {
       talkState = talkHint(readFileSync(STT_STATUS, "utf8").trim());
       renderAll();
@@ -334,17 +332,18 @@ async function stopAndSend(target?: string): Promise<void> {
   renderAll();
 }
 
-// 세션별 AgentContext 생성 (작업공간 경로, 워크트리 ID 등)
+// Create AgentContext for given handle (worktree path, worktree ID, preview, etc.)
 function contextForHandle(h: string): AgentContext {
   const b = sessionByHandle.get(h);
   return {
     handle: h,
     worktreePath: b?.worktreePath,
     worktreeId: b?.worktreeId,
+    preview: b?.preview,
   };
 }
 
-// 대상 변경 시 pending을 그 세션의 적용값/프로파일 목록으로 리셋
+// Reset pending values to session's applied/profile defaults when target changes
 function noteHandle(h: string): void {
   const b = sessionByHandle.get(h);
   if (b) {
@@ -356,7 +355,7 @@ function noteHandle(h: string): void {
   }
 }
 
-// 특정 세션의 실시간 상태(모델/effort/모드)를 에이전트 인터페이스(작업공간별 로그/설정)에서 읽기
+// Read real-time session state (model/effort/mode) via agent interface
 function refreshSessionState(h: string): boolean {
   if (!h) return false;
   noteHandle(h);
@@ -388,6 +387,9 @@ function refreshSessionState(h: string): boolean {
   if (state.mode) {
     currentModeByHandle.set(h, state.mode);
   }
+  if (state.modes && state.modes.length) {
+    modesByHandle.set(h, state.modes);
+  }
 
   if (state.recentModels || state.favoriteModels) {
     const list = modelsByHandle.get(h);
@@ -409,12 +411,13 @@ function setTarget(h?: string): void {
     refreshSessionState(h);
   }
   agentForHandle();
-  pickAt.model = 0; // 대상이 바뀌면 이전 유예 무효 → 새 세션의 실제 상태부터 채움
+  pickAt.model = 0; // Target change invalidates previous grace period
   pickAt.effort = 0;
   pickAt.mode = 0;
   applyPending();
+  renderDials();
 }
-// 게이트용: 대상 세션의 에이전트 인스턴스(모르는 에이전트 = 미지원)
+// For gating: abstract agent instance for target session
 function agentForHandle(): AbstractAgent {
   const t = ensureTarget();
   if (!t) return UNSUPPORTED_AGENT;
@@ -424,7 +427,7 @@ function agentForHandle(): AbstractAgent {
 function profileForHandle(): AgentProfile {
   return profileFor(agentForHandle().agentType);
 }
-// 대상 세션이 다이얼에 쓸 모델/effort/모드 목록: 발견분 우선, 없으면 에이전트 인터페이스 목록
+// Model/effort/mode list for target session on dials (discovered live list preferred)
 function dialList(kind: ControlKind): string[] {
   const t = ensureTarget();
   if (!t) return [];
@@ -442,7 +445,7 @@ function dialList(kind: ControlKind): string[] {
   if (kind === "mode") {
     const live = modesByHandle.get(t);
     if (live && live.length) return live;
-    return agent.getModes();
+    return agent.getModes(contextForHandle(t));
   }
   return [];
 }
@@ -451,8 +454,7 @@ function applyPending(): void {
   adoptPending("effort");
   adoptPending("mode");
 }
-// 다이얼에 표시할 모델/effort/모드를 '현재 읽은 값' 우선으로 채운다.
-// 사용자가 방금(2.5s 내) 다이얼을 돌렸으면 그 선택을 존중해 건너뛴다.
+// Populate dial display with currently read value (unless user rotated dial within grace period)
 function adoptPending(role: ControlKind): void {
   const t = targetHandle;
   if (!t) return;
@@ -472,7 +474,7 @@ function adoptPending(role: ControlKind): void {
     pendingMode = current || applied || first;
   }
 }
-// 다이얼에 보여줄 값 — 미지원/빈 목록이면 안내 글자
+// Value to display on dial — "-" if unsupported, "…" if empty/loading
 function dialValue(role: string): string {
   const agent = agentForHandle();
   if (role === "model") {
@@ -490,7 +492,7 @@ function dialValue(role: string): string {
   if (role === "target") return targetLabel();
   return talkState;
 }
-// 터미널로 한 단계씩 명령 전송(픽커 다이얼로그 반응 대기 포함) — 게이트 후 호출
+// Send steps to terminal with delay support
 async function applyAgentSteps(handle: string, steps: ApplyStep[]): Promise<void> {
   for (const s of steps) {
     if (s.delayMs) await new Promise((r) => setTimeout(r, s.delayMs));
@@ -499,7 +501,7 @@ async function applyAgentSteps(handle: string, steps: ApplyStep[]): Promise<void
     await orcaRun(args);
   }
 }
-// 에이전트가 노출하는 모델 목록을 주기적(스로틀)으로 로드 — 지원하는 agent만.
+// Periodically load models exposed by agent (throttled) — supported agents only
 let lastDiscoverAt = 0;
 let discoverBusy = false;
 async function refreshDiscovery(): Promise<void> {
@@ -544,7 +546,7 @@ async function refreshDiscovery(): Promise<void> {
   }
 }
 
-// 모든 활성 세션의 현재 상태(모델/effort/모드)를 에이전트 인터페이스(작업공간별)에서 읽어 다이얼에 반영
+// Read current state (model/effort/mode) for all active sessions via agent interface
 function refreshCurrentState(): void {
   const t = ensureTarget();
   for (const h of allHandles) {
@@ -559,7 +561,7 @@ function refreshCurrentState(): void {
   adoptPending("mode");
 }
 
-// 대상 세션의 현재 모델에 대한 effort(변형) 목록을 주기적(스로틀)으로 로드
+// Periodically load effort variants for target session's current model (throttled)
 let lastEffortDiscoverAt = 0;
 let effortDiscoverBusy = false;
 async function refreshEfforts(): Promise<void> {
@@ -629,10 +631,10 @@ function renderAll(): void {
   renderDials();
 }
 
-// 키(세션판)만 다시 그린다. 데이터/대상 변경 시 호출, 다이얼 회전에는 부르지 않음.
+// Re-render session keys only. Called on data/target changes, not on dial rotation.
 function renderKeys(): void {
   const now = Date.now();
-  const boardAttn = anyAttention(); // 주의 키가 하나라도 있으면 나머지는 dim으로 죽여 대비 강조
+  const boardAttn = anyAttention(); // If any key requires attention, dim non-attention keys to emphasize contrast
   for (const [id, { action: a, coordinates }] of slotViews) {
     const b = deck.slots[slotIndex(coordinates)] ?? { empty: true as const };
     const isTarget = !b.empty && (b as any).handle === targetHandle;
@@ -644,14 +646,14 @@ function renderKeys(): void {
   }
 }
 
-// 다이얼만 다시 그린다 — 회전 tick마다 키를 다시 그릴 필요 없어 렌더 비용/랙 줄임.
+// Re-render dials only — avoids key re-rendering overhead on dial rotation ticks.
 function renderDials(): void {
   for (const { action: a, role } of dialViews.values()) {
     a.setFeedback(dialFeedback(role)).catch(() => {});
   }
 }
 
-// 화면에 보이는 키 중 주의 필요(펄스)한 게 하나라도 있나 — 펄스 루프 게이트(없으면 렌더 스킵).
+// Check if any visible key requires attention (pulse animation).
 function anyAttention(): boolean {
   for (const { coordinates } of slotViews.values()) {
     const b = deck.slots[slotIndex(coordinates)];
@@ -660,7 +662,7 @@ function anyAttention(): boolean {
   return false;
 }
 
-// orca agent-hooks의 최신 훅 상태(last-status.json)를 읽어 paneKey별 훅 정보 반환
+// Read latest hook states from Orca agent-hooks (last-status.json)
 function getHookEvents(): Map<string, { hookEventName?: string; agentType?: string; state?: string; receivedAt?: number }> {
   const map = new Map<string, { hookEventName?: string; agentType?: string; state?: string; receivedAt?: number }>();
   try {
@@ -724,7 +726,7 @@ async function poll(): Promise<void> {
         { page: currentPage, perPage: 8 },
       );
     }
-    // 전체 세션(사이드바 전부) 목록 유지 — 대상 다이얼이 8키 넘어서도 순회
+    // Full session list (sidebar total) — target dial can cycle past 8 keys
     const full = buildDeck(
       { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
       { page: 0, perPage: 9999 },
@@ -747,7 +749,7 @@ async function poll(): Promise<void> {
         }
       }
     }
-    // 닫힌 세션의 메모리 누수 방지: 더 이상 존재하지 않는 핸들 정리
+    // Prevent memory leaks for closed sessions
     for (const h of Array.from(agentByHandle.keys())) {
       if (!sessionByHandle.has(h)) {
         agentByHandle.delete(h);
@@ -763,7 +765,7 @@ async function poll(): Promise<void> {
         modeByHandle.delete(h);
       }
     }
-    // 현재 포커스(활성) 세션을 대상으로 자동 지정 → 말하면 지금 보는 세션으로 감
+    // Automatically set currently focused session as target
     const activeHandle = resolveActiveTerminal(
       wp.result?.worktrees ?? [],
       tl.result?.terminals ?? [],
@@ -777,9 +779,9 @@ async function poll(): Promise<void> {
         setTarget(activeHandle);
       }
     }
-    refreshDiscovery(); // 지원 에이전트의 모델 목록 주기 로드(스로틀)
-    refreshCurrentState(); // 지금 선택된 상태(모델/effort/모드)를 에이전트 인터페이스에서 추적해 다이얼에 반영(매 폴)
-    refreshEfforts(); // 현재 모델의 effort(변형) 목록을 주기 로드(스로틀)
+    refreshDiscovery(); // Periodically load model list for supported agents (throttled)
+    refreshCurrentState(); // Track active state (model/effort/mode) from agent interfaces (every poll)
+    refreshEfforts(); // Periodically load effort variants (throttled)
     renderAll();
     try {
       writeFileSync(
@@ -794,14 +796,14 @@ async function poll(): Promise<void> {
   }
 }
 
-// 빈 슬롯 탭 → 현재 대상 세션의 프로젝트(repo)에 새 워크트리를 만들고
-// 대상 세션과 같은 에이전트(agentType)를 첫 터미널에 띄운 뒤 그 세션으로 전환한다.
+// Empty slot tap -> create new worktree in target session's project (repo)
+// and launch identical agent (agentType) in first terminal, then switch to it.
 async function spawnSession(ev: any): Promise<void> {
   const t = ensureTarget();
   const b = t ? sessionByHandle.get(t) : undefined;
   const wtId = b ? (b as any).worktreeId : undefined;
   if (!b || !wtId) {
-    streamDeck.logger.info("spawn: 대상 워크트리를 알 수 없음(프로젝트 없음) — 생성 불가");
+    streamDeck.logger.info("spawn: unknown target worktree (no project) — cannot spawn");
     ev.action.showAlert?.();
     return;
   }
@@ -809,20 +811,17 @@ async function spawnSession(ev: any): Promise<void> {
   const repo = (b as any).repo || repoId;
   const agent = agentByHandle.get(t!) || "";
   if (!agent) {
-    streamDeck.logger.info("spawn: 대상 에이전트를 알 수 없음 — 생성 불가");
+    streamDeck.logger.info("spawn: unknown target agent — cannot spawn");
     ev.action.showAlert?.();
     return;
   }
   try {
-    // 같은 repo의 기존 워크트리 이름에서 다음 번호를 정한다(이름 = 브랜치/표시명).
+    // Determine next index from existing worktrees in same repo
     const list = await orcaJson(["worktree", "list"]);
     const same = (list?.result?.worktrees ?? []).filter((w: any) => w.repoId === repoId);
     const name = nextWorktreeName(repo, same.map((w: any) => w.displayName || ""));
     const createArgs: string[] = ["worktree", "create", "--repo", `id:${repoId}`, "--name", name];
-    // opencode는 Orca의 agent 런처가 못 쓰는 `--permissions=...` 인자를 주입해
-    // (opencode 1.18엔 없는 플래그라 도움말이 뜨고 TUI가 안 뜬다) 우회:
-    // 작업트리를 먼저 만든 뒤, 전체 경로로 직접 opencode를 띄운다. 그러면 주입이 안 되고,
-    // 터미널 agentIdentity는 여전히 opencode로 잡혀 데크/다이얼 게이팅이 그대로 동작한다.
+    // Work around Orca injecting unsupported --permissions argument for opencode
     const isOpenCode = agent === "opencode";
     if (!isOpenCode) createArgs.push("--agent", agent);
     const res = await orcaJson(createArgs);
@@ -834,7 +833,7 @@ async function spawnSession(ev: any): Promise<void> {
         const created = await orcaJson(["terminal", "create", "--worktree", createdWt, "--command", OPENCODE_CMD, "--focus"]);
         handle = created?.result?.terminal?.handle ?? created?.result?.handle?.handle;
       }
-      // fallback: 활성 워크트리에 아직 에이전트가 안 떠 있으면 그걸 대상으로
+      // fallback: if agent terminal not found yet, find terminal in created worktree
       if (!handle) {
         const terms = await orcaJson(["terminal", "list"]);
         const wtTerm = (terms?.result?.terminals ?? []).find((x: any) => x.worktreeId === createdWt || (x.worktreePath ?? "").includes(name));
@@ -894,31 +893,32 @@ class SlotAction extends SingletonAction {
         lastNonOrcaApp = frontApp;
       }
 
-      // 이미 Orca가 포커스되어 있고, 탭한 세션이 이미 활성 세션(targetHandle)인 경우:
-      // 이전 앱으로 OS 슈퍼탭(Cmd+Tab / Alt+Tab) 토글 전환
+      // If Orca is already focused and tapped slot is the active session (targetHandle):
+      // Super-Tab (Cmd+Tab / Alt+Tab) toggle back to previous app
       if (isOrcaFront && targetHandle === b.handle) {
         await switchToPreviousApp();
         return;
       }
 
-      setTarget(b.handle); // 탭한 세션을 다이얼 대상으로(pending 모델도 그 세션값으로)
-      lastNav = Date.now(); // 방금 수동 이동 → poll 자동추적 잠깐 억제
+      setTarget(b.handle);
+      lastNav = Date.now();
       try {
         await orcaRun(["terminal", "switch", "--terminal", b.handle]);
-        await focusOrca(); // Orca가 백그라운드면 앞으로 + 그 세션으로 이동
+        await focusOrca();
       } catch (e) {
         streamDeck.logger.error(`switch failed: ${e}`);
         ev.action.showAlert?.();
       }
       renderAll();
+      pollDebounced(50);
     } else {
-      // 빈 슬롯 탭 = 대상 프로젝트에 새 워크트리 + 에이전트 생성
+      // Empty slot tap -> spawn new session
       await spawnSession(ev);
     }
   }
 }
 
-// 다이얼 공통 로직 — 역할(role)은 서브클래스가 고정
+// Dial base logic — role fixed by subclass
 class DialBase extends SingletonAction {
   role = "model";
   override onWillAppear(ev: any): void {
@@ -934,7 +934,7 @@ class DialBase extends SingletonAction {
     if (!dir) return;
     const t = ensureTarget();
     if (this.role === "model" || this.role === "effort" || this.role === "mode") {
-      // 게이트: 미지원 에이전트/빈 목록이면 회전 no-op + 빨간 불
+      // Gate: unsupported agent / empty list -> alert
       const agent = agentForHandle();
       const kind = this.role as ControlKind;
       if (!t || !agent.supports(kind)) {
@@ -943,7 +943,7 @@ class DialBase extends SingletonAction {
       }
       const list = dialList(kind);
       if (!list.length) {
-        ev.action.showAlert?.(); // 아직 로드 전(발견 대기)
+        ev.action.showAlert?.();
         return;
       }
       const cur = this.role === "model" ? pendingModel : this.role === "effort" ? pendingEffort : pendingMode;
@@ -953,11 +953,10 @@ class DialBase extends SingletonAction {
       if (this.role === "model") pendingModel = next;
       else if (this.role === "effort") pendingEffort = next;
       else pendingMode = next;
-      pickAt[kind] = Date.now(); // 자동 동기화가 이 선택을 덮지 않게 유예 시작
-      // 모델/effort/모드 회전은 키를 안 건드림 — 다이얼만 즉시 갱신 (렌더 비용/랙 없이 즉시 반영)
+      pickAt[kind] = Date.now();
       renderDials();
     } else if (this.role === "target") {
-      // 모든 세션 순회. 데크 코랄 점은 즉시 이동(setTarget+renderAll), 실제 Orca 전환은 디바운스(밀림 방지).
+      // Cycle all sessions. Move target immediately on deck; debounce terminal switch.
       if (allHandles.length) {
         const cur = allHandles.indexOf(t ?? allHandles[0]);
         const next = allHandles[(cur + dir + allHandles.length) % allHandles.length];
@@ -965,10 +964,8 @@ class DialBase extends SingletonAction {
         setTarget(next);
         switchTargetSoon(next);
       }
-      // 대상이 바뀌면 키의 코랄 점도 따라가야 하니 키까지
       renderAll();
     } else {
-      // model/effort 회전은 키를 안 건드림 — 다이얼만 갱신 (렌더 비용/랙 방지)
       renderDials();
     }
   }
@@ -1013,7 +1010,8 @@ class DialBase extends SingletonAction {
           currentModeByHandle.set(t, value);
         }
         try {
-          await applyAgentSteps(t, agent.getApplySteps(kind, value, prevValue));
+          const modeList = this.role === "mode" ? dialList("mode") : undefined;
+          await applyAgentSteps(t, agent.getApplySteps(kind, value, prevValue, modeList));
           refreshCurrentState();
         } catch (e) {
           streamDeck.logger.error(`apply ${kind}: ${e}`);
@@ -1023,10 +1021,10 @@ class DialBase extends SingletonAction {
     } else if (this.role === "target" && t) {
       lastNav = Date.now();
       await orcaRun(["terminal", "switch", "--terminal", t]).catch(() => {});
-      await focusOrca(); // 대상 다이얼 눌러 점프 시 Orca 앞으로
+      await focusOrca();
+      pollDebounced(50);
     } else if (this.role === "talk") {
-      // 토글: 누르면 녹음 시작, 다시 누르면 정지·변환·전송
-      // (hold 아님 — 녹음 시작 지연 때문에 짧게 누르면 거의 안 잡힘)
+      // Toggle: push starts recording, push again stops, transcribes, and sends
       if (recording) await stopAndSend(ensureTarget());
       else await startRecording();
     }
@@ -1061,7 +1059,7 @@ streamDeck.actions.registerAction(new EffortDial());
 streamDeck.actions.registerAction(new ModeDial());
 streamDeck.actions.registerAction(new TalkDial());
 streamDeck.actions.registerAction(new TargetDial());
-// 시스템 및 디바이스 이벤트: 잠자기 해제, 기기 연결 시 즉시 폴링 및 렌더
+// System & device events: immediate poll and render on system wake-up / device connect
 streamDeck.system.onSystemDidWakeUp(() => {
   streamDeck.logger.info("system did wake up: triggering immediate poll");
   lastHeartbeat = Date.now();
@@ -1079,8 +1077,7 @@ streamDeck.devices.onDeviceDidChange(() => {
   renderAll();
 });
 
-// 잠자기/프로세스 일시중지 감지용 하트비트 워치독
-// Mac이 잠자기에 들어가면 setInterval 타이머가 멈추므로, 깨어났을 때 갭(>2.5초)을 즉시 감지해 poll 실행
+// Watchdog heartbeat for sleep/process pause detection
 let lastHeartbeat = Date.now();
 setInterval(() => {
   const now = Date.now();
@@ -1091,7 +1088,7 @@ setInterval(() => {
   lastHeartbeat = now;
 }, 1000);
 
-// orca 훅 파일 및 각 에이전트(opencode/claude/codex/agy 등) 상태 파일 변경 감시 (디스크 상태 변경 시 <50ms 이내 즉각 반영)
+// File watchers for Orca hooks and agent state files (<50ms fast reactive update)
 function setupFileWatchers(): void {
   const dirsToWatch = [
     join(homedir(), "Library/Application Support/orca/agent-hooks"),
@@ -1118,13 +1115,13 @@ setupFileWatchers();
 
 streamDeck.connect();
 
-setInterval(poll, 1500);
-// 마퀴/펄스 중인 키만 매 tick 다시 그린다(나머지는 캐시로 건너뜀). 둘 다 없으면 스킵.
+setInterval(poll, 1000);
+// Marquee tick interval (450ms)
 setInterval(() => {
   tick++;
   if (anyAttention() || anyMarquee()) renderKeys();
 }, 450);
-// 주의 필요 키를 부드럽게 펄스(≈6fps, Elgato ≤10/s 준수). 주의 상태 해제 시 즉시 1회 정적 리셋.
+// Smooth pulse loop for keys requiring attention (160ms ≈ 6fps)
 let wasAttention = false;
 setInterval(() => {
   const attn = anyAttention();
@@ -1138,7 +1135,7 @@ setInterval(() => {
 }, 160);
 poll();
 
-// 화면에 보이는 세션 키 중 마퀴(긴 제목/값)로 매 tick 다시 그려야 할 게 하나라도 있나.
+// Check if any visible session key has long titles requiring marquee animation
 function anyMarquee(): boolean {
   for (const { coordinates } of slotViews.values()) {
     const b = deck.slots[slotIndex(coordinates)];

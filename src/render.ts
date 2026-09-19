@@ -1,4 +1,4 @@
-// 버튼 모델 → Stream Deck 키에 그릴 SVG. 순수 함수(테스트 가능).
+// Button model -> SVG rendered to Stream Deck keys. Pure functions (testable).
 import { needsAttention, type Button, type Deck } from "./deck";
 
 const HEX: Record<string, string> = {
@@ -8,11 +8,11 @@ const HEX: Record<string, string> = {
 const esc = (s: string) =>
   (s ?? "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c] as string));
 
-// 앞쪽 스피너/브라유 글리프 제거(한글은 보존)
+// Strip leading spinner / Braille glyphs
 export const stripSpinner = (s: string) =>
   (s ?? "").replace(/^[\s⠀-⣿✨✳✻⏺※*•…]+/u, "").trim();
 
-// 한글은 폭이 넓어 줄당 글자수를 작게. maxLines 넘으면 마지막에 …
+// Wrap text with perLine limit; appends ellipsis if exceeds maxLines
 export function wrap(s: string, perLine = 6, maxLines = 3): string[] {
   const chars = [...s];
   const lines: string[] = [];
@@ -25,19 +25,19 @@ export function wrap(s: string, perLine = 6, maxLines = 3): string[] {
   return lines;
 }
 
-// 긴 문자열을 win 글자 창으로 잘라 tick마다 한 칸씩 흘린다(마퀴). 짧으면 그대로.
+// Truncate and scroll long strings in a fixed character window (marquee)
 export function marqueeWindow(s: string, win: number, tick: number): string {
   const chars = [...s];
   if (chars.length <= win) return s;
-  const loop = [...`${s}   ·   `]; // 끝-처음이 자연스레 이어지도록 구분자 삽입
+  const loop = [...`${s}   ·   `]; // Separator for seamless looping
   const start = ((tick % loop.length) + loop.length) % loop.length;
   const out: string[] = [];
   for (let i = 0; i < win; i++) out.push(loop[(start + i) % loop.length]);
   return out.join("");
 }
 
-// 에이전트 아이콘 정의 — Orca UI 번들(agent-catalog, icons)에서 직접 추출.
-// Claude, OpenCode, Codex는 순수 벡터 SVG 패스, Antigravity는 64x64 PNG 데이터 URI.
+// Agent icon definitions extracted directly from Orca UI bundle (agent-catalog, icons).
+// Claude, OpenCode, Codex are pure vector SVG paths; Antigravity is 64x64 PNG data URI.
 const CLAUDE_SVG_PATH =
   "M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z";
 
@@ -50,7 +50,7 @@ const ANTIGRAVITY_PNG_DATA =
 const HERMES_SVG_PATH =
   "M12 2a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm1 4.1a5.002 5.002 0 00-2 0V7c-1.54-.48-2.78-1.58-3.34-3.03a1 1 0 00-1.87.71C6.67 6.94 8.7 8.5 11 8.9V11c-2.3-.4-4.33-1.96-5.21-4.22a1 1 0 00-1.87.71C4.8 10.3 7.6 12.3 11 12.9V15c-2.3-.4-4.33-1.96-5.21-4.22a1 1 0 00-1.87.71C4.8 14.3 7.6 16.3 11 16.9V21a1 1 0 102 0v-4.1c3.4-.6 6.2-2.6 7.08-5.41a1 1 0 00-1.87-.71C17.33 13.04 15.3 14.6 13 15v-2.1c3.4-.6 6.2-2.6 7.08-5.41a1 1 0 00-1.87-.71C17.33 9.04 15.3 10.6 13 11V8.9c2.3-.4 4.33-1.96 5.21-4.22a1 1 0 00-1.87-.71C15.42 5.76 13.97 6.7 13 7.08V6.1z";
 
-// 에이전트 뱃지: 지원 에이전트는 Orca의 원본 로고 아이콘, 모르는 에이전트는 2글자 텍스트 알약 폴백.
+// Agent badge: Supported agents show original Orca logo icon; unknown agents show 2-character pill fallback.
 export function agentBadge(agentType?: string | null): string {
   const a = (agentType || "").toLowerCase();
   const boxX = 108;
@@ -84,12 +84,12 @@ export function agentBadge(agentType?: string | null): string {
     return `${bg}<g transform="translate(${ix}, ${iy}) scale(${s})"><path fill-rule="evenodd" clip-rule="evenodd" d="${HERMES_SVG_PATH}" fill="#10B981"/></g>`;
   }
 
-  // 폴백: 미지원 또는 미확인 에이전트는 2글자 텍스트 알약
+  // Fallback: 2-character pill for unsupported or unknown agents
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
   return `<rect x="104" y="118" width="32" height="18" rx="9" fill="#4b5563"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
 }
 
-// 단어/공백 경계 우선으로 maxCharsPerLine 글자씩 maxLines 줄로 자르고 넘치면 …
+// Wrap text based on word boundaries with maxCharsPerLine and maxLines
 export function wrapWords(s: string, maxCharsPerLine = 15, maxLines = 2): string[] {
   const cleaned = stripSpinner(s).trim();
   if (!cleaned) return [];
@@ -135,8 +135,8 @@ export function wrapWords(s: string, maxCharsPerLine = 15, maxLines = 2): string
   return lines;
 }
 
-// 에이전트 세션 상태 아이콘 (Orca UI의 상태 뱃지 대응, 좌측 하단 배치)
-// done = 녹색 체크마크, unverifiable = 주황색 점선 원("No recent update"), working = 파란 스피너 링, waiting = 앰버 물음표, error = 빨간 느낌표
+// Agent session state icon matching Orca UI badges (placed bottom-left)
+// done = green checkmark circle, unverifiable = orange dashed circle, working = blue spinner ring, waiting = amber question, error = red exclamation
 export function stateIcon(state?: string): string {
   const s = (state || "").toLowerCase();
   const x = 12;
@@ -159,7 +159,7 @@ export function stateIcon(state?: string): string {
   return "";
 }
 
-// 대략적 글자 폭(단위). ASCII는 좁게, 한글/CJK는 넓게 잡아 자동 크기 계산에 사용.
+// Approximate character width units used for automatic font size calculation
 function units(s: string): number {
   let u = 0;
   for (const ch of s) u += /[\x00-\x7F]/.test(ch) ? 0.56 : 1;
@@ -167,10 +167,10 @@ function units(s: string): number {
 }
 
 /**
- * 프로젝트 배경 워터마크 아이콘 (144x144 타일 전체 채움/크롭, 투명도 0.25)
- * - GitHub 아바타 / 로컬 icon.png (Data URI, preserveAspectRatio="xMidYMid slice")
- * - Lucide 벡터 아이콘 (Rocket, Folder 등, viewBox 24x24 -> scale(6))
- * - 이모지 (대형 텍스트)
+ * Project background watermark icon (144x144 tile full fill/crop, opacity 0.25)
+ * - GitHub avatar / local icon.png (Data URI, preserveAspectRatio="xMidYMid slice")
+ * - Lucide vector icon (Rocket, Folder, etc., viewBox 24x24 -> scale(6))
+ * - Emoji (large text)
  */
 export function renderBgIcon(b: Button): string {
   if (b.empty) return "";
@@ -195,28 +195,27 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
   if (b.empty) {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144"><rect width="144" height="144" rx="18" fill="#141416"/><circle cx="72" cy="72" r="7" fill="#3a3a3e"/></svg>`;
   }
-  // 대상 세션이면 흰색 테두리(대상 다이얼 돌릴 때 이 링이 옮겨감). 상태색과 안 겹치게 흰색.
   const color = HEX[b.color] ?? HEX.white;
 
-  // 1. 프로젝트명 (상단, 항상 흰색)
+  // 1. Project name (top, white)
   const proj = b.repo || (b.worktreePath ? b.worktreePath.split("/").filter(Boolean).pop() : "") || "?";
   const num = b.dupIndex && b.dupIndex > 0 ? `-${b.dupIndex}` : "";
   const sub = b.branch ? `${b.branch}${num}` : num ? `#${b.dupIndex}` : "";
 
-  // 좌우 패딩(안쪽 여백) — 텍스트가 버튼 가장자리에 안 붙게 폭을 좁혀 맞춤
+  // Fit text within available width
   const fit = 116 / units(proj);
   const projSvg =
     fit >= 15
       ? `<text x="72" y="41" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="${Math.min(21, Math.floor(fit))}" font-weight="700">${esc(proj)}</text>`
       : `<text x="72" y="41" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="15" font-weight="700">${esc(marqueeWindow(proj, 10, tick))}</text>`;
 
-  // 2. 브랜치명 (프로젝트명 바로 아래)
+  // 2. Branch name (below project name)
   let subSvg = "";
   if (sub) {
     subSvg = `<text x="72" y="58" text-anchor="middle" fill="#a1a1aa" font-family="sans-serif" font-size="15" font-weight="600">${esc(sub)}</text>`;
   }
 
-  // 3. 탭 제목 (브랜치 아래, 2줄 요약 렌더, 말줄임)
+  // 3. Tab title (2-line summary below branch)
   const titleText = (b as any).tabTitle || b.label || "";
   const rawTitle = titleText !== proj ? titleText : "";
   const titleLines = wrapWords(rawTitle, 15, 2);
@@ -228,21 +227,20 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
       .join("");
   }
 
-  // 주의 필요(입력대기·완료미확인·에러) 키는 배경이 상태색으로 숨쉬듯 글로우 펄스 → 확 띔.
-  // 긴급(대기·에러)=강하고 빠르게, 완료=은은하게. 피크에서도 틴트라 흰 글자 가독성 유지. nowMs로 위상(순수).
+  // Pulse animation for attention-needed keys
   const attn = needsAttention(b, isTarget);
   let glow = "";
   if (attn) {
     const urgent = b.color === "amber" || b.color === "red";
-    const period = urgent ? 640 : 1300; // ms/주기
-    const p = 0.5 - 0.5 * Math.cos((2 * Math.PI * (nowMs % period)) / period); // 0→1→0
-    const op = (urgent ? 0.4 : 0.28) * p; // 배경 상태색 틴트 세기(0→피크)
+    const period = urgent ? 640 : 1300; // ms/cycle
+    const p = 0.5 - 0.5 * Math.cos((2 * Math.PI * (nowMs % period)) / period); // 0->1->0
+    const op = (urgent ? 0.4 : 0.28) * p;
     glow = `<rect width="144" height="144" rx="18" fill="${color}" opacity="${op.toFixed(2)}"/>`;
   }
-  // 보드에 주의 키가 있을 때, 주의 없는 키는 어둡게 죽여 대비로 확 띄게(dim). 주의 키는 밝게 유지.
+  // Dim non-attention keys when attention keys exist
   const g0 = dim ? '<g opacity="0.32">' : "";
   const g1 = dim ? "</g>" : "";
-  // 현재 세션(target)은 우측 상단 코랄 점(dot)으로 표시. dim돼도 보이게 그룹 밖에 그림.
+  // Coral dot in top-right for target session
   const cornerTag = isTarget
     ? `<circle cx="124" cy="28" r="8" fill="#d97757"/>`
     : "";
@@ -257,43 +255,42 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
 </svg>`;
 }
 
-// Stream Deck setImage는 data URI를 기대 → SVG를 base64 data URI로 감싼다.
-// (뱃지는 글자 기반이라 Elgato 렌더러에서 어김없이 동작 — 이미지-in-SVG·래스터 라이브러리 불필요)
+// Convert SVG into base64 data URI for Stream Deck setImage
 export function keyImage(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = false): string {
   return "data:image/svg+xml;base64," + Buffer.from(keySvg(b, tick, isTarget, nowMs, dim), "utf8").toString("base64");
 }
 
 const DIAL_ACCENT: Record<string, string> = {
-  model: "#3b82f6", // 파랑
-  effort: "#a855f7", // 보라
-  mode: "#f43f5e", // 로즈 (폴백)
-  talk: "#14b8a6", // 청록
-  target: "#f59e0b", // 앰버
+  model: "#3b82f6", // blue
+  effort: "#a855f7", // purple
+  mode: "#f43f5e", // rose (fallback)
+  talk: "#14b8a6", // teal
+  target: "#f59e0b", // amber
 };
 
 /**
- * 에이전트 및 모드명에 따른 모드 색상 매핑 (타이틀 및 좌측 바):
+ * Mode color mapping by agent and mode name (for title and accent rail):
  * - AGY:
- *   - 'accept edits' / 'accept-edits' / 'yolo' -> 초록 (#22c55e)
- *   - 'plan' -> 파랑 (#3b82f6)
- *   - 'default' / 'nothing' / 'none' / 'normal' -> 회색 (#71717a)
+ *   - 'accept edits' / 'accept-edits' / 'yolo' -> green (#22c55e)
+ *   - 'plan' -> blue (#3b82f6)
+ *   - 'default' / 'nothing' / 'none' / 'normal' -> gray (#71717a)
  * - Claude:
- *   - 'auto' / 'auto-mode' / 'automode' -> 노랑 (#eab308)
- *   - 'manual' / 'default' / 'normal' -> 회색 (#71717a)
- *   - 'accept edits' / 'accept-edits' / 'bypass-permissions' / 'dont-ask' -> 보라 (#a855f7)
- *   - 'plan' / 'plan mode' -> 파랑 (#3b82f6)
+ *   - 'auto' / 'auto-mode' / 'automode' -> yellow (#eab308)
+ *   - 'manual' / 'default' / 'normal' -> gray (#71717a)
+ *   - 'accept edits' / 'accept-edits' / 'bypass-permissions' / 'dont-ask' -> purple (#a855f7)
+ *   - 'plan' / 'plan mode' -> blue (#3b82f6)
  * - Codex:
- *   - 'workspace-write' / 'write' -> 에메랄드 (#10b981)
- *   - 'read-only' / 'readonly' -> 하늘/파랑 (#0ea5e9)
- *   - 'danger-full-access' / 'full-access' / 'danger' / 'yolo' -> 위험 빨강 (#ef4444)
- *   - 'plan' -> 파랑 (#3b82f6)
- *   - 'on-request' -> 앰버 (#f59e0b)
- *   - 'never' -> 보라 (#a855f7)
+ *   - 'workspace-write' / 'write' -> emerald (#10b981)
+ *   - 'read-only' / 'readonly' -> cyan/blue (#0ea5e9)
+ *   - 'danger-full-access' / 'full-access' / 'danger' / 'yolo' -> red (#ef4444)
+ *   - 'plan' -> blue (#3b82f6)
+ *   - 'on-request' -> amber (#f59e0b)
+ *   - 'never' -> purple (#a855f7)
  * - OpenCode:
- *   - 'build' -> 초록 (#22c55e)
- *   - 'plan' -> 파랑 (#3b82f6)
- *   - 'review' -> 보라 (#a855f7)
- *   - 'debug' -> 앰버 (#f59e0b)
+ *   - 'build' -> green (#22c55e)
+ *   - 'plan' -> blue (#3b82f6)
+ *   - 'review' -> purple (#a855f7)
+ *   - 'debug' -> amber (#f59e0b)
  */
 export function modeColor(mode?: string | null, agentType?: string | null): string {
   if (!mode || mode === "-" || mode === "…" || mode.trim() === "") return "#71717a";
@@ -304,21 +301,21 @@ export function modeColor(mode?: string | null, agentType?: string | null): stri
   if (a === "agy" || a === "antigravity") {
     if (m === "accept-edits" || m === "acceptedits" || m === "yolo") return "#22c55e"; // green
     if (m === "plan" || m === "plan-mode") return "#3b82f6"; // blue
-    if (m === "default" || m === "nothing" || m === "none" || m === "normal") return "#71717a"; // gray/nothing
+    if (m === "default" || m === "nothing" || m === "none" || m === "normal") return "#71717a"; // gray
   }
 
   // 2. Claude
   if (a === "claude" || a === "claude-agent-teams") {
-    if (m === "auto" || m === "auto-mode" || m === "automode") return "#eab308"; // yellowish
+    if (m === "auto" || m === "auto-mode" || m === "automode") return "#eab308"; // yellow
     if (m === "manual" || m === "normal" || m === "default") return "#71717a"; // gray
-    if (m === "accept-edits" || m === "acceptedits" || m === "bypass-permissions" || m === "dont-ask" || m === "yolo") return "#a855f7"; // violetish
-    if (m === "plan" || m === "plan-mode") return "#3b82f6"; // blueish
+    if (m === "accept-edits" || m === "acceptedits" || m === "bypass-permissions" || m === "dont-ask" || m === "yolo") return "#a855f7"; // purple
+    if (m === "plan" || m === "plan-mode") return "#3b82f6"; // blue
   }
 
   // 3. Codex
   if (a === "codex" || a === "code") {
     if (m === "workspace-write" || m === "write") return "#10b981"; // emerald
-    if (m === "read-only" || m === "readonly") return "#0ea5e9"; // cyan/blue
+    if (m === "read-only" || m === "readonly") return "#0ea5e9"; // cyan
     if (m === "danger-full-access" || m === "full-access" || m === "danger" || m === "yolo") return "#ef4444"; // danger red
     if (m === "plan" || m === "plan-mode") return "#3b82f6"; // blue
     if (m === "on-request" || m === "ask") return "#f59e0b"; // amber
@@ -329,7 +326,7 @@ export function modeColor(mode?: string | null, agentType?: string | null): stri
   if (a === "opencode") {
     if (m === "build") return "#22c55e"; // green
     if (m === "plan") return "#3b82f6"; // blue
-    if (m === "review") return "#a855f7"; // violet
+    if (m === "review") return "#a855f7"; // purple
     if (m === "debug") return "#f59e0b"; // amber
   }
 
@@ -362,11 +359,7 @@ export function modeColor(mode?: string | null, agentType?: string | null): stri
   return "#f43f5e";
 }
 
-/** 다이얼 터치스크린(200×100) 커스텀 렌더 — 좌측 색 레일 + 상단 작은 라벨 + 값(가득 채운 3줄 래핑, 위로 정렬).
- *  disabled인 경우 시각적으로 비활성화(어둡고 흐린 레일/라벨/값 + 투명도 딤).
- *  badge가 주어지면 우상단에 에이전트 알약(2글자)을 겹쳐 보여준다(대상 세션 다이얼용).
- *  sub가 주어지면 값 아래에 작은 보조 줄(브랜치 등)을 그린다 — 키(세션 슬롯)와 같은 문법.
- *  customColor가 주어지거나 role === "mode"인 경우 모드별 실제 색상을 타이틀/좌측 바에 적용한다. */
+/** Custom render for dial touchscreen (200x100) */
 export function dialImage(
   role: string,
   label: string,
@@ -383,16 +376,12 @@ export function dialImage(
   const valueColor = disabled ? "#4a4a52" : "#ffffff";
   const val = disabled ? (value && value !== " " && value !== "…" ? value : "-") : (value || " ");
   const textX = 18;
-  const avail = 195 - textX; // 레일(7px) 제외 실제 텍스트 가용 폭
-  const lineFont = 15; // 3줄 값 폰트
+  const avail = 195 - textX; // available width excluding 7px accent rail
+  const lineFont = 15;
   const lineH = 16;
   const top = 44;
-  // 실제 글자 폭(units: ASCII≈0.56, CJK≈1) 기준 줄당 글자수 — 8px 하드코딩 제거.
   const perLine = Math.max(4, Math.floor(avail / (lineFont * 0.56)));
 
-  // 한 줄로 렌더할 때 실제 폭(자동 크기) 기준으로 판정 — lineFont로 판단하면 그보다 큰
-  // 자동크기로 그릴 때 글자가 잘리는 회귀가 난다. 읽기 가능(≥20px) 한 줄이면 그대로,
-  // 아니면 "/"(provider/model 등) 기준으로 줄바꿈해 두 번째 줄로 넘긴다.
   const oneLineFits = units(val) * 20 <= avail;
   const lines = oneLineFits
     ? [val]
@@ -403,19 +392,16 @@ export function dialImage(
     ? `<text x="${textX}" y="20" fill="${labelColor}" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="2">${esc(label)}</text>`
     : `<text x="${textX}" y="24" fill="${labelColor}" font-family="sans-serif" font-size="13" font-weight="800" letter-spacing="1">${esc(label)}</text>`;
 
-  // 3줄 렌더(위로 정렬) — 100px 다이얼에서 top부터 lineH 간격. sub(브랜치)가 있으면 값은 위로 올려 여백 확보.
   const hasSub = Boolean(sub && !disabled);
   const valueY = hasSub ? 48 : 56;
   const valueSvg = lines.length > 1
     ? lines.map((ln, i) => `<text x="${textX}" y="${(hasSub ? 40 : top) + i * lineH}" fill="${valueColor}" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc(ln)}</text>`).join("")
     : `<text x="${textX}" y="${valueY}" fill="${valueColor}" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc(lines[0])}</text>`;
 
-  // 보조 줄(브랜치) — 세션 키의 브랜치와 같은 문법(작고 흐린 회색, 600 weight).
   const subSvg = hasSub
     ? `<text x="${textX}" y="${valueY + 18}" fill="${disabled ? "#4a4a52" : "#b8b8be"}" font-family="sans-serif" font-size="13" font-weight="600">${esc(sub || "")}</text>`
     : "";
 
-  // 에이전트 알약(우상단) — 세션 버튼의 agentBadge와 같은 색/글자, 다이얼(200×100)에 맞게 배치.
   const badgeSvg = badge ? agentBadgeForDial(badge) : "";
 
   const dimG0 = disabled ? '<g opacity="0.38">' : "";
@@ -431,7 +417,7 @@ export function dialImage(
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
 }
 
-// 다이얼 우상단용 에이전트 뱃지 — 세션 버튼의 agentBadge와 같은 로고 아이콘, 다이얼(200×100)에 맞게 20x20으로 배치.
+// Agent badge for top-right dial position (20x20)
 function agentBadgeForDial(agentType?: string | null): string {
   const a = (agentType || "").toLowerCase();
   const boxX = 172;
@@ -465,13 +451,12 @@ function agentBadgeForDial(agentType?: string | null): string {
     return `${bg}<g transform="translate(${ix}, ${iy}) scale(${s})"><path fill-rule="evenodd" clip-rule="evenodd" d="${HERMES_SVG_PATH}" fill="#10B981"/></g>`;
   }
 
-  // 폴백: 미지원 또는 미확인 에이전트는 2글자 텍스트 알약
+  // Fallback: 2-character pill for unsupported or unknown agents
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
   return `<rect x="166" y="6" width="28" height="16" rx="8" fill="#4b5563"/><text x="180" y="18" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
 }
 
-// 값이 한 줄에 안 들어가면 "/"(provider/model 등) 경계에서 줄을 나눈다.
-// 각 파트가 perLine 안에 들어가고 파트 수가 3을 안 넘으면 그대로 여러 줄, 아니면 글자 단위 래핑.
+// Split text by "/" boundary if multi-part, otherwise wrap by characters
 function splitSlash(value: string, perLine: number): string[] {
   const parts = (value || " ").split("/").filter((p) => p !== "");
   if (parts.length <= 3 && parts.every((p) => [...p].length <= perLine)) {

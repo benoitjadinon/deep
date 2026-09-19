@@ -1,6 +1,6 @@
-// 에이전트별 추상 인터페이스 및 구현체 — 어떤 에이전트가 어떤 명령으로 모델/effort를 바꾸는가.
-// 순수 함수 및 객체 지향 모델(테스트 가능). orca worktree ps가 보고하는 agentType(claude/codex/opencode/…)과 연결된다.
-// 핵심: 지원하지 않는 에이전트 및 미구현 기능에 잘못된 명령을 보내지 않도록 게이팅. 모르는 에이전트 = 지원 안 함.
+// Per-agent abstract interface and implementations — which agent changes model/effort/mode using which command.
+// Pure functions and object-oriented model (fully testable). Connected to agentType (claude/codex/opencode/...) reported by orca worktree ps.
+// Core principle: Gate unsupported agents and features to prevent sending invalid commands. Unknown agent = unsupported.
 
 import { readFileSync, existsSync, readdirSync, statSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 
 export type ControlKind = "model" | "effort" | "mode";
 
-/** 터미널로 보낼 한 단계(라인). 픽커/드롭다운 등 UI 반응이 필요하면 delayMs로 이전 전송 후 대기. */
+/** A single step (line) to send to terminal. If UI needs reaction delay (e.g. pickers), delayMs waits before/after next send. */
 export interface ApplyStep {
   text: string;
   enter: boolean;
@@ -19,89 +19,91 @@ export interface AgentContext {
   worktreePath?: string;
   worktreeId?: string;
   handle?: string;
+  preview?: string;
 }
 
 export interface AgentStateSnapshot {
   model?: string;
   effort?: string;
   mode?: string;
+  modes?: string[];
   recentModels?: string[];
   favoriteModels?: string[];
 }
 
 /**
- * 에이전트 추상 클래스 (Abstract Agent Interface)
- * 플러그인이 선택된 에이전트에서 어떤 기능이 지원되는지 검사하고 명령/목록을 요청하는 표준 인터페이스.
+ * Abstract Agent Interface
+ * Standard interface for inspecting supported features and requesting commands/lists for a given agent.
  */
 export abstract class AbstractAgent {
   abstract readonly agentType: string;
   abstract readonly label: string;
 
-  /** 특정 제어 기능(모델, effort, 모드) 지원 여부 */
+  /** Check if a control kind (model, effort, mode) is supported */
   abstract supports(kind: ControlKind): boolean;
 
-  /** 사용 가능한 모델 목록 (정적 폴백 또는 기본값) */
+  /** Available model list (static fallback or defaults) */
   getModels(): string[] {
     return [];
   }
 
-  /** 사용 가능한 effort 목록 */
+  /** Available effort list */
   getEfforts(_modelId?: string): string[] {
     return [];
   }
 
-  /** 사용 가능한 모드/에이전트 목록 */
-  getModes(): string[] {
+  /** Available modes/agents list */
+  getModes(_ctx?: AgentContext): string[] {
     return [];
   }
 
-  /** 변경 적용을 위한 터미널 전송 시퀀스 생성 */
-  abstract getApplySteps(kind: ControlKind, value: string, fromValue?: string): ApplyStep[];
+  /** Generate terminal send sequence for applying a change */
+  abstract getApplySteps(kind: ControlKind, value: string, fromValue?: string, modeList?: string[]): ApplyStep[];
 
-  /** 모델 목록을 가져올 호스트 CLI (인자 배열) */
+  /** Host CLI command to discover models (array of arguments) */
   getDiscoverModelCmd(): string[] | undefined {
     return undefined;
   }
 
-  /** 모드 목록을 가져올 호스트 CLI */
+  /** Host CLI command to discover modes */
   getDiscoverAgentCmd(): string[] | undefined {
     return undefined;
   }
 
-  /** 모델별 변형(effort)을 가져올 호스트 CLI */
+  /** Host CLI command to discover model variants (efforts) */
   getDiscoverVariantCmd(): string[] | undefined {
     return undefined;
   }
 
-  /** CLI 출력에서 모델 목록 파싱 */
+  /** Parse model list from CLI output */
   parseDiscoveredModels(stdout: string): string[] {
     return parseModels(stdout);
   }
 
-  /** CLI 출력에서 모드 목록 파싱 */
+  /** Parse mode list from CLI output */
   parseDiscoveredModes(stdout: string): string[] {
     return parsePrimaryAgents(stdout);
   }
 
-  /** CLI 출력에서 모델별 변형(effort) 파싱 */
+  /** Parse model variants (efforts) from CLI output */
   parseDiscoveredEfforts(stdout: string, modelId: string): string[] {
     return parseModelVariants(stdout, modelId);
   }
 
-  /** 로컬 상태 파일/설정 또는 작업공간 로그에서 현재 선택된 상태 읽기 */
+  /** Read currently selected state from local state files/configs or workspace logs */
   readCurrentState(_ctx?: AgentContext): AgentStateSnapshot {
     return {};
   }
 
-  /** 모델 선택 시 해당 모델에 귀속되거나 내포된 effort(변형)가 있다면 반환 */
+  /** Return effort/variant bound to or inferred by a selected model */
   getEffortForModel(_model: string): string | undefined {
     return undefined;
   }
 
-  /** 발견된 모델 id→표시이름 맵 설정 (opencode 등 — 픽커 필터 텍스트에 사용) */
+  /** Set discovered model id -> display name map (e.g. OpenCode picker filter) */
   setModelNames(_names: Record<string, string>): void {}
 
-  /** 발견 출력에서 모델 id→표시이름 맵 추출 */
+  /** Extract model id -> display name map from discovery output */
   parseDiscoveredModelNames(_stdout: string): Record<string, string> {
     return {};
   }
@@ -122,16 +124,16 @@ const modePicker = (value: string): ApplyStep[] => [
   { text: value, enter: true },
 ];
 
-// opencode 모델 픽커: 리더(ctrl+x)+m으로 다이얼로그를 확정적으로 열고, 필터에
-// '프로바이더 표시이름'을 입력한다. Enter는 보내지 않는다 — 사용자가 픽커에서 확인한다.
-// 필터 텍스트에 프로바이더가 들어가야 opencode/openrouter처럼 같은 이름의 모델을 구분할 수 있다.
+// OpenCode model picker: Open dialog deterministically with leader (ctrl+x)+m,
+// and type 'provider display-name' into the filter without pressing Enter (user confirms).
+// Filter text includes provider to disambiguate models with identical names across providers.
 const openCodeModelPicker = (value: string, name?: string): ApplyStep[] => [
   { text: "\x18", enter: false, delayMs: 300 }, // ctrl+x (leader)
   { text: "m", enter: false, delayMs: 450 }, // model list dialog
   { text: modelFilterText(value, name), enter: false },
 ];
 
-// Claude 설정 및 모델 캐시/프로젝트 경로
+// Claude settings, model catalog cache, and projects path
 export const CLAUDE_SETTINGS = join(homedir(), ".claude", "settings.json");
 export const CLAUDE_MODEL_CATALOG_DIR = join(homedir(), ".claude", "cache", "model-catalog");
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
@@ -149,6 +151,65 @@ export const CLAUDE_DEFAULT_MODELS = [
   "haiku",
 ];
 
+export const CLAUDE_MODES = ["default", "accept-edits", "plan", "auto"] as const;
+export const CLAUDE_BYPASS_MODES = ["default", "accept-edits", "plan", "bypassPermissions", "auto"] as const;
+
+export function isClaudeBypassEnabled(ctx?: AgentContext): boolean {
+  if (ctx?.preview) {
+    const p = ctx.preview.toLowerCase();
+    if (
+      p.includes("dangerously-skip-permissions") ||
+      p.includes("bypass permissions") ||
+      p.includes("bypass-permissions") ||
+      p.includes("bypasspermissions")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function normalizeClaudeMode(raw?: string): string {
+  if (!raw) return "default";
+  const s = raw.trim().toLowerCase().replace(/_/g, "-");
+  if (s === "manual" || s === "normal" || s === "default" || s === "manual-mode" || s === "default-mode") return "default";
+  if (s === "accept-edits" || s === "acceptedits" || s === "accept" || s === "accept edits") return "accept-edits";
+  if (s === "plan" || s === "plan-mode" || s === "plan mode") return "plan";
+  if (s === "auto" || s === "auto-mode" || s === "automode" || s === "auto mode") return "auto";
+  if (
+    s === "bypasspermissions" ||
+    s === "bypass-permissions" ||
+    s === "bypass permissions" ||
+    s === "bypass"
+  ) {
+    return "bypassPermissions";
+  }
+  return s;
+}
+
+export function getClaudeShiftTabSteps(toMode: string, fromMode?: string, modeList?: string[]): ApplyStep[] {
+  const list = modeList && modeList.length ? modeList : (CLAUDE_MODES as unknown as string[]);
+  const target = normalizeClaudeMode(toMode);
+  const current = normalizeClaudeMode(fromMode);
+  const targetIdx = list.indexOf(target);
+  const currentIdx = list.indexOf(current);
+  if (targetIdx < 0) {
+    return [{ text: "\x1b[Z", enter: false }];
+  }
+  const fromIdx = currentIdx < 0 ? 0 : currentIdx;
+  const count = (targetIdx - fromIdx + list.length) % list.length;
+  if (count === 0) return [];
+  const steps: ApplyStep[] = [];
+  for (let i = 0; i < count; i++) {
+    steps.push({
+      text: "\x1b[Z",
+      enter: false,
+      ...(i > 0 ? { delayMs: 120 } : {}),
+    });
+  }
+  return steps;
+}
+
 export function parseClaudeSettings(text: string): { model?: string; effort?: string; mode?: string } {
   try {
     const data = JSON.parse(text);
@@ -159,7 +220,7 @@ export function parseClaudeSettings(text: string): { model?: string; effort?: st
         : typeof data?.effort === "string"
         ? data.effort
         : undefined;
-    const mode =
+    const rawMode =
       typeof data?.permissionMode === "string"
         ? data.permissionMode
         : typeof data?.mode === "string"
@@ -167,6 +228,7 @@ export function parseClaudeSettings(text: string): { model?: string; effort?: st
         : typeof data?.agent === "string"
         ? data.agent
         : undefined;
+    const mode = rawMode ? normalizeClaudeMode(rawMode) : undefined;
     return { model, effort, mode };
   } catch {
     return {};
@@ -292,28 +354,60 @@ export function readClaudeModelEffortsCache(modelId?: string): string[] {
   return [];
 }
 
+export function parseClaudeModeFromText(text?: string): string | undefined {
+  if (!text) return undefined;
+  const clean = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+  const lines = clean.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].trim().toLowerCase();
+    if (!l) continue;
+    if (l.includes("plan mode") || (l.includes("plan") && l.includes("shift+tab") && !l.includes("auto") && !l.includes("accept") && !l.includes("bypass"))) {
+      return "plan";
+    }
+    if (l.includes("auto mode") || (l.includes("auto") && l.includes("shift+tab") && !l.includes("accept") && !l.includes("bypass"))) {
+      return "auto";
+    }
+    if (
+      l.includes("accept edits") ||
+      l.includes("accept-edits") ||
+      l.includes("auto-accept") ||
+      (l.includes("accept") && l.includes("shift+tab"))
+    ) {
+      return "accept-edits";
+    }
+    if (
+      l.includes("bypass permissions") ||
+      l.includes("bypass-permissions") ||
+      l.includes("bypasspermissions") ||
+      (l.includes("bypass") && l.includes("shift+tab"))
+    ) {
+      return "bypassPermissions";
+    }
+    if (l.includes("manual mode") || l.includes("default mode") || (l.includes("manual") && l.includes("shift+tab"))) {
+      return "default";
+    }
+  }
+  return undefined;
+}
+
 export function readClaudeState(ctx?: AgentContext): AgentStateSnapshot {
   const state: AgentStateSnapshot = {};
-  const settingsPaths: string[] = [];
 
-  if (ctx?.worktreePath) {
-    settingsPaths.push(join(ctx.worktreePath, ".claude", "settings.json"));
-    settingsPaths.push(join(ctx.worktreePath, ".claude.json"));
-  }
-  settingsPaths.push(CLAUDE_SETTINGS);
+  const isBypass = isClaudeBypassEnabled(ctx);
+  state.modes = isBypass ? [...CLAUDE_BYPASS_MODES] : [...CLAUDE_MODES];
 
-  for (const p of settingsPaths) {
-    try {
-      if (existsSync(p)) {
-        const parsed = parseClaudeSettings(readFileSync(p, "utf8"));
-        if (!state.model && parsed.model) state.model = parsed.model;
-        if (!state.effort && parsed.effort) state.effort = parsed.effort;
-        if (!state.mode && parsed.mode) state.mode = parsed.mode;
+  // 1. Live terminal preview priority parsing (real-time TUI state)
+  if (ctx?.preview) {
+    const previewMode = parseClaudeModeFromText(ctx.preview);
+    if (previewMode) {
+      state.mode = previewMode;
+      if (previewMode === "bypassPermissions") {
+        state.modes = [...CLAUDE_BYPASS_MODES];
       }
-    } catch {}
+    }
   }
 
-  // Transcript JSONL inspection in ~/.claude/projects/-<normalized-path>/
+  // 2. Transcript JSONL inspection in ~/.claude/projects/-<normalized-path>/
   if (ctx?.worktreePath) {
     try {
       const normalizedPath = ctx.worktreePath.replace(/\/+$/, "");
@@ -351,9 +445,15 @@ export function readClaudeState(ctx?: AgentContext): AgentStateSnapshot {
                 }
                 if (!state.mode) {
                   if (d.type === "permission-mode" && typeof d.permissionMode === "string") {
-                    state.mode = d.permissionMode;
+                    state.mode = normalizeClaudeMode(d.permissionMode);
+                    if (state.mode === "bypassPermissions") {
+                      state.modes = [...CLAUDE_BYPASS_MODES];
+                    }
                   } else if (d.type === "mode" && typeof d.mode === "string") {
-                    state.mode = d.mode;
+                    state.mode = normalizeClaudeMode(d.mode);
+                    if (state.mode === "bypassPermissions") {
+                      state.modes = [...CLAUDE_BYPASS_MODES];
+                    }
                   }
                 }
                 if (!state.effort) {
@@ -373,10 +473,34 @@ export function readClaudeState(ctx?: AgentContext): AgentStateSnapshot {
     } catch {}
   }
 
+  // 3. Static configuration file (settings.json) fallback
+  const settingsPaths: string[] = [];
+  if (ctx?.worktreePath) {
+    settingsPaths.push(join(ctx.worktreePath, ".claude", "settings.json"));
+    settingsPaths.push(join(ctx.worktreePath, ".claude.json"));
+  }
+  settingsPaths.push(CLAUDE_SETTINGS);
+
+  for (const p of settingsPaths) {
+    try {
+      if (existsSync(p)) {
+        const parsed = parseClaudeSettings(readFileSync(p, "utf8"));
+        if (!state.model && parsed.model) state.model = parsed.model;
+        if (!state.effort && parsed.effort) state.effort = parsed.effort;
+        if (!state.mode && parsed.mode) {
+          state.mode = parsed.mode;
+          if (state.mode === "bypassPermissions") {
+            state.modes = [...CLAUDE_BYPASS_MODES];
+          }
+        }
+      }
+    } catch {}
+  }
+
   return state;
 }
 
-// Claude 구현체
+// Claude implementation
 export class ClaudeAgent extends AbstractAgent {
   readonly agentType = "claude";
   readonly label = "Claude";
@@ -400,11 +524,14 @@ export class ClaudeAgent extends AbstractAgent {
     return ["low", "medium", "high", "xhigh", "max"];
   }
 
-  override getModes(): string[] {
-    return ["default", "plan", "accept-edits"];
+  override getModes(ctx?: AgentContext): string[] {
+    if (isClaudeBypassEnabled(ctx)) {
+      return [...CLAUDE_BYPASS_MODES];
+    }
+    return [...CLAUDE_MODES];
   }
 
-  getApplySteps(kind: ControlKind, value: string): ApplyStep[] {
+  getApplySteps(kind: ControlKind, value: string, fromValue?: string, modeList?: string[]): ApplyStep[] {
     if (kind === "model") {
       return slash("/model", value);
     }
@@ -412,7 +539,7 @@ export class ClaudeAgent extends AbstractAgent {
       return slash("/effort", value);
     }
     if (kind === "mode") {
-      return slash("/mode", value);
+      return getClaudeShiftTabSteps(value, fromValue, modeList || this.getModes());
     }
     return [];
   }
@@ -422,7 +549,7 @@ export class ClaudeAgent extends AbstractAgent {
   }
 }
 
-// Codex 설정 및 모델 캐시 파일 경로
+// Codex config and models cache file paths
 export const CODEX_CONFIG = join(homedir(), ".codex", "config.toml");
 export const CODEX_MODELS_CACHE = join(homedir(), ".codex", "models_cache.json");
 
@@ -434,24 +561,30 @@ export const CODEX_DEFAULT_MODELS = [
   "gpt-reserve",
 ];
 
-export function parseCodexConfig(toml: string): { model?: string; effort?: string; mode?: string } {
-  const modelMatch = /^model\s*=\s*"([^"]+)"/m.exec(toml || "");
-  const effortMatch = /^model_reasoning_effort\s*=\s*"([^"]+)"/m.exec(toml || "");
-  const modeMatch = /^(?:sandbox_mode|approval_policy|mode)\s*=\s*"([^"]+)"/m.exec(toml || "");
-  return {
-    model: modelMatch ? modelMatch[1] : undefined,
-    effort: effortMatch ? effortMatch[1] : undefined,
-    mode: modeMatch ? modeMatch[1] : undefined,
-  };
+export function parseCodexConfig(tomlText: string): { model?: string; effort?: string; mode?: string } {
+  let model: string | undefined;
+  let effort: string | undefined;
+  let mode: string | undefined;
+
+  const modelMatch = /model\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
+  if (modelMatch) model = modelMatch[1];
+
+  const effortMatch = /model_reasoning_effort\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
+  if (effortMatch) effort = effortMatch[1];
+
+  const modeMatch = /sandbox_mode\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
+  if (modeMatch) mode = modeMatch[1];
+
+  return { model, effort, mode };
 }
 
-export function parseCodexModelsCache(text: string): string[] {
+export function parseCodexModelsCache(jsonText: string): string[] {
   try {
-    const j = JSON.parse(text);
-    if (Array.isArray(j?.models)) {
-      return j.models
-        .map((m: any) => m?.slug)
-        .filter((s: any) => typeof s === "string" && s && !s.includes("auto-review"));
+    const data = JSON.parse(jsonText);
+    if (data && Array.isArray(data.models)) {
+      return data.models
+        .map((m: any) => (typeof m === "string" ? m : m?.id || m?.name))
+        .filter((id: any): id is string => typeof id === "string" && id.trim().length > 0);
     }
   } catch {}
   return [];
@@ -483,7 +616,7 @@ export function readCodexModelsCache(): string[] {
   return [];
 }
 
-// Codex 구현체
+// Codex implementation
 export class CodexAgent extends AbstractAgent {
   readonly agentType = "codex";
   readonly label = "Codex";
@@ -524,7 +657,7 @@ export class CodexAgent extends AbstractAgent {
   }
 }
 
-// OpenCode 상태 및 TUI 경로
+// OpenCode state and TUI paths
 export const OPENCODE_STATE = join(homedir(), ".local", "state", "opencode", "model.json");
 export const OPENCODE_TUI = join(homedir(), ".local", "state", "opencode", "tui");
 
@@ -556,7 +689,7 @@ export function readTuiAgent(ctx?: AgentContext): string | undefined {
   }
 }
 
-// OpenCode 구현체
+// OpenCode implementation
 export class OpenCodeAgent extends AbstractAgent {
   readonly agentType = "opencode";
   readonly label = "OpenCode";
@@ -636,7 +769,7 @@ export class OpenCodeAgent extends AbstractAgent {
   }
 }
 
-// Agy 설정 경로
+// Agy settings path
 export const AGY_SETTINGS = join(homedir(), ".gemini", "antigravity-cli", "settings.json");
 
 export function extractEffortFromModel(modelName?: string): string | undefined {
@@ -649,7 +782,7 @@ export function extractEffortFromModel(modelName?: string): string | undefined {
   return undefined;
 }
 
-export const AGY_MODES = ["default", "plan", "accept-edits"] as const;
+export const AGY_MODES = ["default", "accept-edits", "plan"] as const;
 
 export function normalizeAgyMode(mode?: string): string {
   if (!mode) return "default";
@@ -670,7 +803,7 @@ export function parseAgyHelpModes(text: string): string[] {
   if (!rawList.length) return [];
   const set = new Set<string>(["default"]);
   const out: string[] = ["default"];
-  const preferredOrder = ["plan", "accept-edits"];
+  const preferredOrder = ["accept-edits", "plan"];
   for (const p of preferredOrder) {
     if (rawList.some((r) => normalizeAgyMode(r) === p)) {
       set.add(p);
@@ -926,6 +1059,31 @@ export function readAgyLiveMode(ctx?: AgentContext): string | undefined {
   return readAgyLiveState(ctx).mode;
 }
 
+export function parseAgyModeFromText(text?: string): string | undefined {
+  if (!text) return undefined;
+  const clean = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+  const lines = clean.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].trim().toLowerCase();
+    if (!l) continue;
+    if (l.includes("plan mode") || (l.includes("plan") && l.includes("shift+tab") && !l.includes("auto") && !l.includes("accept"))) {
+      return "plan";
+    }
+    if (
+      l.includes("auto-approve") ||
+      l.includes("accept edits") ||
+      l.includes("accept-edits") ||
+      (l.includes("accept") && l.includes("shift+tab"))
+    ) {
+      return "accept-edits";
+    }
+    if (l.includes("default mode") || l.includes("manual mode") || (l.includes("default") && l.includes("shift+tab"))) {
+      return "default";
+    }
+  }
+  return undefined;
+}
+
 export function readAgyState(ctx?: AgentContext): AgentStateSnapshot {
   let model: string | undefined;
   let effort: string | undefined;
@@ -949,10 +1107,19 @@ export function readAgyState(ctx?: AgentContext): AgentStateSnapshot {
   if (live.mode) {
     mode = live.mode;
   }
+
+  // Live terminal preview priority parsing
+  if (ctx?.preview) {
+    const previewMode = parseAgyModeFromText(ctx.preview);
+    if (previewMode) {
+      mode = previewMode;
+    }
+  }
+
   return { model, effort, mode };
 }
 
-// Agy 구현체
+// Agy implementation
 export class AgyAgent extends AbstractAgent {
   readonly agentType = "agy";
   readonly label = "Agy";
@@ -980,7 +1147,7 @@ export class AgyAgent extends AbstractAgent {
     return [...AGY_MODES];
   }
 
-  getApplySteps(kind: ControlKind, value: string, fromValue?: string): ApplyStep[] {
+  getApplySteps(kind: ControlKind, value: string, fromValue?: string, modeList?: string[]): ApplyStep[] {
     if (kind === "model") {
       return slash("/model", value);
     }
@@ -988,7 +1155,7 @@ export class AgyAgent extends AbstractAgent {
       return slash("/effort", value);
     }
     if (kind === "mode") {
-      return getAgyShiftTabSteps(value, fromValue);
+      return getAgyShiftTabSteps(value, fromValue, modeList || this.getModes());
     }
     return [];
   }
@@ -1018,7 +1185,7 @@ export class AgyAgent extends AbstractAgent {
   }
 }
 
-// Hermes 설정 및 모델 캐시 경로
+// Hermes config and models cache paths
 export const HERMES_CONFIG = join(homedir(), ".hermes", "config.yaml");
 export const HERMES_MODELS_CACHE = join(homedir(), ".hermes", "provider_models_cache.json");
 
@@ -1096,7 +1263,7 @@ export function readHermesModelsCache(): string[] {
   return [];
 }
 
-// Hermes 구현체
+// Hermes implementation
 export class HermesAgent extends AbstractAgent {
   readonly agentType = "hermes";
   readonly label = "Hermes";
@@ -1140,10 +1307,10 @@ export class HermesAgent extends AbstractAgent {
   }
 }
 
-// 미지원 에이전트 폴백
+// Unsupported agent fallback
 export class UnsupportedAgent extends AbstractAgent {
   readonly agentType = "";
-  readonly label = "미지원";
+  readonly label = "Unsupported";
 
   supports(_kind: ControlKind): boolean {
     return false;
@@ -1168,14 +1335,14 @@ const AGENT_INSTANCES: Record<string, AbstractAgent> = {
 
 export const UNSUPPORTED_AGENT = new UnsupportedAgent();
 
-/** 에이전트 타입에 해당하는 추상 에이전트 인스턴스 반환 */
+/** Return abstract agent instance for given agent type */
 export function agentFor(agentType: string | undefined | null): AbstractAgent {
   if (!agentType) return UNSUPPORTED_AGENT;
   const key = agentType.trim().toLowerCase();
   return AGENT_INSTANCES[key] ?? UNSUPPORTED_AGENT;
 }
 
-// 하위 호환성용 프로파일 인터페이스
+// Profile interface for backwards compatibility
 export interface AgentProfile {
   agentType: string;
   label: string;
@@ -1318,7 +1485,7 @@ export function parseModels(stdout: string): string[] {
   return out;
 }
 
-// 모델 발견 출력(--verbose)에서 'providerID/modelID' 줄만 추출 — JSON 본문/기타 라인 제외.
+// Extract only 'providerID/modelID' lines from discovery output (--verbose) — excluding JSON body/other lines.
 export function parseModelIdLines(stdout: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -1333,7 +1500,7 @@ export function parseModelIdLines(stdout: string): string[] {
   return out;
 }
 
-// --verbose JSON 블록에서 모델 id→표시이름 맵 추출 (픽커 필터 텍스트에 사용).
+// Extract model id -> display name map from --verbose JSON blocks (used for picker filter text).
 export function parseOpenCodeModelNames(stdout: string): Record<string, string> {
   const names: Record<string, string> = {};
   for (const block of splitJsonBlocks(stdout || "")) {
@@ -1347,7 +1514,7 @@ export function parseOpenCodeModelNames(stdout: string): Record<string, string> 
   return names;
 }
 
-// 픽커 필터 텍스트: '프로바이더 표시이름'. 이름을 모르면 프로바이더만 남겨 사용자가 그 안에서 고른다.
+// Picker filter text: '<provider> <display-name>'. If name is unknown, leaves provider so user picks inside it.
 export function modelFilterText(id: string, name?: string): string {
   const provider = id.split("/")[0] ?? "";
   const display = name?.trim();

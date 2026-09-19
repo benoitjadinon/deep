@@ -1,6 +1,6 @@
-// Orca 프로젝트 및 저장소 아이콘 리졸버.
-// GitHub 아바타(원격 이미지), 로컬 에셋(icon.png 등), Lucide 벡터 아이콘, 이모지를
-// Stream Deck 타일 배경 워터마크에 사용할 수 있는 형태로 변환 및 캐싱한다.
+// Orca project and repository icon resolver.
+// Converts and caches GitHub avatars (remote images), local assets (icon.png), Lucide vector icons, and emojis
+// for use as Stream Deck tile background watermarks.
 import * as lucide from "lucide-static";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, extname, isAbsolute } from "node:path";
@@ -8,14 +8,14 @@ import { tmpdir } from "node:os";
 import type { OrcaRepo, OrcaRepoIcon } from "./deck";
 
 export interface ResolvedBgIcon {
-  uri?: string; // 이미지 base64 Data URI
-  lucide?: string; // Lucide SVG 내부 요소(path/circle 등)
-  emoji?: string; // 이모지 문자열
+  uri?: string; // Image base64 Data URI
+  lucide?: string; // Lucide SVG inner tags (path/circle/etc.)
+  emoji?: string; // Emoji character string
 }
 
-// 메모리 캐시: URL or 경로 or lucide명 -> ResolvedBgIcon
+// Memory cache: URL or path or lucideName -> ResolvedBgIcon
 const memCache = new Map<string, ResolvedBgIcon>();
-// 원격 이미지 다운로드 진행 중 Promise (중복 요청 방지)
+// In-flight fetch promises to prevent redundant requests
 const inflightFetches = new Map<string, Promise<string | undefined>>();
 
 const CACHE_DIR = join(tmpdir(), "agentdeck-icons");
@@ -37,8 +37,8 @@ const MIME_MAP: Record<string, string> = {
 };
 
 /**
- * Lucide 아이콘 이름(PascalCase, kebab-case, snake_case 등)을 받아
- * SVG 내부 요소(viewBox 0 0 24 24 기준) 문자열을 반환한다.
+ * Given a Lucide icon name (PascalCase, kebab-case, snake_case),
+ * returns inner SVG element string (viewBox 0 0 24 24).
  */
 export function resolveLucideSvg(name?: string): string | undefined {
   if (!name) return undefined;
@@ -59,7 +59,7 @@ export function resolveLucideSvg(name?: string): string | undefined {
 }
 
 /**
- * 로컬 파일 경로를 읽어 base64 Data URI로 변환한다.
+ * Read local file path and convert to base64 Data URI.
  */
 export function resolveLocalIconUri(repoPath?: string, relPath?: string): string | undefined {
   if (!relPath) return undefined;
@@ -83,7 +83,7 @@ export function resolveLocalIconUri(repoPath?: string, relPath?: string): string
 }
 
 /**
- * 단순 해시 함수 (디스크 캐시 파일명용)
+ * Simple hash function for disk cache file names
  */
 function hashStr(s: string): string {
   let h = 0;
@@ -94,7 +94,7 @@ function hashStr(s: string): string {
 }
 
 /**
- * 원격 URL(GitHub 아바타 등)을 백그라운드로 다운로드하고 base64 Data URI로 변환한다.
+ * Download remote URL (e.g. GitHub avatar) in background and convert to base64 Data URI.
  */
 export async function fetchRemoteIconUri(url?: string): Promise<string | undefined> {
   if (!url) return undefined;
@@ -139,8 +139,8 @@ export async function fetchRemoteIconUri(url?: string): Promise<string | undefin
 }
 
 /**
- * OrcaRepo 정보를 받아 즉시 사용 가능한 배경 아이콘 정보를 반환한다.
- * 원격 이미지인 경우 이미 캐시되어 있으면 즉시 반환하고, 아니면 백그라운드 프리페치를 시작한다.
+ * Resolve background icon info for given OrcaRepo.
+ * Returns immediately if cached; otherwise triggers background prefetch.
  */
 export function resolveRepoBgIcon(repo: OrcaRepo): ResolvedBgIcon {
   const icon = repo.repoIcon;
@@ -166,7 +166,7 @@ export function resolveRepoBgIcon(repo: OrcaRepo): ResolvedBgIcon {
       const cached = memCache.get(key);
       if (cached) return cached;
 
-      // 비동기 프리페치 트리거 (다음 렌더에 반영)
+      // Trigger background prefetch for next render
       fetchRemoteIconUri(icon.src).catch(() => {});
     }
   }
@@ -175,7 +175,7 @@ export function resolveRepoBgIcon(repo: OrcaRepo): ResolvedBgIcon {
 }
 
 /**
- * 여러 저장소의 원격 아이콘을 미리 가져오도록 트리거
+ * Prefetch remote icons for multiple repositories
  */
 export function prefetchRepoIcons(repos: OrcaRepo[]): void {
   for (const r of repos) {

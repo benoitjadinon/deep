@@ -1,12 +1,11 @@
-// AgentDeck STT 헬퍼 — Apple Speech(SFSpeechRecognizer) + AVAudioEngine.
-// ffmpeg 대신 OS 오디오 스택으로 캡처 → 웹캠 노이즈 회피, 온디바이스 인식(가능할 때).
-// 인식 언어는 시스템 기본 설정을 따름(고정 언어 없음) — 파일/환경변수로 강제 지정 가능.
-// .app 번들 + Developer ID 서명으로 실행해야 TCC가 usage description을 신뢰(직접 CLI는 크래시).
+// AgentDeck STT Helper — Apple Speech (SFSpeechRecognizer) + AVAudioEngine.
+// Captures via OS audio stack instead of ffmpeg -> avoids webcam mic noise, uses on-device recognition when available.
+// Recognition language defaults to system locale — overridable via file or environment variable.
+// Must run as signed .app bundle so macOS TCC trusts usage descriptions.
 //
-// 사용:  stt-helper --file <audio>   파일 인식(테스트) /  stt-helper   라이브(SIGINT로 정지)
-// 결과는 STT_OUT(기본 /tmp/agentdeck-stt.txt)에 기록.
-// 언어 지정: STT_LOCALE 환경변수 또는 /tmp/agentdeck-stt.locale 파일 (없으면 시스템 기본)
-// ⚠️ 인증은 메인 스레드 블로킹 금지(데드락) → requestAuthorization 콜백 + RunLoop 방식.
+// Usage:  stt-helper --file <audio>   File recognition (test) /  stt-helper   Live mode (stopped via SIGINT)
+// Results written to STT_OUT (default /tmp/agentdeck-stt.txt).
+// Locale override: STT_LOCALE env var or /tmp/agentdeck-stt.locale file (defaults to system locale if omitted).
 import Foundation
 import Speech
 import AVFoundation
@@ -20,15 +19,15 @@ func log(_ s: String) {
   }
 }
 
-// 실패 원인 코드를 파일로 → 플러그인이 다이얼에 안내 표시
+// Write status code to file so plugin can display guidance on dial
 func writeStatus(_ code: String) { try? code.write(toFile: "/tmp/agentdeck-stt.status", atomically: true, encoding: .utf8) }
 
 let args = CommandLine.arguments
 let outPath = ProcessInfo.processInfo.environment["STT_OUT"] ?? "/tmp/agentdeck-stt.txt"
 
-// 인식 언어 결정 — ko-KR 하드코딩 제거.
-// 1) 명시 지정(우선): STT_LOCALE 환경변수 or /tmp/agentdeck-stt.locale 파일 (예: en-US, ko-KR, ja-JP)
-// 2) 시스템 기본: SFSpeechRecognizer() — macOS가 사용자 기본 언어(→키보드 받아쓰기 언어로 폴백)로 만든다.
+// Determine recognition locale:
+// 1) Explicit override (priority): STT_LOCALE env var or /tmp/agentdeck-stt.locale file (e.g. en-US, ko-KR, ja-JP)
+// 2) System default: SFSpeechRecognizer()
 func resolveRecognizer() -> SFSpeechRecognizer? {
   var explicit: String?
   if let e = ProcessInfo.processInfo.environment["STT_LOCALE"], !e.isEmpty {
@@ -58,11 +57,11 @@ func writeOut(_ s: String) {
   print(s)
 }
 
-// 파일 모드
+// File mode
 func runFile(_ path: String) {
   log("runFile onDevice=\(rec.supportsOnDeviceRecognition) available=\(rec.isAvailable) exists=\(FileManager.default.fileExists(atPath: path))")
   let req = SFSpeechURLRecognitionRequest(url: URL(fileURLWithPath: path))
-  req.requiresOnDeviceRecognition = false // 서버/베스트 허용(온디바이스 모델 없어도 되게)
+  req.requiresOnDeviceRecognition = false
   rec.recognitionTask(with: req) { result, err in
     if let e = err { log("task err: \(e.localizedDescription)"); writeOut(""); exit(1) }
     if let r = result {
@@ -72,10 +71,10 @@ func runFile(_ path: String) {
   }
 }
 
-// 라이브 모드 — SIGINT로 정지
+// Live mode — stopped via SIGINT
 var sigSource: DispatchSourceSignal?
 func runLive() {
-  // 마이크 권한은 음성인식 권한과 별개 → 명시적으로 요청(첫 실행 시 프롬프트)
+  // Request mic permission
   AVCaptureDevice.requestAccess(for: .audio) { granted in
     guard granted else { writeStatus("MIC_DENIED"); log("mic not granted"); exit(5) }
     DispatchQueue.main.async { startEngine() }
@@ -90,7 +89,6 @@ func startEngine() {
     if let e = err { let m = e.localizedDescription; log("live task err: \(m)"); if m.contains("Dictation") || m.contains("Siri") { writeStatus("DICTATION_OFF") } }
     if let r = result {
       let t = r.bestTranscription.formattedString
-      // 빈 결과로 덮어쓰지 않음(endAudio 후 마지막 콜백이 빈값일 수 있음 → 좋은 결과 유실 방지)
       if !t.isEmpty {
         latest = t
         try? t.write(toFile: "/tmp/agentdeck-stt.partial", atomically: true, encoding: .utf8)
@@ -113,7 +111,7 @@ func startEngine() {
   }
   engine.prepare()
   do { try engine.start() } catch { log("engine start \(error.localizedDescription)"); exit(4) }
-  // 플러그인이 SIGINT로 정지시킬 수 있게 PID 기록
+  // Record PID so plugin can stop process via SIGINT
   try? "\(ProcessInfo.processInfo.processIdentifier)".write(toFile: "/tmp/agentdeck-stt.pid", atomically: true, encoding: .utf8)
   log("REC on-device=\(rec.supportsOnDeviceRecognition)")
   signal(SIGINT, SIG_IGN)
@@ -130,7 +128,7 @@ func startEngine() {
 }
 
 SFSpeechRecognizer.requestAuthorization { status in
-  guard status == .authorized else { writeStatus("SPEECH_DENIED"); log("speech auth = \(status.rawValue) (거부/미결정)"); exit(3) }
+  guard status == .authorized else { writeStatus("SPEECH_DENIED"); log("speech auth = \(status.rawValue) (denied/not-determined)"); exit(3) }
   DispatchQueue.main.async {
     if let i = args.firstIndex(of: "--file"), i + 1 < args.count { runFile(args[i + 1]) } else { runLive() }
   }

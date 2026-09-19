@@ -54686,6 +54686,7 @@ function buildDeck(input, opts = {}) {
       color: colorFor(e.item.state),
       worktreePath: e.item.t.worktreePath,
       worktreeId: e.item.t.worktreeId,
+      preview: e.item.t.preview,
       lastOutputAt: e.item.t.lastOutputAt,
       repo: e.project,
       branch: e.branch,
@@ -55140,7 +55141,7 @@ var AbstractAgent = class {
     return [];
   }
   /** 사용 가능한 모드/에이전트 목록 */
-  getModes() {
+  getModes(_ctx) {
     return [];
   }
   /** 모델 목록을 가져올 호스트 CLI (인자 배열) */
@@ -55219,12 +55220,58 @@ var CLAUDE_DEFAULT_MODELS = [
   "sonnet",
   "haiku"
 ];
+var CLAUDE_MODES = ["default", "accept-edits", "plan", "auto"];
+var CLAUDE_BYPASS_MODES = ["default", "accept-edits", "plan", "bypassPermissions", "auto"];
+function isClaudeBypassEnabled(ctx) {
+  if (ctx?.preview) {
+    const p = ctx.preview.toLowerCase();
+    if (p.includes("dangerously-skip-permissions") || p.includes("bypass permissions") || p.includes("bypass-permissions") || p.includes("bypasspermissions")) {
+      return true;
+    }
+  }
+  return false;
+}
+function normalizeClaudeMode(raw) {
+  if (!raw) return "default";
+  const s = raw.trim().toLowerCase().replace(/_/g, "-");
+  if (s === "manual" || s === "normal" || s === "default" || s === "manual-mode" || s === "default-mode") return "default";
+  if (s === "accept-edits" || s === "acceptedits" || s === "accept" || s === "accept edits") return "accept-edits";
+  if (s === "plan" || s === "plan-mode" || s === "plan mode") return "plan";
+  if (s === "auto" || s === "auto-mode" || s === "automode" || s === "auto mode") return "auto";
+  if (s === "bypasspermissions" || s === "bypass-permissions" || s === "bypass permissions" || s === "bypass") {
+    return "bypassPermissions";
+  }
+  return s;
+}
+function getClaudeShiftTabSteps(toMode, fromMode, modeList) {
+  const list = modeList && modeList.length ? modeList : CLAUDE_MODES;
+  const target = normalizeClaudeMode(toMode);
+  const current = normalizeClaudeMode(fromMode);
+  const targetIdx = list.indexOf(target);
+  const currentIdx = list.indexOf(current);
+  if (targetIdx < 0) {
+    return [{ text: "\x1B[Z", enter: false }];
+  }
+  const fromIdx = currentIdx < 0 ? 0 : currentIdx;
+  const count = (targetIdx - fromIdx + list.length) % list.length;
+  if (count === 0) return [];
+  const steps = [];
+  for (let i = 0; i < count; i++) {
+    steps.push({
+      text: "\x1B[Z",
+      enter: false,
+      ...i > 0 ? { delayMs: 120 } : {}
+    });
+  }
+  return steps;
+}
 function parseClaudeSettings(text) {
   try {
     const data = JSON.parse(text);
     const model = typeof data?.model === "string" ? data.model : void 0;
     const effort = typeof data?.effortLevel === "string" ? data.effortLevel : typeof data?.effort === "string" ? data.effort : void 0;
-    const mode = typeof data?.permissionMode === "string" ? data.permissionMode : typeof data?.mode === "string" ? data.mode : typeof data?.agent === "string" ? data.agent : void 0;
+    const rawMode = typeof data?.permissionMode === "string" ? data.permissionMode : typeof data?.mode === "string" ? data.mode : typeof data?.agent === "string" ? data.agent : void 0;
+    const mode = rawMode ? normalizeClaudeMode(rawMode) : void 0;
     return { model, effort, mode };
   } catch {
     return {};
@@ -55333,23 +55380,42 @@ function readClaudeModelEffortsCache(modelId) {
   }
   return [];
 }
+function parseClaudeModeFromText(text) {
+  if (!text) return void 0;
+  const clean = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+  const lines = clean.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].trim().toLowerCase();
+    if (!l) continue;
+    if (l.includes("plan mode") || l.includes("plan") && l.includes("shift+tab") && !l.includes("auto") && !l.includes("accept") && !l.includes("bypass")) {
+      return "plan";
+    }
+    if (l.includes("auto mode") || l.includes("auto") && l.includes("shift+tab") && !l.includes("accept") && !l.includes("bypass")) {
+      return "auto";
+    }
+    if (l.includes("accept edits") || l.includes("accept-edits") || l.includes("auto-accept") || l.includes("accept") && l.includes("shift+tab")) {
+      return "accept-edits";
+    }
+    if (l.includes("bypass permissions") || l.includes("bypass-permissions") || l.includes("bypasspermissions") || l.includes("bypass") && l.includes("shift+tab")) {
+      return "bypassPermissions";
+    }
+    if (l.includes("manual mode") || l.includes("default mode") || l.includes("manual") && l.includes("shift+tab")) {
+      return "default";
+    }
+  }
+  return void 0;
+}
 function readClaudeState(ctx) {
   const state = {};
-  const settingsPaths = [];
-  if (ctx?.worktreePath) {
-    settingsPaths.push((0, import_node_path7.join)(ctx.worktreePath, ".claude", "settings.json"));
-    settingsPaths.push((0, import_node_path7.join)(ctx.worktreePath, ".claude.json"));
-  }
-  settingsPaths.push(CLAUDE_SETTINGS);
-  for (const p of settingsPaths) {
-    try {
-      if ((0, import_node_fs5.existsSync)(p)) {
-        const parsed = parseClaudeSettings((0, import_node_fs5.readFileSync)(p, "utf8"));
-        if (!state.model && parsed.model) state.model = parsed.model;
-        if (!state.effort && parsed.effort) state.effort = parsed.effort;
-        if (!state.mode && parsed.mode) state.mode = parsed.mode;
+  const isBypass = isClaudeBypassEnabled(ctx);
+  state.modes = isBypass ? [...CLAUDE_BYPASS_MODES] : [...CLAUDE_MODES];
+  if (ctx?.preview) {
+    const previewMode = parseClaudeModeFromText(ctx.preview);
+    if (previewMode) {
+      state.mode = previewMode;
+      if (previewMode === "bypassPermissions") {
+        state.modes = [...CLAUDE_BYPASS_MODES];
       }
-    } catch {
     }
   }
   if (ctx?.worktreePath) {
@@ -55384,9 +55450,15 @@ function readClaudeState(ctx) {
                 }
                 if (!state.mode) {
                   if (d.type === "permission-mode" && typeof d.permissionMode === "string") {
-                    state.mode = d.permissionMode;
+                    state.mode = normalizeClaudeMode(d.permissionMode);
+                    if (state.mode === "bypassPermissions") {
+                      state.modes = [...CLAUDE_BYPASS_MODES];
+                    }
                   } else if (d.type === "mode" && typeof d.mode === "string") {
-                    state.mode = d.mode;
+                    state.mode = normalizeClaudeMode(d.mode);
+                    if (state.mode === "bypassPermissions") {
+                      state.modes = [...CLAUDE_BYPASS_MODES];
+                    }
                   }
                 }
                 if (!state.effort) {
@@ -55403,6 +55475,28 @@ function readClaudeState(ctx) {
           } catch {
           }
           if (state.model && state.mode && state.effort) break;
+        }
+      }
+    } catch {
+    }
+  }
+  const settingsPaths = [];
+  if (ctx?.worktreePath) {
+    settingsPaths.push((0, import_node_path7.join)(ctx.worktreePath, ".claude", "settings.json"));
+    settingsPaths.push((0, import_node_path7.join)(ctx.worktreePath, ".claude.json"));
+  }
+  settingsPaths.push(CLAUDE_SETTINGS);
+  for (const p of settingsPaths) {
+    try {
+      if ((0, import_node_fs5.existsSync)(p)) {
+        const parsed = parseClaudeSettings((0, import_node_fs5.readFileSync)(p, "utf8"));
+        if (!state.model && parsed.model) state.model = parsed.model;
+        if (!state.effort && parsed.effort) state.effort = parsed.effort;
+        if (!state.mode && parsed.mode) {
+          state.mode = parsed.mode;
+          if (state.mode === "bypassPermissions") {
+            state.modes = [...CLAUDE_BYPASS_MODES];
+          }
         }
       }
     } catch {
@@ -55432,10 +55526,13 @@ var ClaudeAgent = class extends AbstractAgent {
     }
     return ["low", "medium", "high", "xhigh", "max"];
   }
-  getModes() {
-    return ["default", "plan", "accept-edits"];
+  getModes(ctx) {
+    if (isClaudeBypassEnabled(ctx)) {
+      return [...CLAUDE_BYPASS_MODES];
+    }
+    return [...CLAUDE_MODES];
   }
-  getApplySteps(kind, value) {
+  getApplySteps(kind, value, fromValue, modeList) {
     if (kind === "model") {
       return slash("/model", value);
     }
@@ -55443,7 +55540,7 @@ var ClaudeAgent = class extends AbstractAgent {
       return slash("/effort", value);
     }
     if (kind === "mode") {
-      return slash("/mode", value);
+      return getClaudeShiftTabSteps(value, fromValue, modeList || this.getModes());
     }
     return [];
   }
@@ -55647,7 +55744,7 @@ function extractEffortFromModel(modelName) {
   if (hyphenMatch) return hyphenMatch[1];
   return void 0;
 }
-var AGY_MODES = ["default", "plan", "accept-edits"];
+var AGY_MODES = ["default", "accept-edits", "plan"];
 function normalizeAgyMode(mode) {
   if (!mode) return "default";
   const m = mode.trim().toLowerCase();
@@ -55663,7 +55760,7 @@ function parseAgyHelpModes(text) {
   if (!rawList.length) return [];
   const set2 = /* @__PURE__ */ new Set(["default"]);
   const out = ["default"];
-  const preferredOrder = ["plan", "accept-edits"];
+  const preferredOrder = ["accept-edits", "plan"];
   for (const p of preferredOrder) {
     if (rawList.some((r) => normalizeAgyMode(r) === p)) {
       set2.add(p);
@@ -55881,6 +55978,25 @@ function readAgyLiveState(ctx) {
     return {};
   }
 }
+function parseAgyModeFromText(text) {
+  if (!text) return void 0;
+  const clean = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+  const lines = clean.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].trim().toLowerCase();
+    if (!l) continue;
+    if (l.includes("plan mode") || l.includes("plan") && l.includes("shift+tab") && !l.includes("auto") && !l.includes("accept")) {
+      return "plan";
+    }
+    if (l.includes("auto-approve") || l.includes("accept edits") || l.includes("accept-edits") || l.includes("accept") && l.includes("shift+tab")) {
+      return "accept-edits";
+    }
+    if (l.includes("default mode") || l.includes("manual mode") || l.includes("default") && l.includes("shift+tab")) {
+      return "default";
+    }
+  }
+  return void 0;
+}
 function readAgyState(ctx) {
   let model;
   let effort;
@@ -55903,6 +56019,12 @@ function readAgyState(ctx) {
   }
   if (live.mode) {
     mode = live.mode;
+  }
+  if (ctx?.preview) {
+    const previewMode = parseAgyModeFromText(ctx.preview);
+    if (previewMode) {
+      mode = previewMode;
+    }
   }
   return { model, effort, mode };
 }
@@ -55931,7 +56053,7 @@ var AgyAgent = class extends AbstractAgent {
   getModes() {
     return [...AGY_MODES];
   }
-  getApplySteps(kind, value, fromValue) {
+  getApplySteps(kind, value, fromValue, modeList) {
     if (kind === "model") {
       return slash("/model", value);
     }
@@ -55939,7 +56061,7 @@ var AgyAgent = class extends AbstractAgent {
       return slash("/effort", value);
     }
     if (kind === "mode") {
-      return getAgyShiftTabSteps(value, fromValue);
+      return getAgyShiftTabSteps(value, fromValue, modeList || this.getModes());
     }
     return [];
   }
@@ -56426,7 +56548,9 @@ function switchTargetSoon(handle) {
   if (targetSwitchTimer) clearTimeout(targetSwitchTimer);
   targetSwitchTimer = setTimeout(() => {
     targetSwitchTimer = null;
-    orcaRun(["terminal", "switch", "--terminal", handle]).catch(() => {
+    orcaRun(["terminal", "switch", "--terminal", handle]).then(() => {
+      pollDebounced(50);
+    }).catch(() => {
     });
   }, 180);
 }
@@ -56545,7 +56669,8 @@ function contextForHandle(h) {
   return {
     handle: h,
     worktreePath: b?.worktreePath,
-    worktreeId: b?.worktreeId
+    worktreeId: b?.worktreeId,
+    preview: b?.preview
   };
 }
 function noteHandle(h) {
@@ -56586,6 +56711,9 @@ function refreshSessionState(h) {
   if (state.mode) {
     currentModeByHandle.set(h, state.mode);
   }
+  if (state.modes && state.modes.length) {
+    modesByHandle.set(h, state.modes);
+  }
   if (state.recentModels || state.favoriteModels) {
     const list = modelsByHandle.get(h);
     if (list && list.length) {
@@ -56608,6 +56736,7 @@ function setTarget(h) {
   pickAt.effort = 0;
   pickAt.mode = 0;
   applyPending();
+  renderDials();
 }
 function agentForHandle() {
   const t = ensureTarget();
@@ -56632,7 +56761,7 @@ function dialList(kind) {
   if (kind === "mode") {
     const live = modesByHandle.get(t);
     if (live && live.length) return live;
-    return agent.getModes();
+    return agent.getModes(contextForHandle(t));
   }
   return [];
 }
@@ -57063,6 +57192,7 @@ var SlotAction = class extends SingletonAction {
         ev.action.showAlert?.();
       }
       renderAll();
+      pollDebounced(50);
     } else {
       await spawnSession(ev);
     }
@@ -57159,7 +57289,8 @@ var DialBase = class extends SingletonAction {
           currentModeByHandle.set(t, value);
         }
         try {
-          await applyAgentSteps(t, agent.getApplySteps(kind, value, prevValue));
+          const modeList = this.role === "mode" ? dialList("mode") : void 0;
+          await applyAgentSteps(t, agent.getApplySteps(kind, value, prevValue, modeList));
           refreshCurrentState();
         } catch (e) {
           plugin_default.logger.error(`apply ${kind}: ${e}`);
@@ -57171,6 +57302,7 @@ var DialBase = class extends SingletonAction {
       await orcaRun(["terminal", "switch", "--terminal", t]).catch(() => {
       });
       await focusOrca();
+      pollDebounced(50);
     } else if (this.role === "talk") {
       if (recording) await stopAndSend(ensureTarget());
       else await startRecording();
@@ -57280,7 +57412,7 @@ function setupFileWatchers() {
 }
 setupFileWatchers();
 plugin_default.connect();
-setInterval(poll, 1500);
+setInterval(poll, 1e3);
 setInterval(() => {
   tick++;
   if (anyAttention() || anyMarquee()) renderKeys();
