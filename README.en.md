@@ -68,8 +68,8 @@ If something's wrong, the **Talk dial shows the cause**: `Enable Dictation` / `E
 
 ## Limitations
 - **Mac + Orca only**. Other terminals/OSes unsupported.
-- **Keys are 8 slots (1 page)**. With more than 8 sessions, the 9th+ aren't on the keys but remain reachable via the **target dial**.
-- Dial signals are **gated per running agent**: only supported agents (Claude, OpenCode, Codex, AGY, Hermes) get a working model/effort/mode dial, and model lists are **loaded live** from respective agent configurations and tools. Unsupported/unknown agents get the dial blocked (`-`), so no wrong command is ever sent.
+- **Keys are 8 slots (1 page)**. With more than 8 sessions, the 9th+ aren't on the keys but remain reachable via the **target dial**. Slots are **grouped by project** (a project's agents sit together) and ordered by most recent activity: freshest project group first, freshest session first inside a group, handle as tiebreak. Activity is bucketed (60s) so multiple concurrently working projects don't re-sort the keys constantly — override with `AGENTDECK_ORDER_BUCKET_MS` (milliseconds).
+- Dial signals are **gated per running agent**: only supported agents (Claude, OpenCode, Codex, AGY, Hermes, Pi) get a working model/effort/mode dial, and model lists are **loaded live** from respective agent configurations and tools. Unsupported/unknown agents get the dial blocked (`-`), so no wrong command is ever sent.
 
 ## Development
 ```bash

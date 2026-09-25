@@ -41464,13 +41464,13 @@ var Lazy = class {
 
 // node_modules/@elgato/utils/dist/promises.js
 function withResolvers() {
-  let resolve;
+  let resolve2;
   let reject;
   const promise2 = new Promise((res, rej) => {
-    resolve = res;
+    resolve2 = res;
     reject = rej;
   });
-  return { promise: promise2, resolve, reject };
+  return { promise: promise2, resolve: resolve2, reject };
 }
 
 // node_modules/zod/v4/mini/external.js
@@ -53198,8 +53198,8 @@ var settings = {
    * @returns Promise containing the plugin's global settings.
    */
   getGlobalSettings: () => {
-    return new Promise((resolve) => {
-      connection.once("didReceiveGlobalSettings", (ev) => resolve(ev.payload.settings));
+    return new Promise((resolve2) => {
+      connection.once("didReceiveGlobalSettings", (ev) => resolve2(ev.payload.settings));
       connection.send({
         event: "getGlobalSettings",
         context: connection.registrationParameters.pluginUUID,
@@ -53600,7 +53600,7 @@ var Action = class extends ActionContext {
    * @returns The payload from the received event.
    */
   async #fetch(command, event) {
-    const { resolve, reject, promise: promise2 } = withResolvers();
+    const { resolve: resolve2, reject, promise: promise2 } = withResolvers();
     const timeoutId = setTimeout(() => {
       listener.dispose();
       reject("The request timed out");
@@ -53609,7 +53609,7 @@ var Action = class extends ActionContext {
       if (ev.context == this.id) {
         clearTimeout(timeoutId);
         listener.dispose();
-        resolve(ev);
+        resolve2(ev);
       }
     });
     await connection.send({
@@ -54261,8 +54261,8 @@ function openUrl(url2) {
 function getSecrets() {
   requiresVersion(6.9, connection.version, "Secrets");
   requiresSDKVersion(3, "Secrets");
-  return new Promise((resolve) => {
-    connection.once("didReceiveSecrets", (ev) => resolve(ev.payload.secrets));
+  return new Promise((resolve2) => {
+    connection.once("didReceiveSecrets", (ev) => resolve2(ev.payload.secrets));
     connection.send({
       event: "getSecrets",
       context: connection.registrationParameters.pluginUUID
@@ -54381,17 +54381,1568 @@ var import_node_path8 = require("node:path");
 var import_node_os3 = require("node:os");
 var import_node_util = require("node:util");
 
-// src/icons.ts
-var lucide = __toESM(require_lucide_static(), 1);
+// src/agents.ts
 var import_node_fs4 = require("node:fs");
 var import_node_path6 = require("node:path");
 var import_node_os = require("node:os");
+var AbstractAgent = class {
+  /** Available model list (static fallback or defaults) */
+  getModels() {
+    return [];
+  }
+  /** Available effort list */
+  getEfforts(_modelId) {
+    return [];
+  }
+  /** Available modes/agents list */
+  getModes(_ctx) {
+    return [];
+  }
+  /** Host CLI command to discover models (array of arguments) */
+  getDiscoverModelCmd() {
+    return void 0;
+  }
+  /** Host CLI command to discover modes */
+  getDiscoverAgentCmd() {
+    return void 0;
+  }
+  /** Host CLI command to discover model variants (efforts) */
+  getDiscoverVariantCmd() {
+    return void 0;
+  }
+  /** Parse model list from CLI output */
+  parseDiscoveredModels(stdout) {
+    return parseModels(stdout);
+  }
+  /** Parse mode list from CLI output */
+  parseDiscoveredModes(stdout) {
+    return parsePrimaryAgents(stdout);
+  }
+  /** Parse model variants (efforts) from CLI output */
+  parseDiscoveredEfforts(stdout, modelId) {
+    return parseModelVariants(stdout, modelId);
+  }
+  /** Read currently selected state from local state files/configs or workspace logs */
+  readCurrentState(_ctx) {
+    return {};
+  }
+  /** Return effort/variant bound to or inferred by a selected model */
+  getEffortForModel(_model) {
+    return void 0;
+  }
+  /** Set discovered model id -> display name map (e.g. OpenCode picker filter) */
+  setModelNames(_names) {
+  }
+  /** Normalize a session/tab title for deck display. Agents whose hosts decorate titles
+   * (e.g. Orca prefixes opencode tabs with "OC | ") override this to strip their prefix. */
+  cleanTitle(title) {
+    return title;
+  }
+  /** Extract model id -> display name map from discovery output */
+  parseDiscoveredModelNames(_stdout) {
+    return {};
+  }
+};
+var slash = (cmd, value) => [
+  { text: `${cmd} ${value}`, enter: true, delayMs: 120 }
+];
+var picker = (cmd, value) => [
+  { text: cmd, enter: true, delayMs: 450 },
+  { text: value, enter: true }
+];
+var modePicker = (value) => [
+  { text: "", enter: false, delayMs: 300 },
+  // ctrl+x (leader)
+  { text: "a", enter: false, delayMs: 450 },
+  // agent list dialog
+  { text: value, enter: true }
+];
+var openCodeModelPicker = (value, name) => [
+  { text: "", enter: false, delayMs: 300 },
+  // ctrl+x (leader)
+  { text: "m", enter: false, delayMs: 450 },
+  // model list dialog
+  { text: modelFilterText(value, name), enter: false }
+];
+var CLAUDE_SETTINGS = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".claude", "settings.json");
+var CLAUDE_MODEL_CATALOG_DIR = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".claude", "cache", "model-catalog");
+var CLAUDE_PROJECTS_DIR = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".claude", "projects");
+var CLAUDE_DEFAULT_MODELS = [
+  "claude-opus-5",
+  "claude-sonnet-5",
+  "claude-haiku-4-5-20251001",
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+  "claude-sonnet-4-6",
+  "opus",
+  "sonnet",
+  "haiku"
+];
+var CLAUDE_MODES = ["default", "accept-edits", "plan"];
+var CLAUDE_BYPASS_MODES = ["default", "accept-edits", "plan", "bypassPermissions"];
+function isClaudeBypassEnabled(ctx) {
+  if (ctx?.preview) {
+    const p = ctx.preview.toLowerCase();
+    if (p.includes("dangerously-skip-permissions") || p.includes("bypass permissions") || p.includes("bypass-permissions") || p.includes("bypasspermissions")) {
+      return true;
+    }
+  }
+  return false;
+}
+function normalizeClaudeMode(raw) {
+  if (!raw) return "default";
+  const s = raw.trim().toLowerCase().replace(/_/g, "-");
+  if (s === "manual" || s === "normal" || s === "default" || s === "manual-mode" || s === "default-mode") return "default";
+  if (s === "accept-edits" || s === "acceptedits" || s === "accept" || s === "accept edits") return "accept-edits";
+  if (s === "plan" || s === "plan-mode" || s === "plan mode") return "plan";
+  if (s === "auto" || s === "auto-mode" || s === "automode" || s === "auto mode") return "auto";
+  if (s === "bypasspermissions" || s === "bypass-permissions" || s === "bypass permissions" || s === "bypass") {
+    return "bypassPermissions";
+  }
+  return s;
+}
+function getClaudeShiftTabSteps(toMode, fromMode, modeList) {
+  const list = modeList && modeList.length ? modeList : CLAUDE_MODES;
+  const target = normalizeClaudeMode(toMode);
+  const current = normalizeClaudeMode(fromMode);
+  const targetIdx = list.indexOf(target);
+  const currentIdx = list.indexOf(current);
+  if (targetIdx < 0) {
+    return [];
+  }
+  const fromIdx = currentIdx < 0 ? 0 : currentIdx;
+  const count = (targetIdx - fromIdx + list.length) % list.length;
+  if (count === 0) return [];
+  const steps = [];
+  for (let i = 0; i < count; i++) {
+    steps.push({
+      text: "\x1B[Z",
+      enter: false,
+      ...i > 0 ? { delayMs: 120 } : {}
+    });
+  }
+  return steps;
+}
+function parseClaudeSettings(text) {
+  try {
+    const data = JSON.parse(text);
+    const model = typeof data?.model === "string" ? data.model : void 0;
+    const effort = typeof data?.effortLevel === "string" ? data.effortLevel : typeof data?.effort === "string" ? data.effort : void 0;
+    const rawMode = typeof data?.permissionMode === "string" ? data.permissionMode : typeof data?.mode === "string" ? data.mode : typeof data?.agent === "string" ? data.agent : void 0;
+    const mode = rawMode ? normalizeClaudeMode(rawMode) : void 0;
+    return { model, effort, mode };
+  } catch {
+    return {};
+  }
+}
+function parseClaudeModelCatalog(text) {
+  const models = [];
+  const modelNames = {};
+  const effortsByModel = {};
+  const seen = /* @__PURE__ */ new Set();
+  try {
+    const data = JSON.parse(text);
+    if (!data || typeof data !== "object") {
+      return { models, modelNames, effortsByModel };
+    }
+    const processModel = (m) => {
+      if (!m || typeof m !== "object") return;
+      const mid = typeof m.id === "string" ? m.id.trim() : "";
+      if (!mid) return;
+      if (!seen.has(mid)) {
+        seen.add(mid);
+        models.push(mid);
+      }
+      const name = typeof m.name === "string" ? m.name.trim() : typeof m.short_name === "string" ? m.short_name.trim() : "";
+      if (name) {
+        modelNames[mid] = name;
+      }
+      const thinking = m.thinking;
+      if (thinking && typeof thinking === "object") {
+        const effortOpts = thinking.effort_options;
+        if (Array.isArray(effortOpts)) {
+          const efforts = effortOpts.map((opt) => typeof opt?.id === "string" ? opt.id.trim() : "").filter(Boolean);
+          if (efforts.length) {
+            effortsByModel[mid] = efforts;
+          }
+        }
+      }
+    };
+    const catModels = data?.catalog?.config?.models;
+    if (Array.isArray(catModels)) {
+      for (const m of catModels) processModel(m);
+    }
+    const surfaces = data?.document?.surfaces;
+    if (surfaces && typeof surfaces === "object") {
+      const surfaceKeys = ["cc", "cowork", "ccd", "ccr", "chat", ...Object.keys(surfaces)];
+      const checked = /* @__PURE__ */ new Set();
+      for (const sname of surfaceKeys) {
+        if (checked.has(sname)) continue;
+        checked.add(sname);
+        const sval = surfaces[sname];
+        if (sval && typeof sval === "object" && Array.isArray(sval.model_selector_config)) {
+          for (const cfg of sval.model_selector_config) {
+            if (cfg && Array.isArray(cfg.models)) {
+              for (const m of cfg.models) processModel(m);
+            }
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  return { models, modelNames, effortsByModel };
+}
+function readClaudeModelsCache() {
+  try {
+    if ((0, import_node_fs4.existsSync)(CLAUDE_MODEL_CATALOG_DIR)) {
+      const files = (0, import_node_fs4.readdirSync)(CLAUDE_MODEL_CATALOG_DIR).filter((f) => f.endsWith(".json"));
+      const allModels = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const file2 of files) {
+        try {
+          const content = (0, import_node_fs4.readFileSync)((0, import_node_path6.join)(CLAUDE_MODEL_CATALOG_DIR, file2), "utf8");
+          const { models } = parseClaudeModelCatalog(content);
+          for (const m of models) {
+            if (!seen.has(m)) {
+              seen.add(m);
+              allModels.push(m);
+            }
+          }
+        } catch {
+        }
+      }
+      if (allModels.length) return allModels;
+    }
+  } catch {
+  }
+  return [];
+}
+function readClaudeModelEffortsCache(modelId) {
+  if (!modelId) return [];
+  try {
+    if ((0, import_node_fs4.existsSync)(CLAUDE_MODEL_CATALOG_DIR)) {
+      const files = (0, import_node_fs4.readdirSync)(CLAUDE_MODEL_CATALOG_DIR).filter((f) => f.endsWith(".json"));
+      for (const file2 of files) {
+        try {
+          const content = (0, import_node_fs4.readFileSync)((0, import_node_path6.join)(CLAUDE_MODEL_CATALOG_DIR, file2), "utf8");
+          const { effortsByModel } = parseClaudeModelCatalog(content);
+          if (effortsByModel[modelId]?.length) {
+            return effortsByModel[modelId];
+          }
+        } catch {
+        }
+      }
+    }
+  } catch {
+  }
+  return [];
+}
+function parseClaudeModeFromText(text) {
+  if (!text) return void 0;
+  const clean = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+  const lines = clean.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].trim().toLowerCase();
+    if (!l) continue;
+    if (l.includes("plan mode") || l.includes("plan") && l.includes("shift+tab") && !l.includes("auto") && !l.includes("accept") && !l.includes("bypass")) {
+      return "plan";
+    }
+    if (l.includes("auto mode") || l.includes("auto") && l.includes("shift+tab") && !l.includes("accept") && !l.includes("bypass")) {
+      return "auto";
+    }
+    if (l.includes("accept edits") || l.includes("accept-edits") || l.includes("auto-accept") || l.includes("accept") && l.includes("shift+tab")) {
+      return "accept-edits";
+    }
+    if (l.includes("bypass permissions") || l.includes("bypass-permissions") || l.includes("bypasspermissions") || l.includes("bypass") && l.includes("shift+tab")) {
+      return "bypassPermissions";
+    }
+    if (l.includes("manual mode") || l.includes("default mode") || l.includes("manual") && l.includes("shift+tab")) {
+      return "default";
+    }
+  }
+  return void 0;
+}
+function readClaudeState(ctx) {
+  const state = {};
+  const isBypass = isClaudeBypassEnabled(ctx);
+  state.modes = isBypass ? [...CLAUDE_BYPASS_MODES] : [...CLAUDE_MODES];
+  if (ctx?.preview) {
+    const previewMode = parseClaudeModeFromText(ctx.preview);
+    if (previewMode) {
+      state.mode = previewMode;
+      if (previewMode === "bypassPermissions") {
+        state.modes = [...CLAUDE_BYPASS_MODES];
+      } else if (previewMode === "auto" && !state.modes.includes("auto")) {
+        state.modes.push("auto");
+      }
+    }
+  }
+  if (ctx?.worktreePath) {
+    try {
+      const normalizedPath = ctx.worktreePath.replace(/\/+$/, "");
+      const projName = normalizedPath.replace(/\//g, "-");
+      const projDir = (0, import_node_path6.join)(CLAUDE_PROJECTS_DIR, projName);
+      if ((0, import_node_fs4.existsSync)(projDir)) {
+        const jsonlFiles = (0, import_node_fs4.readdirSync)(projDir).filter((f) => f.endsWith(".jsonl") && !f.includes("subagents")).map((f) => ({
+          path: (0, import_node_path6.join)(projDir, f),
+          mtime: (0, import_node_fs4.statSync)((0, import_node_path6.join)(projDir, f)).mtimeMs
+        })).sort((a, b) => b.mtime - a.mtime);
+        for (const item of jsonlFiles.slice(0, 3)) {
+          try {
+            const fd = (0, import_node_fs4.openSync)(item.path, "r");
+            const size = (0, import_node_fs4.fstatSync)(fd).size;
+            const readLen = Math.min(size, 64 * 1024);
+            const buf = Buffer.alloc(readLen);
+            (0, import_node_fs4.readSync)(fd, buf, 0, readLen, Math.max(0, size - readLen));
+            (0, import_node_fs4.closeSync)(fd);
+            const tail = buf.toString("utf8", 0, readLen);
+            const lines = tail.split("\n");
+            for (let i = lines.length - 1; i >= 0; i--) {
+              const line = lines[i].trim();
+              if (!line) continue;
+              try {
+                const d = JSON.parse(line);
+                if (!state.model) {
+                  if (d.type === "assistant" && typeof d.message === "object" && typeof d.message?.model === "string") {
+                    state.model = d.message.model;
+                  }
+                }
+                if (!state.mode) {
+                  if (d.type === "permission-mode" && typeof d.permissionMode === "string") {
+                    state.mode = normalizeClaudeMode(d.permissionMode);
+                    if (state.mode === "bypassPermissions") {
+                      state.modes = [...CLAUDE_BYPASS_MODES];
+                    } else if (state.mode === "auto" && !state.modes.includes("auto")) {
+                      state.modes.push("auto");
+                    }
+                  } else if (d.type === "mode" && typeof d.mode === "string") {
+                    state.mode = normalizeClaudeMode(d.mode);
+                    if (state.mode === "bypassPermissions") {
+                      state.modes = [...CLAUDE_BYPASS_MODES];
+                    } else if (state.mode === "auto" && !state.modes.includes("auto")) {
+                      state.modes.push("auto");
+                    }
+                  }
+                }
+                if (!state.effort) {
+                  if (typeof d.effort === "string") {
+                    state.effort = d.effort;
+                  } else if (typeof d.effortLevel === "string") {
+                    state.effort = d.effortLevel;
+                  }
+                }
+              } catch {
+              }
+              if (state.model && state.mode && state.effort) break;
+            }
+          } catch {
+          }
+          if (state.model && state.mode && state.effort) break;
+        }
+      }
+    } catch {
+    }
+  }
+  const settingsPaths = [];
+  if (ctx?.worktreePath) {
+    settingsPaths.push((0, import_node_path6.join)(ctx.worktreePath, ".claude", "settings.json"));
+    settingsPaths.push((0, import_node_path6.join)(ctx.worktreePath, ".claude.json"));
+  }
+  settingsPaths.push(CLAUDE_SETTINGS);
+  for (const p of settingsPaths) {
+    try {
+      if ((0, import_node_fs4.existsSync)(p)) {
+        const parsed = parseClaudeSettings((0, import_node_fs4.readFileSync)(p, "utf8"));
+        if (!state.model && parsed.model) state.model = parsed.model;
+        if (!state.effort && parsed.effort) state.effort = parsed.effort;
+        if (!state.mode && parsed.mode) {
+          state.mode = parsed.mode;
+          if (state.mode === "bypassPermissions") {
+            state.modes = [...CLAUDE_BYPASS_MODES];
+          } else if (state.mode === "auto" && !state.modes.includes("auto")) {
+            state.modes.push("auto");
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  return state;
+}
+var ClaudeAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "claude";
+    this.label = "Claude";
+  }
+  supports(kind) {
+    return kind === "model" || kind === "effort" || kind === "mode";
+  }
+  getModels() {
+    const cached2 = readClaudeModelsCache();
+    if (cached2.length) return cached2;
+    return [...CLAUDE_DEFAULT_MODELS];
+  }
+  getEfforts(modelId) {
+    if (modelId) {
+      const specific = readClaudeModelEffortsCache(modelId);
+      if (specific.length) return specific;
+      if (modelId.includes("haiku")) return [];
+    }
+    return ["low", "medium", "high", "xhigh", "max"];
+  }
+  getModes(ctx) {
+    const isBypass = isClaudeBypassEnabled(ctx);
+    const hasAuto = ctx?.preview ? parseClaudeModeFromText(ctx.preview) === "auto" : false;
+    const base = isBypass ? [...CLAUDE_BYPASS_MODES] : [...CLAUDE_MODES];
+    if (hasAuto && !base.includes("auto")) {
+      base.push("auto");
+    }
+    return base;
+  }
+  getApplySteps(kind, value, fromValue, modeList) {
+    if (kind === "model") {
+      return slash("/model", value);
+    }
+    if (kind === "effort") {
+      return slash("/effort", value);
+    }
+    if (kind === "mode") {
+      return getClaudeShiftTabSteps(value, fromValue, modeList || this.getModes());
+    }
+    return [];
+  }
+  readCurrentState(ctx) {
+    return readClaudeState(ctx);
+  }
+};
+var CODEX_CONFIG = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".codex", "config.toml");
+var CODEX_MODELS_CACHE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".codex", "models_cache.json");
+var CODEX_DEFAULT_MODELS = [
+  "gpt-5.6-luna",
+  "gpt-5.6-terra",
+  "gpt-5.5",
+  "gpt-5.4-mini",
+  "gpt-reserve"
+];
+function parseCodexConfig(tomlText) {
+  let model;
+  let effort;
+  let mode;
+  const modelMatch = /model\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
+  if (modelMatch) model = modelMatch[1];
+  const effortMatch = /model_reasoning_effort\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
+  if (effortMatch) effort = effortMatch[1];
+  const modeMatch = /sandbox_mode\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
+  if (modeMatch) mode = modeMatch[1];
+  return { model, effort, mode };
+}
+function parseCodexModelsCache(jsonText) {
+  try {
+    const data = JSON.parse(jsonText);
+    if (data && Array.isArray(data.models)) {
+      return data.models.map((m) => typeof m === "string" ? m : m?.slug || m?.id || m?.name).filter((id) => typeof id === "string" && id.trim().length > 0 && !id.toLowerCase().includes("auto-review"));
+    }
+  } catch {
+  }
+  return [];
+}
+function readCodexState(ctx) {
+  try {
+    if (ctx?.worktreePath) {
+      const localCfg = (0, import_node_path6.join)(ctx.worktreePath, ".codex", "config.toml");
+      if ((0, import_node_fs4.existsSync)(localCfg)) {
+        const cfg = parseCodexConfig((0, import_node_fs4.readFileSync)(localCfg, "utf8"));
+        return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
+      }
+    }
+    if ((0, import_node_fs4.existsSync)(CODEX_CONFIG)) {
+      const cfg = parseCodexConfig((0, import_node_fs4.readFileSync)(CODEX_CONFIG, "utf8"));
+      return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
+    }
+  } catch {
+  }
+  return {};
+}
+function readCodexModelsCache() {
+  try {
+    if ((0, import_node_fs4.existsSync)(CODEX_MODELS_CACHE)) {
+      return parseCodexModelsCache((0, import_node_fs4.readFileSync)(CODEX_MODELS_CACHE, "utf8"));
+    }
+  } catch {
+  }
+  return [];
+}
+var CodexAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "codex";
+    this.label = "Codex";
+  }
+  supports(kind) {
+    return kind === "model" || kind === "effort" || kind === "mode";
+  }
+  getModels() {
+    const cached2 = readCodexModelsCache();
+    if (cached2.length) return cached2;
+    return [...CODEX_DEFAULT_MODELS];
+  }
+  getEfforts() {
+    return ["none", "low", "medium", "high", "xhigh", "max"];
+  }
+  getModes() {
+    return ["workspace-write", "read-only", "danger-full-access"];
+  }
+  getApplySteps(kind, value) {
+    if (kind === "model") {
+      return slash("/model", value);
+    }
+    if (kind === "effort") {
+      return slash("/effort", value);
+    }
+    if (kind === "mode") {
+      return slash("/permissions", value);
+    }
+    return [];
+  }
+  readCurrentState(ctx) {
+    return readCodexState(ctx);
+  }
+};
+var OPENCODE_STATE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "model.json");
+var OPENCODE_TUI = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "tui");
+function readOpenCodeState(ctx) {
+  try {
+    if (ctx?.worktreePath) {
+      const localState = (0, import_node_path6.join)(ctx.worktreePath, ".opencode", "model.json");
+      if ((0, import_node_fs4.existsSync)(localState)) {
+        return parseOpenCodeState((0, import_node_fs4.readFileSync)(localState, "utf8"));
+      }
+    }
+    return parseOpenCodeState((0, import_node_fs4.readFileSync)(OPENCODE_STATE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+function readTuiAgent(ctx) {
+  try {
+    if (ctx?.worktreePath) {
+      const localTui = (0, import_node_path6.join)(ctx.worktreePath, ".opencode", "tui");
+      if ((0, import_node_fs4.existsSync)(localTui)) {
+        return parseTuiAgent((0, import_node_fs4.readFileSync)(localTui, "utf8"));
+      }
+    }
+    return parseTuiAgent((0, import_node_fs4.readFileSync)(OPENCODE_TUI, "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+var OpenCodeAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "opencode";
+    this.label = "OpenCode";
+    this.modelNames = {};
+  }
+  supports(kind) {
+    return kind === "model" || kind === "effort" || kind === "mode";
+  }
+  getModels() {
+    return [];
+  }
+  getEfforts() {
+    return ["low", "medium", "high", "max"];
+  }
+  getModes() {
+    return ["build", "plan"];
+  }
+  setModelNames(names) {
+    this.modelNames = names;
+  }
+  /** Orca prefixes opencode tab titles with "OC | " — strip it for the deck. */
+  cleanTitle(title) {
+    return title.replace(/^OC\s*[|｜]\s*/, "");
+  }
+  getApplySteps(kind, value) {
+    if (kind === "model") {
+      return openCodeModelPicker(value, this.modelNames[value]);
+    }
+    if (kind === "effort") {
+      return picker("/variants", value);
+    }
+    if (kind === "mode") {
+      return modePicker(value);
+    }
+    return [];
+  }
+  getDiscoverModelCmd() {
+    return ["opencode", "models", "--verbose"];
+  }
+  parseDiscoveredModels(stdout) {
+    return parseModelIdLines(stdout);
+  }
+  parseDiscoveredModelNames(stdout) {
+    return parseOpenCodeModelNames(stdout);
+  }
+  getDiscoverAgentCmd() {
+    return ["opencode", "agent", "list"];
+  }
+  getDiscoverVariantCmd() {
+    return ["opencode", "models", "--verbose"];
+  }
+  readCurrentState(ctx) {
+    const st = readOpenCodeState(ctx);
+    const tuiAgent = readTuiAgent(ctx);
+    const model = st.model ? `${st.model.providerID}/${st.model.modelID}` : void 0;
+    const effort = model && st.variant ? st.variant[model] : void 0;
+    return {
+      model,
+      effort,
+      mode: tuiAgent,
+      recentModels: st.recent,
+      favoriteModels: st.favorites
+    };
+  }
+  getEffortForModel(model) {
+    const st = readOpenCodeState();
+    return st.variant ? st.variant[model] : void 0;
+  }
+};
+var AGY_SETTINGS = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "settings.json");
+function extractEffortFromModel(modelName) {
+  if (!modelName) return void 0;
+  const s = modelName.trim().toLowerCase();
+  const parenMatch = s.match(/\((low|medium|high|max|thinking)\)/);
+  if (parenMatch) return parenMatch[1];
+  const hyphenMatch = s.match(/-(low|medium|high|max|thinking)$/);
+  if (hyphenMatch) return hyphenMatch[1];
+  return void 0;
+}
+var AGY_MODES = ["default", "accept-edits", "plan"];
+function normalizeAgyMode(mode) {
+  if (!mode) return "default";
+  const m = mode.trim().toLowerCase();
+  if (m === "nothing" || m === "none" || m === "normal" || m === "default" || m === "") return "default";
+  if (m === "plan") return "plan";
+  if (m === "accept-edits" || m === "acceptedits" || m === "accept_edits" || m === "yolo") return "accept-edits";
+  return m;
+}
+function parseAgyHelpModes(text) {
+  const match = /--mode\s+.*?\((\s*[\w\-_,\s]+\s*)\)/i.exec(text || "");
+  if (!match) return [];
+  const rawList = match[1].split(/[,|\s]+/).map((s) => s.trim()).filter(Boolean);
+  if (!rawList.length) return [];
+  const set2 = /* @__PURE__ */ new Set(["default"]);
+  const out = ["default"];
+  const preferredOrder = ["accept-edits", "plan"];
+  for (const p of preferredOrder) {
+    if (rawList.some((r) => normalizeAgyMode(r) === p)) {
+      set2.add(p);
+      out.push(p);
+    }
+  }
+  for (const item of rawList) {
+    const normalized = normalizeAgyMode(item);
+    if (normalized && !set2.has(normalized)) {
+      set2.add(normalized);
+      out.push(normalized);
+    }
+  }
+  return out;
+}
+function getAgyShiftTabSteps(toMode, fromMode, modeList) {
+  const list = modeList && modeList.length ? modeList : AGY_MODES;
+  const target = normalizeAgyMode(toMode);
+  const current = normalizeAgyMode(fromMode);
+  const targetIdx = list.indexOf(target);
+  const currentIdx = list.indexOf(current);
+  if (targetIdx < 0) {
+    return [];
+  }
+  const fromIdx = currentIdx < 0 ? 0 : currentIdx;
+  const count = (targetIdx - fromIdx + list.length) % list.length;
+  if (count === 0) return [];
+  const steps = [];
+  for (let i = 0; i < count; i++) {
+    steps.push({
+      text: "\x1B[Z",
+      enter: false,
+      ...i > 0 ? { delayMs: 120 } : {}
+    });
+  }
+  return steps;
+}
+function parseAgySettings(text) {
+  try {
+    const data = JSON.parse(text);
+    const out = {};
+    if (typeof data?.model === "string" && data.model) {
+      out.model = data.model;
+    }
+    const rawMode = typeof data?.mode === "string" ? data.mode : typeof data?.agent === "string" ? data.agent : void 0;
+    if (rawMode) {
+      out.mode = normalizeAgyMode(rawMode);
+    }
+    return out;
+  } catch {
+  }
+  return {};
+}
+function parseAgyModels(stdout) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const raw of (stdout || "").split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!line || line.startsWith("Fetching")) continue;
+    const parts = line.split("	");
+    const id = parts[0]?.trim();
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+var AGY_LOG_DIR = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "log");
+function parseAgyLogWorkspace(headerText) {
+  if (!headerText) return [];
+  const dirs = [];
+  const wsMatch = /workspaceDirs=\[([^\]]*)\]/.exec(headerText);
+  if (wsMatch && wsMatch[1]) {
+    for (const d of wsMatch[1].split(/[,|\s]+/)) {
+      const trimmed = d.trim();
+      if (trimmed && !dirs.includes(trimmed)) dirs.push(trimmed);
+    }
+  }
+  const initMatch = /Initializing CLI store manager for workspace\s+([^\r\n]+)/.exec(headerText);
+  if (initMatch && initMatch[1]) {
+    const trimmed = initMatch[1].trim();
+    if (trimmed && !dirs.includes(trimmed)) dirs.push(trimmed);
+  }
+  return dirs;
+}
+function isMatchingWorkspace(wsPath, targetPath) {
+  if (!wsPath || !targetPath) return false;
+  const normalize = (p) => {
+    let s = p.trim();
+    while (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1);
+    return s;
+  };
+  const w = normalize(wsPath);
+  const t = normalize(targetPath);
+  if (w === t) return true;
+  if (t.startsWith(w + "/") || w.startsWith(t + "/")) return true;
+  return false;
+}
+function parseAgyLogModel(text) {
+  if (!text) return void 0;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    const m1 = /Propagating selected model override to backend:\s*label="([^"]+)"/.exec(line);
+    if (m1 && m1[1].trim()) {
+      return m1[1].trim();
+    }
+    const m2 = /Resolving model\s+([^\r\n]+)/.exec(line);
+    if (m2 && m2[1].trim()) {
+      return m2[1].trim();
+    }
+    const m3 = /HandleUserInput called with text:\s*"\/model\s+([^"\r\n]+)"/.exec(line);
+    if (m3 && m3[1].trim()) {
+      return m3[1].trim();
+    }
+  }
+  return void 0;
+}
+function parseAgyLogEffort(text) {
+  if (!text) return void 0;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    const m = /HandleUserInput called with text:\s*"\/effort\s+([^"\r\n]+)"/.exec(line);
+    if (m && m[1].trim()) {
+      return m[1].trim().toLowerCase();
+    }
+  }
+  return void 0;
+}
+function parseAgyLogMode(text) {
+  if (!text) return void 0;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    const m = /\]\s+SetCycleMode called:\s*([a-zA-Z0-9_\-]*)/.exec(line);
+    if (m) {
+      return normalizeAgyMode(m[1]);
+    }
+    const mAgent = /HandleUserInput called with text:\s*"\/agent\s+([^"\r\n]+)"/.exec(line);
+    if (mAgent && mAgent[1].trim()) {
+      return normalizeAgyMode(mAgent[1].trim());
+    }
+    const mMode = /HandleUserInput called with text:\s*"\/mode\s+([^"\r\n]+)"/.exec(line);
+    if (mMode && mMode[1].trim()) {
+      return normalizeAgyMode(mMode[1].trim());
+    }
+  }
+  return void 0;
+}
+function readAgyLiveState(ctx) {
+  try {
+    if (!(0, import_node_fs4.existsSync)(AGY_LOG_DIR)) return {};
+    const allFiles = (0, import_node_fs4.readdirSync)(AGY_LOG_DIR).filter((f) => f.startsWith("cli-") && f.endsWith(".log")).map((f) => ({ path: (0, import_node_path6.join)(AGY_LOG_DIR, f), mtime: (0, import_node_fs4.statSync)((0, import_node_path6.join)(AGY_LOG_DIR, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
+    const targetPath = ctx?.worktreePath;
+    let candidateFiles = [];
+    if (targetPath) {
+      const matched = [];
+      for (const file2 of allFiles.slice(0, 30)) {
+        try {
+          const fd = (0, import_node_fs4.openSync)(file2.path, "r");
+          const size = (0, import_node_fs4.fstatSync)(fd).size;
+          const readHeaderLen = Math.min(size, 32 * 1024);
+          const buf = Buffer.alloc(readHeaderLen);
+          (0, import_node_fs4.readSync)(fd, buf, 0, readHeaderLen, 0);
+          (0, import_node_fs4.closeSync)(fd);
+          const header = buf.toString("utf8", 0, readHeaderLen);
+          const workspaces = parseAgyLogWorkspace(header);
+          if (workspaces.some((ws) => isMatchingWorkspace(ws, targetPath))) {
+            matched.push(file2);
+          }
+        } catch {
+        }
+      }
+      if (matched.length) {
+        candidateFiles = matched;
+      }
+    }
+    if (!candidateFiles.length) {
+      candidateFiles = allFiles.slice(0, 5);
+    }
+    let foundModel;
+    let foundEffort;
+    let foundMode;
+    for (const file2 of candidateFiles.slice(0, 5)) {
+      try {
+        const fd = (0, import_node_fs4.openSync)(file2.path, "r");
+        const size = (0, import_node_fs4.fstatSync)(fd).size;
+        const readLen = Math.min(size, 128 * 1024);
+        const buf = Buffer.alloc(readLen);
+        (0, import_node_fs4.readSync)(fd, buf, 0, readLen, Math.max(0, size - readLen));
+        (0, import_node_fs4.closeSync)(fd);
+        const tail = buf.toString("utf8", 0, readLen);
+        if (!foundModel) {
+          foundModel = parseAgyLogModel(tail);
+        }
+        if (!foundEffort) {
+          const rawEffort = parseAgyLogEffort(tail);
+          if (rawEffort) {
+            foundEffort = rawEffort;
+          } else if (foundModel) {
+            foundEffort = extractEffortFromModel(foundModel);
+          }
+        }
+        if (!foundMode) {
+          foundMode = parseAgyLogMode(tail);
+        }
+        if (foundModel && foundEffort && foundMode) break;
+      } catch {
+      }
+    }
+    return { model: foundModel, effort: foundEffort, mode: foundMode };
+  } catch {
+    return {};
+  }
+}
+function parseAgyModeFromText(text) {
+  if (!text) return void 0;
+  const clean = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+  const lines = clean.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].trim().toLowerCase();
+    if (!l) continue;
+    if (l.includes("plan mode") || l.includes("plan") && l.includes("shift+tab") && !l.includes("auto") && !l.includes("accept")) {
+      return "plan";
+    }
+    if (l.includes("auto-approve") || l.includes("accept edits") || l.includes("accept-edits") || l.includes("accept") && l.includes("shift+tab")) {
+      return "accept-edits";
+    }
+    if (l.includes("default mode") || l.includes("manual mode") || l.includes("default") && l.includes("shift+tab")) {
+      return "default";
+    }
+  }
+  return void 0;
+}
+function readAgyState(ctx) {
+  let model;
+  let effort;
+  let mode;
+  try {
+    if ((0, import_node_fs4.existsSync)(AGY_SETTINGS)) {
+      const cfg = parseAgySettings((0, import_node_fs4.readFileSync)(AGY_SETTINGS, "utf8"));
+      model = cfg.model;
+      effort = extractEffortFromModel(cfg.model);
+      if (cfg.mode) mode = normalizeAgyMode(cfg.mode);
+    }
+  } catch {
+  }
+  const live = readAgyLiveState(ctx);
+  if (live.model) {
+    model = live.model;
+    effort = extractEffortFromModel(live.model) || live.effort || effort;
+  } else if (live.effort) {
+    effort = live.effort;
+  }
+  if (live.mode) {
+    mode = live.mode;
+  }
+  if (ctx?.preview) {
+    const previewMode = parseAgyModeFromText(ctx.preview);
+    if (previewMode) {
+      mode = previewMode;
+    }
+  }
+  return { model, effort, mode };
+}
+var AgyAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "agy";
+    this.label = "Agy";
+  }
+  supports(kind) {
+    return kind === "model" || kind === "effort" || kind === "mode";
+  }
+  getModels() {
+    return [
+      "gemini-3.8-flash-medium",
+      "gemini-3.8-flash-high",
+      "gemini-3.8-flash-low",
+      "gemini-3.7-flash-medium",
+      "gemini-3.1-pro-high",
+      "claude-sonnet-4-6"
+    ];
+  }
+  getEfforts() {
+    return ["low", "medium", "high"];
+  }
+  getModes() {
+    return [...AGY_MODES];
+  }
+  getApplySteps(kind, value, fromValue, modeList) {
+    if (kind === "model") {
+      return slash("/model", value);
+    }
+    if (kind === "effort") {
+      return slash("/effort", value);
+    }
+    if (kind === "mode") {
+      return getAgyShiftTabSteps(value, fromValue, modeList || this.getModes());
+    }
+    return [];
+  }
+  getDiscoverModelCmd() {
+    return ["agy", "models"];
+  }
+  getDiscoverAgentCmd() {
+    return ["agy", "--help"];
+  }
+  parseDiscoveredModels(stdout) {
+    return parseAgyModels(stdout);
+  }
+  parseDiscoveredModes(stdout) {
+    return parseAgyHelpModes(stdout);
+  }
+  readCurrentState(ctx) {
+    return readAgyState(ctx);
+  }
+  getEffortForModel(model) {
+    return extractEffortFromModel(model);
+  }
+};
+var HERMES_CONFIG = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".hermes", "config.yaml");
+var HERMES_MODELS_CACHE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".hermes", "provider_models_cache.json");
+function parseHermesConfig(yamlText) {
+  let model;
+  let effort;
+  const defaultModelMatch = /^\s*default:\s*['"]?([^'"\r\n]+)['"]?/m.exec(yamlText || "");
+  if (defaultModelMatch) {
+    model = defaultModelMatch[1].trim();
+  } else {
+    const rootModelMatch = /^model:\s*['"]?([^'"\r\n{]+)['"]?/m.exec(yamlText || "");
+    if (rootModelMatch && rootModelMatch[1].trim()) {
+      model = rootModelMatch[1].trim();
+    }
+  }
+  const effortMatch = /reasoning_effort:\s*['"]?([^'"\r\n]+)['"]?/m.exec(yamlText || "");
+  if (effortMatch && effortMatch[1].trim()) {
+    effort = effortMatch[1].trim();
+  }
+  return { model, effort };
+}
+function parseHermesModelsCache(jsonText) {
+  try {
+    const data = JSON.parse(jsonText);
+    const set2 = /* @__PURE__ */ new Set();
+    const out = [];
+    if (data && typeof data === "object") {
+      for (const val of Object.values(data)) {
+        if (val && Array.isArray(val.models)) {
+          for (const m of val.models) {
+            if (typeof m === "string" && m.trim()) {
+              const id = m.trim();
+              if (!set2.has(id)) {
+                set2.add(id);
+                out.push(id);
+              }
+            }
+          }
+        }
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+function readHermesState(ctx) {
+  try {
+    if (ctx?.worktreePath) {
+      const localCfg = (0, import_node_path6.join)(ctx.worktreePath, ".hermes", "config.yaml");
+      if ((0, import_node_fs4.existsSync)(localCfg)) {
+        const cfg = parseHermesConfig((0, import_node_fs4.readFileSync)(localCfg, "utf8"));
+        return { model: cfg.model, effort: cfg.effort };
+      }
+    }
+    if ((0, import_node_fs4.existsSync)(HERMES_CONFIG)) {
+      const cfg = parseHermesConfig((0, import_node_fs4.readFileSync)(HERMES_CONFIG, "utf8"));
+      return { model: cfg.model, effort: cfg.effort };
+    }
+  } catch {
+  }
+  return {};
+}
+function readHermesModelsCache() {
+  try {
+    if ((0, import_node_fs4.existsSync)(HERMES_MODELS_CACHE)) {
+      return parseHermesModelsCache((0, import_node_fs4.readFileSync)(HERMES_MODELS_CACHE, "utf8"));
+    }
+  } catch {
+  }
+  return [];
+}
+var HermesAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "hermes";
+    this.label = "Hermes";
+  }
+  supports(kind) {
+    return kind === "model" || kind === "effort";
+  }
+  getModels() {
+    const cached2 = readHermesModelsCache();
+    if (cached2.length) return cached2;
+    return [
+      "deepseek/deepseek-v4-flash-0731",
+      "anthropic/claude-sonnet-4-6",
+      "openai/gpt-5.6-luna",
+      "google/gemini-3.8-flash",
+      "minimax/minimax-m3"
+    ];
+  }
+  getEfforts() {
+    return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+  }
+  getModes() {
+    return [];
+  }
+  getApplySteps(kind, value) {
+    if (kind === "model") {
+      return slash("/model", value);
+    }
+    if (kind === "effort") {
+      return slash("/reasoning", value);
+    }
+    return [];
+  }
+  readCurrentState(ctx) {
+    return readHermesState(ctx);
+  }
+};
+var PI_AGENT_DIR = process.env.PI_CODING_AGENT_DIR?.trim() || (0, import_node_path6.join)((0, import_node_os.homedir)(), ".pi", "agent");
+var PI_SETTINGS = (0, import_node_path6.join)(PI_AGENT_DIR, "settings.json");
+var PI_MODELS_STORE = (0, import_node_path6.join)(PI_AGENT_DIR, "models-store.json");
+function firstExistingPath(candidates, fallback) {
+  for (const p of candidates) if ((0, import_node_fs4.existsSync)(p)) return p;
+  return fallback;
+}
+var PI_CMD = firstExistingPath(
+  [(0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "bin", "pi"), "/opt/homebrew/bin/pi", "/usr/local/bin/pi"],
+  "pi"
+);
+var PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+var PI_DEFAULT_MODELS = [
+  "anthropic/claude-sonnet-4-6",
+  "anthropic/claude-opus-4-6",
+  "openai-codex/gpt-5.6-luna",
+  "opencode/claude-opus-4-6",
+  "openrouter/~anthropic/claude-sonnet-latest"
+];
+function piSessionsRoot() {
+  const resolve2 = (p) => p.startsWith("~") ? (0, import_node_path6.join)((0, import_node_os.homedir)(), p.slice(1)) : p.startsWith("/") ? p : (0, import_node_path6.join)(PI_AGENT_DIR, p);
+  const env = process.env.PI_CODING_AGENT_SESSION_DIR?.trim();
+  if (env) return resolve2(env);
+  try {
+    const cfg = JSON.parse((0, import_node_fs4.readFileSync)(PI_SETTINGS, "utf8"));
+    if (typeof cfg?.sessionDir === "string" && cfg.sessionDir.trim()) return resolve2(cfg.sessionDir.trim());
+  } catch {
+  }
+  return (0, import_node_path6.join)(PI_AGENT_DIR, "sessions");
+}
+function piSessionDir(worktreePath) {
+  const resolved = (0, import_node_path6.resolve)(worktreePath);
+  const safePath = `--${resolved.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+  return (0, import_node_path6.join)(piSessionsRoot(), safePath);
+}
+function parsePiSessionTail(text) {
+  let model;
+  let effort;
+  const recent = [];
+  const lines = (text || "").split("\n");
+  const idOf = (provider, modelId) => {
+    const mid = typeof modelId === "string" ? modelId.trim() : "";
+    if (!mid) return "";
+    const prov = typeof provider === "string" ? provider.trim() : "";
+    if (!prov) return mid;
+    return mid.startsWith(`${prov}/`) ? mid : `${prov}/${mid}`;
+  };
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const raw = lines[i].trim();
+    if (!raw.startsWith("{")) continue;
+    let d;
+    try {
+      d = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!model && d?.type === "model_change") {
+      const id2 = idOf(d.provider, d.modelId ?? d.model);
+      if (id2) model = id2;
+    }
+    if (!effort && d?.type === "thinking_level_change" && typeof d.thinkingLevel === "string" && d.thinkingLevel.trim()) {
+      effort = d.thinkingLevel.trim();
+    }
+    const id = d?.type === "model_change" ? idOf(d.provider, d.modelId ?? d.model) : idOf(d?.message?.provider, d?.message?.model);
+    if (id) {
+      if (!model) model = id;
+      if (!recent.includes(id) && recent.length < 8) recent.push(id);
+    }
+  }
+  return { model, effort, ...recent.length ? { recentModels: recent } : {} };
+}
+function parsePiSettings(text) {
+  try {
+    const data = JSON.parse(text);
+    const provider = typeof data?.defaultProvider === "string" ? data.defaultProvider.trim() : "";
+    const modelId = typeof data?.defaultModel === "string" ? data.defaultModel.trim() : "";
+    const effort = typeof data?.defaultThinkingLevel === "string" && data.defaultThinkingLevel.trim() ? data.defaultThinkingLevel.trim() : void 0;
+    const model = modelId ? provider && !modelId.includes("/") ? `${provider}/${modelId}` : modelId : void 0;
+    return { model, effort };
+  } catch {
+    return {};
+  }
+}
+function parsePiListModels(stdout) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const raw of (stdout || "").split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!line) continue;
+    const cols = line.split(/\s{2,}/).map((c) => c.trim()).filter(Boolean);
+    if (cols.length < 2) continue;
+    const [provider, model] = cols;
+    if (provider.toLowerCase() === "provider" && model.toLowerCase() === "model") continue;
+    if (!/^[A-Za-z0-9_.~:-]+$/.test(provider) || !/^[A-Za-z0-9_.~:/-]+$/.test(model)) continue;
+    const id = `${provider}/${model}`;
+    if (!seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+function parsePiModelsStore(text) {
+  const models = [];
+  const reasoning = {};
+  const efforts = {};
+  const seen = /* @__PURE__ */ new Set();
+  try {
+    const data = JSON.parse(text);
+    if (!data || typeof data !== "object") return { models, reasoning, efforts };
+    for (const [provider, val] of Object.entries(data)) {
+      const list = Array.isArray(val?.models) ? val.models : [];
+      for (const m of list) {
+        const id = typeof m?.id === "string" ? m.id.trim() : "";
+        if (!id) continue;
+        const full = `${provider}/${id}`;
+        if (!seen.has(full)) {
+          seen.add(full);
+          models.push(full);
+        }
+        reasoning[full] = m?.reasoning === true;
+        const map2 = m?.thinkingLevelMap;
+        if (map2 && typeof map2 === "object") {
+          const levels = PI_THINKING_LEVELS.filter((lvl) => map2[lvl] !== null);
+          if (levels.length) efforts[full] = levels;
+        }
+      }
+    }
+  } catch {
+  }
+  return { models, reasoning, efforts };
+}
+var piStoreCache = null;
+function readPiModelsStore() {
+  try {
+    const mtimeMs = (0, import_node_fs4.statSync)(PI_MODELS_STORE).mtimeMs;
+    if (piStoreCache && piStoreCache.mtimeMs === mtimeMs) return piStoreCache.data;
+    const data = parsePiModelsStore((0, import_node_fs4.readFileSync)(PI_MODELS_STORE, "utf8"));
+    piStoreCache = { mtimeMs, data };
+    return data;
+  } catch {
+    return { models: [], reasoning: {}, efforts: {} };
+  }
+}
+function mergePiSessionParses(newer, older) {
+  const recent = [];
+  for (const m of [...newer.recentModels ?? [], ...older.recentModels ?? []]) {
+    if (!recent.includes(m) && recent.length < 8) recent.push(m);
+  }
+  return {
+    model: newer.model ?? older.model,
+    effort: newer.effort ?? older.effort,
+    ...recent.length ? { recentModels: recent } : {}
+  };
+}
+function readPiSessionState(path5, opts = {}) {
+  const headBytes = opts.headBytes ?? 16 * 1024;
+  const tailBytes = opts.tailBytes ?? 1024 * 1024;
+  let fd;
+  try {
+    fd = (0, import_node_fs4.openSync)(path5, "r");
+    const size = (0, import_node_fs4.fstatSync)(fd).size;
+    if (size <= headBytes + tailBytes) {
+      const buf = Buffer.alloc(size);
+      (0, import_node_fs4.readSync)(fd, buf, 0, size, 0);
+      return parsePiSessionTail(buf.toString("utf8", 0, size));
+    }
+    const hlen = Math.min(size, headBytes);
+    const headBuf = Buffer.alloc(hlen);
+    (0, import_node_fs4.readSync)(fd, headBuf, 0, hlen, 0);
+    const head = parsePiSessionTail(headBuf.toString("utf8", 0, hlen));
+    const tlen = Math.min(size, tailBytes);
+    const tailBuf = Buffer.alloc(tlen);
+    (0, import_node_fs4.readSync)(fd, tailBuf, 0, tlen, size - tlen);
+    const tail = parsePiSessionTail(tailBuf.toString("utf8", 0, tlen));
+    return mergePiSessionParses(tail, head);
+  } catch {
+    return {};
+  } finally {
+    if (fd !== void 0) {
+      try {
+        (0, import_node_fs4.closeSync)(fd);
+      } catch {
+      }
+    }
+  }
+}
+function readPiState(ctx) {
+  const state = {};
+  if (ctx?.worktreePath) {
+    try {
+      const dir = piSessionDir(ctx.worktreePath);
+      if ((0, import_node_fs4.existsSync)(dir)) {
+        const files = (0, import_node_fs4.readdirSync)(dir).filter((f) => f.endsWith(".jsonl")).map((f) => ({ path: (0, import_node_path6.join)(dir, f), mtime: (0, import_node_fs4.statSync)((0, import_node_path6.join)(dir, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
+        const recent = [];
+        for (const item of files.slice(0, 3)) {
+          const parsed = readPiSessionState(item.path);
+          if (!state.model && parsed.model) state.model = parsed.model;
+          if (!state.effort && parsed.effort) state.effort = parsed.effort;
+          for (const m of parsed.recentModels ?? []) {
+            if (!recent.includes(m) && recent.length < 8) recent.push(m);
+          }
+          if (state.model && state.effort && recent.length >= 8) break;
+        }
+        if (recent.length) state.recentModels = recent;
+      }
+    } catch {
+    }
+  }
+  const cfgPaths = [PI_SETTINGS];
+  if (ctx?.worktreePath) cfgPaths.push((0, import_node_path6.join)(ctx.worktreePath, ".pi", "settings.json"));
+  let cfgModel;
+  let cfgEffort;
+  for (const p of cfgPaths) {
+    try {
+      if (!(0, import_node_fs4.existsSync)(p)) continue;
+      const parsed = parsePiSettings((0, import_node_fs4.readFileSync)(p, "utf8"));
+      if (parsed.model) cfgModel = parsed.model;
+      if (parsed.effort) cfgEffort = parsed.effort;
+    } catch {
+    }
+  }
+  if (!state.model && cfgModel) state.model = cfgModel;
+  if (!state.effort && cfgEffort) state.effort = cfgEffort;
+  return state;
+}
+var PiAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "pi";
+    this.label = "Pi";
+  }
+  supports(kind) {
+    return kind === "model" || kind === "effort";
+  }
+  getModels() {
+    const cached2 = readPiModelsStore().models;
+    if (cached2.length) return cached2;
+    return [...PI_DEFAULT_MODELS];
+  }
+  getEfforts(modelId) {
+    if (modelId) {
+      const store = readPiModelsStore();
+      if (store.reasoning[modelId] === false) return ["off"];
+      const levels = store.efforts[modelId];
+      if (levels && levels.length) return [...levels];
+    }
+    return [...PI_THINKING_LEVELS];
+  }
+  getApplySteps(kind, value) {
+    if (kind === "model") {
+      return slash("/model", value);
+    }
+    if (kind === "effort") {
+      return slash("/thinking", value);
+    }
+    return [];
+  }
+  getDiscoverModelCmd() {
+    return [PI_CMD, "--list-models"];
+  }
+  parseDiscoveredModels(stdout) {
+    return parsePiListModels(stdout);
+  }
+  readCurrentState(ctx) {
+    return readPiState(ctx);
+  }
+  getEffortForModel(model) {
+    return readPiModelsStore().reasoning[model] === false ? "off" : void 0;
+  }
+};
+var UnsupportedAgent = class extends AbstractAgent {
+  constructor() {
+    super(...arguments);
+    this.agentType = "";
+    this.label = "Unsupported";
+  }
+  supports(_kind) {
+    return false;
+  }
+  getApplySteps(_kind, _value) {
+    return [];
+  }
+};
+var AGENT_INSTANCES = {
+  claude: new ClaudeAgent(),
+  codex: new CodexAgent(),
+  code: new CodexAgent(),
+  opencode: new OpenCodeAgent(),
+  agy: new AgyAgent(),
+  antigravity: new AgyAgent(),
+  hermes: new HermesAgent(),
+  "hermes-cli": new HermesAgent(),
+  "hermes-agent": new HermesAgent(),
+  pi: new PiAgent(),
+  "pi-cli": new PiAgent()
+};
+var UNSUPPORTED_AGENT = new UnsupportedAgent();
+function agentFor(agentType) {
+  if (!agentType) return UNSUPPORTED_AGENT;
+  const key = agentType.trim().toLowerCase();
+  return AGENT_INSTANCES[key] ?? UNSUPPORTED_AGENT;
+}
+function profileFor(agentType) {
+  const agent = agentFor(agentType);
+  return {
+    agentType: agent.agentType,
+    label: agent.label,
+    models: agent.getModels(),
+    efforts: agent.getEfforts(),
+    modes: agent.getModes(),
+    model: {
+      supported: agent.supports("model"),
+      steps: (v, from) => agent.getApplySteps("model", v, from)
+    },
+    effort: {
+      supported: agent.supports("effort"),
+      steps: (v, from) => agent.getApplySteps("effort", v, from)
+    },
+    mode: {
+      supported: agent.supports("mode"),
+      steps: (v, from) => agent.getApplySteps("mode", v, from)
+    }
+  };
+}
+var UNSUPPORTED_PROFILE = profileFor("");
+var AGENTS = {
+  claude: profileFor("claude"),
+  codex: profileFor("codex"),
+  code: profileFor("code"),
+  opencode: profileFor("opencode"),
+  agy: profileFor("agy"),
+  antigravity: profileFor("antigravity"),
+  hermes: profileFor("hermes"),
+  "hermes-cli": profileFor("hermes-cli"),
+  "hermes-agent": profileFor("hermes-agent"),
+  pi: profileFor("pi"),
+  "pi-cli": profileFor("pi-cli")
+};
+var HIDDEN_PRIMARY_AGENTS = /* @__PURE__ */ new Set(["compaction", "summary", "title"]);
+function parsePrimaryAgents(stdout) {
+  const out = [];
+  for (let line of (stdout || "").split("\n")) {
+    line = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    const m = /^([\w.-]+)\s*\(primary\)$/.exec(line);
+    if (m && !HIDDEN_PRIMARY_AGENTS.has(m[1])) out.push(m[1]);
+  }
+  return out;
+}
+function parseModelVariants(stdout, modelId) {
+  for (const block of splitJsonBlocks(stdout || "")) {
+    if (block.id === modelId && block.variants && typeof block.variants === "object") {
+      const keys = Object.keys(block.variants);
+      if (keys.length) return ["default", ...keys];
+    }
+  }
+  return [];
+}
+function splitJsonBlocks(text) {
+  const out = [];
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].trim().startsWith("{")) continue;
+    const buf = [lines[i]];
+    for (let j = i + 1; j < lines.length; j++) {
+      buf.push(lines[j]);
+      try {
+        const o = JSON.parse(buf.join("\n"));
+        if (typeof o === "object" && o !== null) {
+          out.push(o);
+          i = j;
+          break;
+        }
+      } catch {
+      }
+    }
+  }
+  return out;
+}
+function parseModels(stdout) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const raw of stdout.split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!line) continue;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    out.push(line);
+  }
+  return out;
+}
+function parseModelIdLines(stdout) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const raw of (stdout || "").split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!line) continue;
+    if (/^[A-Za-z0-9_~.:-]+\/[A-Za-z0-9_~./:-]+$/.test(line) && !seen.has(line)) {
+      seen.add(line);
+      out.push(line);
+    }
+  }
+  return out;
+}
+function parseOpenCodeModelNames(stdout) {
+  const names = {};
+  for (const block of splitJsonBlocks(stdout || "")) {
+    const pid = block.providerID;
+    const id = block.id;
+    const name = block.name;
+    if (typeof pid === "string" && typeof id === "string" && typeof name === "string" && name) {
+      names[`${pid}/${id}`] = name;
+    }
+  }
+  return names;
+}
+function modelFilterText(id, name) {
+  const provider = id.split("/")[0] ?? "";
+  const display = name?.trim();
+  return display ? `${provider} ${display}` : provider;
+}
+function fullIds(entries) {
+  if (!Array.isArray(entries)) return void 0;
+  const out = [];
+  for (const e of entries) {
+    if (e && typeof e === "object" && e.providerID && e.modelID) {
+      out.push(`${String(e.providerID)}/${String(e.modelID)}`);
+    }
+  }
+  return out.length ? out : void 0;
+}
+function parseOpenCodeState(text) {
+  try {
+    const j = JSON.parse(text);
+    const r = Array.isArray(j?.recent) ? j.recent[0] : void 0;
+    const model = r && typeof r === "object" && r.providerID && r.modelID ? { providerID: String(r.providerID), modelID: String(r.modelID) } : void 0;
+    const variant = j?.variant && typeof j?.variant === "object" && !Array.isArray(j.variant) ? j.variant : void 0;
+    return { model, variant, recent: fullIds(j?.recent), favorites: fullIds(j?.favorite) };
+  } catch {
+    return {};
+  }
+}
+function sortModels(discovered, recent, favorites) {
+  const have = new Set(discovered);
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  const push = (id) => {
+    if (have.has(id) && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  };
+  for (const f of favorites ?? []) push(f);
+  for (const r of recent ?? []) push(r);
+  for (const d of discovered) push(d);
+  return out;
+}
+function parseTuiAgent(text) {
+  const m = /^agent\s*=\s*"([^"]+)"/m.exec(text || "");
+  return m ? m[1] : void 0;
+}
+
+// src/icons.ts
+var lucide = __toESM(require_lucide_static(), 1);
+var import_node_fs5 = require("node:fs");
+var import_node_path7 = require("node:path");
+var import_node_os2 = require("node:os");
 var memCache = /* @__PURE__ */ new Map();
 var inflightFetches = /* @__PURE__ */ new Map();
-var CACHE_DIR = (0, import_node_path6.join)((0, import_node_os.tmpdir)(), "agentdeck-icons");
+var CACHE_DIR = (0, import_node_path7.join)((0, import_node_os2.tmpdir)(), "agentdeck-icons");
 function ensureCacheDir() {
   try {
-    if (!(0, import_node_fs4.existsSync)(CACHE_DIR)) (0, import_node_fs4.mkdirSync)(CACHE_DIR, { recursive: true });
+    if (!(0, import_node_fs5.existsSync)(CACHE_DIR)) (0, import_node_fs5.mkdirSync)(CACHE_DIR, { recursive: true });
   } catch {
   }
 }
@@ -54418,14 +55969,14 @@ function resolveLucideSvg(name) {
 }
 function resolveLocalIconUri(repoPath, relPath) {
   if (!relPath) return void 0;
-  const fullPath = (0, import_node_path6.isAbsolute)(relPath) ? relPath : repoPath ? (0, import_node_path6.join)(repoPath, relPath) : void 0;
+  const fullPath = (0, import_node_path7.isAbsolute)(relPath) ? relPath : repoPath ? (0, import_node_path7.join)(repoPath, relPath) : void 0;
   if (!fullPath) return void 0;
   const key = `local:${fullPath}`;
   if (memCache.has(key)) return memCache.get(key)?.uri;
   try {
-    if ((0, import_node_fs4.existsSync)(fullPath)) {
-      const buf = (0, import_node_fs4.readFileSync)(fullPath);
-      const ext = (0, import_node_path6.extname)(fullPath).toLowerCase();
+    if ((0, import_node_fs5.existsSync)(fullPath)) {
+      const buf = (0, import_node_fs5.readFileSync)(fullPath);
+      const ext = (0, import_node_path7.extname)(fullPath).toLowerCase();
       const mime = MIME_MAP[ext] || "image/png";
       const uri = `data:${mime};base64,${buf.toString("base64")}`;
       memCache.set(key, { uri });
@@ -54450,10 +56001,10 @@ async function fetchRemoteIconUri(url2) {
     return inflightFetches.get(url2);
   }
   ensureCacheDir();
-  const diskPath = (0, import_node_path6.join)(CACHE_DIR, `${hashStr(url2)}.dat`);
-  if ((0, import_node_fs4.existsSync)(diskPath)) {
+  const diskPath = (0, import_node_path7.join)(CACHE_DIR, `${hashStr(url2)}.dat`);
+  if ((0, import_node_fs5.existsSync)(diskPath)) {
     try {
-      const uri = (0, import_node_fs4.readFileSync)(diskPath, "utf8");
+      const uri = (0, import_node_fs5.readFileSync)(diskPath, "utf8");
       memCache.set(key, { uri });
       return uri;
     } catch {
@@ -54468,7 +56019,7 @@ async function fetchRemoteIconUri(url2) {
       const uri = `data:${mime};base64,${buf.toString("base64")}`;
       memCache.set(key, { uri });
       try {
-        (0, import_node_fs4.writeFileSync)(diskPath, uri, "utf8");
+        (0, import_node_fs5.writeFileSync)(diskPath, uri, "utf8");
       } catch {
       }
       return uri;
@@ -54540,6 +56091,43 @@ function colorFor(state) {
   if (state && STATE_COLOR[state]) return STATE_COLOR[state];
   return "white";
 }
+function sessionRecency(...times) {
+  let max = 0;
+  for (const t of times) {
+    if (typeof t === "number" && Number.isFinite(t) && t > max) max = t;
+  }
+  return max;
+}
+var DEFAULT_ACTIVITY_BUCKET_MS = 60 * 1e3;
+function activityBucket(timestamp, bucketMs = DEFAULT_ACTIVITY_BUCKET_MS) {
+  if (typeof timestamp !== "number" || !Number.isFinite(timestamp) || timestamp <= 0) return 0;
+  return Math.floor(timestamp / Math.max(1, bucketMs));
+}
+function sortSessionsByProject(sessions, projectOf2, recencyOf, handleOf, opts = {}) {
+  const bucketMs = opts.bucketMs ?? DEFAULT_ACTIVITY_BUCKET_MS;
+  const entries = sessions.map((s) => ({
+    s,
+    project: projectOf2(s) ?? "",
+    bucket: activityBucket(recencyOf(s), bucketMs),
+    handle: handleOf(s)
+  }));
+  const groupBucket = /* @__PURE__ */ new Map();
+  for (const e of entries) {
+    const prev = groupBucket.get(e.project) ?? 0;
+    if (e.bucket > prev) groupBucket.set(e.project, e.bucket);
+  }
+  entries.sort((a, b) => {
+    if (a.project !== b.project) {
+      const ra = groupBucket.get(a.project) ?? 0;
+      const rb = groupBucket.get(b.project) ?? 0;
+      if (ra !== rb) return rb - ra;
+      return a.project.localeCompare(b.project);
+    }
+    if (a.bucket !== b.bucket) return b.bucket - a.bucket;
+    return a.handle.localeCompare(b.handle);
+  });
+  return entries.map((e) => e.s);
+}
 function nextWorktreeName(repo, existingNames) {
   const prefix = `${repo}-`;
   let maxN = 1;
@@ -54572,6 +56160,7 @@ function buildDeck(input, opts = {}) {
   };
   const stateByPane = /* @__PURE__ */ new Map();
   const agentByPane = /* @__PURE__ */ new Map();
+  const timeByPane = /* @__PURE__ */ new Map();
   const metaByWt = /* @__PURE__ */ new Map();
   for (const wt of input.worktrees ?? []) {
     for (const a of wt.agents ?? []) {
@@ -54582,6 +56171,7 @@ function buildDeck(input, opts = {}) {
       }
       stateByPane.set(a.paneKey, st);
       if (!agentByPane.has(a.paneKey)) agentByPane.set(a.paneKey, a.agentType ?? "");
+      timeByPane.set(a.paneKey, sessionRecency(timeByPane.get(a.paneKey), observedAt));
     }
     if (wt.worktreeId) {
       const branch = wt.displayName || (wt.branch ?? "").replace(/^refs\/heads\//, "");
@@ -54596,7 +56186,7 @@ function buildDeck(input, opts = {}) {
     }
     return tabTitlesFromLayouts.get(tabId);
   };
-  const sessions = (input.terminals ?? []).map((t) => {
+  const sessionsRaw = (input.terminals ?? []).map((t) => {
     const pane = `${t.tabId}:${t.leafId}`;
     const hasWt = stateByPane.has(pane);
     const idFromWt = agentByPane.get(pane);
@@ -54613,7 +56203,11 @@ function buildDeck(input, opts = {}) {
       state = stateByPane.get(pane) || "idle";
       if (state !== "unverifiable" && state !== "done") {
         if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
-          state = "waiting";
+          const hookSaysWaiting = hook.state === "waiting" || hook.state === "blocked";
+          const pauseOnTool = agent === "agy" || agent === "antigravity";
+          if (hookSaysWaiting || !hook.state && (hookEvent === "Notification" || pauseOnTool)) {
+            state = "waiting";
+          }
         } else if (hookEvent === "PostToolUse" || hookEvent === "UserPrompt") {
           state = "working";
         }
@@ -54642,9 +56236,17 @@ function buildDeck(input, opts = {}) {
       agent,
       state,
       agentType: agent,
-      tabTitle
+      tabTitle,
+      recency: sessionRecency(t.lastOutputAt, timeByPane.get(pane), hook?.receivedAt)
     };
-  }).filter((x) => x !== null).sort((a, b) => a.t.handle.localeCompare(b.t.handle));
+  }).filter((x) => x !== null);
+  const sessions = sortSessionsByProject(
+    sessionsRaw,
+    (s) => projectOf(s.t.worktreePath, s.t.worktreeId ? metaByWt.get(s.t.worktreeId)?.repo : void 0),
+    (s) => s.recency,
+    (s) => s.t.handle,
+    { bucketMs: opts.activityBucketMs }
+  );
   const repoById = /* @__PURE__ */ new Map();
   const repoByPath = /* @__PURE__ */ new Map();
   const repoByName = /* @__PURE__ */ new Map();
@@ -54677,11 +56279,12 @@ function buildDeck(input, opts = {}) {
     const repoId = e.item.t.worktreeId ? e.item.t.worktreeId.split("::")[0] : void 0;
     const repo = (repoId ? repoById.get(repoId) : void 0) || (e.item.t.worktreePath ? repoByPath.get(e.item.t.worktreePath) : void 0) || (e.project ? repoByName.get(e.project.toLowerCase()) : void 0);
     const iconInfo = repo ? resolveRepoBgIcon(repo) : void 0;
+    const shownTitle = agentFor(e.item.agentType).cleanTitle(e.item.tabTitle || e.item.t.title || "");
     slots.push({
       empty: false,
       handle: e.item.t.handle,
-      label: e.item.tabTitle || e.item.t.title || "",
-      tabTitle: e.item.tabTitle || e.item.t.title || void 0,
+      label: shownTitle,
+      tabTitle: shownTitle || void 0,
       state: e.item.state,
       color: colorFor(e.item.state),
       worktreePath: e.item.t.worktreePath,
@@ -54828,6 +56431,11 @@ var CLAUDE_SVG_PATH = "M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.
 var CODEX_SVG_PATH = "M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z";
 var ANTIGRAVITY_PNG_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAABYlBMVEVHcEw5iPw2i/IziPztaDo3ifeJwGA6iPhkhug3ifjtVEg6ivgujO00h/8wivRztHQ0iftrgdLrhy41ifA0iPs+mMJNrp7rWEgwifjgryrcVmJ4wXDiUlmPeMCGxWK3w0FhprPZVmJato0pktxVjflCqKqjbqeLxWKQeL/opSZBp6z1Uj3Xuy01ifwwiPg1h/87if8wh/wvivRCiv4vi+8zktxNjPsvjek1ltEwj+Q5nMTwV0BDpK9Rg+hZifJ5e8tMq6C7ZHk+h/k2h/nOW2lXsJBAn7mGdrx1vG9dgd1Jh/SebZ3lU07meDlitoKuZo1kfszdWlOgvlBWk69wgttBhe/Ia14/iOTaZ01Cj87gpSxzfbOHdqeVcaxMh9O7uz90loxwiKFah77GelWfrVdToKGSe4uud2+kcIXlky6Sm22+qENyp37Mh0iHq2pfpo6tmVeuh2LSszGJhonJlkKWi3VeO12PAAAALXRSTlMARBro/o/8f/1lxVMt8q79vAf6/cv6i23YVBo4QcePmg6TzuC5S3QaM6re4bufpM1dAAADxklEQVRYhZ2X+T9iURTAXz2VVIQYxowxY4wxM7wShWwVSrIvlchStopR+P/n3O0t3tqcH933/d5zzj339sFxBjE40dOz3dbxwegbI/z09AEE221tsf9STJyC4IEIYh2t83+aTVEAht+t8l+aRPC4TVJoNYfBi4tms3b6+voIhjw2fG1JcAFRq9WwoJxv2wdB7GMrBcgE5e18Pr8fy7ZSxPgBRKVSe35+fmyUy2VsiMU+WU8A85UKCBpIcAKCbDZrOYURkkDlqfpcbSDDyUl+HxmspjB84HQ6nyCq1epbo3F3d0INVlNwyniIO2RYW0OGbkv8kNOZTnd1ddXr9cvLt5e3WzDEicHanRjGfB3zl5cvL7e39/fxeBwMFmvA/E79LwQIrmSGtX0rwzSUTqd3dtYBv7k5PLyCOEOGXWywUEP3MObXAUcCMBSvzs62qMFKDV0if4ji+rpYLIJhaxcbzPlxzK+uLi5ubBz2AS8z7MbXzGepX+L7+gqFAjLsIcM5TsL8Un9T8oVSqbS3t7dSTFGDqYDxCwtzc8DnmCGVOscGs4MckvjC3OzsbC6XWyqVNsFAFLs/zFog7Y/w+RwyLG1Khs9mLZDx8/PRaDSHFZugoAZjvlvOR6Mzvb29x8fHS0s4CWRInf80FIwp+RlqOMaGoxWkMG5Cv5Kfnp5KJpMJ0QCKlHETfsl5wKeQIJkARYYYQGHEj0j8DOGxAAyZDBja25HAqAlj8v0RHgqFiAAZlrHhyGXUAjUPIYiG5XZQGDWhT1F/iPKCMCk3tOs/rXbF/qGQz+9wu12dvDAZDCbCCSRACpuuwE3nj/C8h/3dFhCCwWA4HIlEkMGhK+iU56/4zI0F4Qwx6AogAbw/4t3KJRsxkBzsOrxXxqvOSm5wa9EQDjpAwHeqV11YgAyR7zqCUfEAfFrLAZZCJKJ9kHapgZoHZReLiHi01jmX2AC/doYu0aBdwyi7QSG9LvvENmiterUnQB50GsLaNTjEG6A/6zwzaBXJTlA9AlLYBGYYUa15WAJJfZ7jBphBvcsAK0BvzHB4BWRACtUKK4A34jnOzwzv9/GzBPQvOw67QA3vNvIyPmDMw2ERQTCsPMkA8NPoDdObISl8NAdFCh46gkZHyMImCEQh/7aX8gPmPLxbzCBl20l+RKwUwIpACrFfbsZr31JVeAVqoJfGy34E9F/bd+GhBgEPg53xGs+YXriYAU0NT/PXeUW0w8EM3Zyr9f3lOTg4fqq1+lm4icDHEd7kBmiFF58mz9n40IDL2r8yqiQCvN/+D+aPcPZ+RgT3AAAAAElFTkSuQmCC";
 var HERMES_SVG_PATH = "M12 2a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm1 4.1a5.002 5.002 0 00-2 0V7c-1.54-.48-2.78-1.58-3.34-3.03a1 1 0 00-1.87.71C6.67 6.94 8.7 8.5 11 8.9V11c-2.3-.4-4.33-1.96-5.21-4.22a1 1 0 00-1.87.71C4.8 10.3 7.6 12.3 11 12.9V15c-2.3-.4-4.33-1.96-5.21-4.22a1 1 0 00-1.87.71C4.8 14.3 7.6 16.3 11 16.9V21a1 1 0 102 0v-4.1c3.4-.6 6.2-2.6 7.08-5.41a1 1 0 00-1.87-.71C17.33 13.04 15.3 14.6 13 15v-2.1c3.4-.6 6.2-2.6 7.08-5.41a1 1 0 00-1.87-.71C17.33 9.04 15.3 10.6 13 11V8.9c2.3-.4 4.33-1.96 5.21-4.22a1 1 0 00-1.87-.71C15.42 5.76 13.97 6.7 13 7.08V6.1z";
+var PI_ACCENT = "#8abeb7";
+function piGlyph(x, y, size) {
+  const font = size * 1.15;
+  return `<text x="${(x + size / 2).toFixed(2)}" y="${(y + size / 2 + font * 0.35).toFixed(2)}" text-anchor="middle" fill="${PI_ACCENT}" font-family="sans-serif" font-size="${font.toFixed(2)}" font-weight="700">\u03C0</text>`;
+}
 function agentBadge(agentType) {
   const a = (agentType || "").toLowerCase();
   const boxX = 108;
@@ -54857,6 +56465,9 @@ function agentBadge(agentType) {
   if (a === "hermes" || a === "hermes-cli" || a === "hermes-agent") {
     const s = (isize / 24).toFixed(4);
     return `${bg}<g transform="translate(${ix}, ${iy}) scale(${s})"><path fill-rule="evenodd" clip-rule="evenodd" d="${HERMES_SVG_PATH}" fill="#10B981"/></g>`;
+  }
+  if (a === "pi" || a === "pi-cli") {
+    return `${bg}${piGlyph(ix, iy, isize)}`;
   }
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
   return `<rect x="104" y="118" width="32" height="18" rx="9" fill="#4b5563"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
@@ -55116,6 +56727,9 @@ function agentBadgeForDial(agentType) {
     const s = (isize / 24).toFixed(4);
     return `${bg}<g transform="translate(${ix}, ${iy}) scale(${s})"><path fill-rule="evenodd" clip-rule="evenodd" d="${HERMES_SVG_PATH}" fill="#10B981"/></g>`;
   }
+  if (a === "pi" || a === "pi-cli") {
+    return `${bg}${piGlyph(ix, iy, isize)}`;
+  }
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
   return `<rect x="166" y="6" width="28" height="16" rx="8" fill="#4b5563"/><text x="180" y="18" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
 }
@@ -55125,1273 +56739,6 @@ function splitSlash(value, perLine) {
     return parts;
   }
   return wrap(value || " ", perLine, 3);
-}
-
-// src/agents.ts
-var import_node_fs5 = require("node:fs");
-var import_node_path7 = require("node:path");
-var import_node_os2 = require("node:os");
-var AbstractAgent = class {
-  /** Available model list (static fallback or defaults) */
-  getModels() {
-    return [];
-  }
-  /** Available effort list */
-  getEfforts(_modelId) {
-    return [];
-  }
-  /** Available modes/agents list */
-  getModes(_ctx) {
-    return [];
-  }
-  /** Host CLI command to discover models (array of arguments) */
-  getDiscoverModelCmd() {
-    return void 0;
-  }
-  /** Host CLI command to discover modes */
-  getDiscoverAgentCmd() {
-    return void 0;
-  }
-  /** Host CLI command to discover model variants (efforts) */
-  getDiscoverVariantCmd() {
-    return void 0;
-  }
-  /** Parse model list from CLI output */
-  parseDiscoveredModels(stdout) {
-    return parseModels(stdout);
-  }
-  /** Parse mode list from CLI output */
-  parseDiscoveredModes(stdout) {
-    return parsePrimaryAgents(stdout);
-  }
-  /** Parse model variants (efforts) from CLI output */
-  parseDiscoveredEfforts(stdout, modelId) {
-    return parseModelVariants(stdout, modelId);
-  }
-  /** Read currently selected state from local state files/configs or workspace logs */
-  readCurrentState(_ctx) {
-    return {};
-  }
-  /** Return effort/variant bound to or inferred by a selected model */
-  getEffortForModel(_model) {
-    return void 0;
-  }
-  /** Set discovered model id -> display name map (e.g. OpenCode picker filter) */
-  setModelNames(_names) {
-  }
-  /** Extract model id -> display name map from discovery output */
-  parseDiscoveredModelNames(_stdout) {
-    return {};
-  }
-};
-var slash = (cmd, value) => [
-  { text: `${cmd} ${value}`, enter: true, delayMs: 120 }
-];
-var picker = (cmd, value) => [
-  { text: cmd, enter: true, delayMs: 450 },
-  { text: value, enter: true }
-];
-var modePicker = (value) => [
-  { text: "", enter: false, delayMs: 300 },
-  // ctrl+x (leader)
-  { text: "a", enter: false, delayMs: 450 },
-  // agent list dialog
-  { text: value, enter: true }
-];
-var openCodeModelPicker = (value, name) => [
-  { text: "", enter: false, delayMs: 300 },
-  // ctrl+x (leader)
-  { text: "m", enter: false, delayMs: 450 },
-  // model list dialog
-  { text: modelFilterText(value, name), enter: false }
-];
-var CLAUDE_SETTINGS = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".claude", "settings.json");
-var CLAUDE_MODEL_CATALOG_DIR = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".claude", "cache", "model-catalog");
-var CLAUDE_PROJECTS_DIR = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".claude", "projects");
-var CLAUDE_DEFAULT_MODELS = [
-  "claude-opus-5",
-  "claude-sonnet-5",
-  "claude-haiku-4-5-20251001",
-  "claude-opus-4-8",
-  "claude-opus-4-7",
-  "claude-opus-4-6",
-  "claude-sonnet-4-6",
-  "opus",
-  "sonnet",
-  "haiku"
-];
-var CLAUDE_MODES = ["default", "accept-edits", "plan"];
-var CLAUDE_BYPASS_MODES = ["default", "accept-edits", "plan", "bypassPermissions"];
-function isClaudeBypassEnabled(ctx) {
-  if (ctx?.preview) {
-    const p = ctx.preview.toLowerCase();
-    if (p.includes("dangerously-skip-permissions") || p.includes("bypass permissions") || p.includes("bypass-permissions") || p.includes("bypasspermissions")) {
-      return true;
-    }
-  }
-  return false;
-}
-function normalizeClaudeMode(raw) {
-  if (!raw) return "default";
-  const s = raw.trim().toLowerCase().replace(/_/g, "-");
-  if (s === "manual" || s === "normal" || s === "default" || s === "manual-mode" || s === "default-mode") return "default";
-  if (s === "accept-edits" || s === "acceptedits" || s === "accept" || s === "accept edits") return "accept-edits";
-  if (s === "plan" || s === "plan-mode" || s === "plan mode") return "plan";
-  if (s === "auto" || s === "auto-mode" || s === "automode" || s === "auto mode") return "auto";
-  if (s === "bypasspermissions" || s === "bypass-permissions" || s === "bypass permissions" || s === "bypass") {
-    return "bypassPermissions";
-  }
-  return s;
-}
-function getClaudeShiftTabSteps(toMode, fromMode, modeList) {
-  const list = modeList && modeList.length ? modeList : CLAUDE_MODES;
-  const target = normalizeClaudeMode(toMode);
-  const current = normalizeClaudeMode(fromMode);
-  const targetIdx = list.indexOf(target);
-  const currentIdx = list.indexOf(current);
-  if (targetIdx < 0) {
-    return [];
-  }
-  const fromIdx = currentIdx < 0 ? 0 : currentIdx;
-  const count = (targetIdx - fromIdx + list.length) % list.length;
-  if (count === 0) return [];
-  const steps = [];
-  for (let i = 0; i < count; i++) {
-    steps.push({
-      text: "\x1B[Z",
-      enter: false,
-      ...i > 0 ? { delayMs: 120 } : {}
-    });
-  }
-  return steps;
-}
-function parseClaudeSettings(text) {
-  try {
-    const data = JSON.parse(text);
-    const model = typeof data?.model === "string" ? data.model : void 0;
-    const effort = typeof data?.effortLevel === "string" ? data.effortLevel : typeof data?.effort === "string" ? data.effort : void 0;
-    const rawMode = typeof data?.permissionMode === "string" ? data.permissionMode : typeof data?.mode === "string" ? data.mode : typeof data?.agent === "string" ? data.agent : void 0;
-    const mode = rawMode ? normalizeClaudeMode(rawMode) : void 0;
-    return { model, effort, mode };
-  } catch {
-    return {};
-  }
-}
-function parseClaudeModelCatalog(text) {
-  const models = [];
-  const modelNames = {};
-  const effortsByModel = {};
-  const seen = /* @__PURE__ */ new Set();
-  try {
-    const data = JSON.parse(text);
-    if (!data || typeof data !== "object") {
-      return { models, modelNames, effortsByModel };
-    }
-    const processModel = (m) => {
-      if (!m || typeof m !== "object") return;
-      const mid = typeof m.id === "string" ? m.id.trim() : "";
-      if (!mid) return;
-      if (!seen.has(mid)) {
-        seen.add(mid);
-        models.push(mid);
-      }
-      const name = typeof m.name === "string" ? m.name.trim() : typeof m.short_name === "string" ? m.short_name.trim() : "";
-      if (name) {
-        modelNames[mid] = name;
-      }
-      const thinking = m.thinking;
-      if (thinking && typeof thinking === "object") {
-        const effortOpts = thinking.effort_options;
-        if (Array.isArray(effortOpts)) {
-          const efforts = effortOpts.map((opt) => typeof opt?.id === "string" ? opt.id.trim() : "").filter(Boolean);
-          if (efforts.length) {
-            effortsByModel[mid] = efforts;
-          }
-        }
-      }
-    };
-    const catModels = data?.catalog?.config?.models;
-    if (Array.isArray(catModels)) {
-      for (const m of catModels) processModel(m);
-    }
-    const surfaces = data?.document?.surfaces;
-    if (surfaces && typeof surfaces === "object") {
-      const surfaceKeys = ["cc", "cowork", "ccd", "ccr", "chat", ...Object.keys(surfaces)];
-      const checked = /* @__PURE__ */ new Set();
-      for (const sname of surfaceKeys) {
-        if (checked.has(sname)) continue;
-        checked.add(sname);
-        const sval = surfaces[sname];
-        if (sval && typeof sval === "object" && Array.isArray(sval.model_selector_config)) {
-          for (const cfg of sval.model_selector_config) {
-            if (cfg && Array.isArray(cfg.models)) {
-              for (const m of cfg.models) processModel(m);
-            }
-          }
-        }
-      }
-    }
-  } catch {
-  }
-  return { models, modelNames, effortsByModel };
-}
-function readClaudeModelsCache() {
-  try {
-    if ((0, import_node_fs5.existsSync)(CLAUDE_MODEL_CATALOG_DIR)) {
-      const files = (0, import_node_fs5.readdirSync)(CLAUDE_MODEL_CATALOG_DIR).filter((f) => f.endsWith(".json"));
-      const allModels = [];
-      const seen = /* @__PURE__ */ new Set();
-      for (const file2 of files) {
-        try {
-          const content = (0, import_node_fs5.readFileSync)((0, import_node_path7.join)(CLAUDE_MODEL_CATALOG_DIR, file2), "utf8");
-          const { models } = parseClaudeModelCatalog(content);
-          for (const m of models) {
-            if (!seen.has(m)) {
-              seen.add(m);
-              allModels.push(m);
-            }
-          }
-        } catch {
-        }
-      }
-      if (allModels.length) return allModels;
-    }
-  } catch {
-  }
-  return [];
-}
-function readClaudeModelEffortsCache(modelId) {
-  if (!modelId) return [];
-  try {
-    if ((0, import_node_fs5.existsSync)(CLAUDE_MODEL_CATALOG_DIR)) {
-      const files = (0, import_node_fs5.readdirSync)(CLAUDE_MODEL_CATALOG_DIR).filter((f) => f.endsWith(".json"));
-      for (const file2 of files) {
-        try {
-          const content = (0, import_node_fs5.readFileSync)((0, import_node_path7.join)(CLAUDE_MODEL_CATALOG_DIR, file2), "utf8");
-          const { effortsByModel } = parseClaudeModelCatalog(content);
-          if (effortsByModel[modelId]?.length) {
-            return effortsByModel[modelId];
-          }
-        } catch {
-        }
-      }
-    }
-  } catch {
-  }
-  return [];
-}
-function parseClaudeModeFromText(text) {
-  if (!text) return void 0;
-  const clean = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
-  const lines = clean.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const l = lines[i].trim().toLowerCase();
-    if (!l) continue;
-    if (l.includes("plan mode") || l.includes("plan") && l.includes("shift+tab") && !l.includes("auto") && !l.includes("accept") && !l.includes("bypass")) {
-      return "plan";
-    }
-    if (l.includes("auto mode") || l.includes("auto") && l.includes("shift+tab") && !l.includes("accept") && !l.includes("bypass")) {
-      return "auto";
-    }
-    if (l.includes("accept edits") || l.includes("accept-edits") || l.includes("auto-accept") || l.includes("accept") && l.includes("shift+tab")) {
-      return "accept-edits";
-    }
-    if (l.includes("bypass permissions") || l.includes("bypass-permissions") || l.includes("bypasspermissions") || l.includes("bypass") && l.includes("shift+tab")) {
-      return "bypassPermissions";
-    }
-    if (l.includes("manual mode") || l.includes("default mode") || l.includes("manual") && l.includes("shift+tab")) {
-      return "default";
-    }
-  }
-  return void 0;
-}
-function readClaudeState(ctx) {
-  const state = {};
-  const isBypass = isClaudeBypassEnabled(ctx);
-  state.modes = isBypass ? [...CLAUDE_BYPASS_MODES] : [...CLAUDE_MODES];
-  if (ctx?.preview) {
-    const previewMode = parseClaudeModeFromText(ctx.preview);
-    if (previewMode) {
-      state.mode = previewMode;
-      if (previewMode === "bypassPermissions") {
-        state.modes = [...CLAUDE_BYPASS_MODES];
-      } else if (previewMode === "auto" && !state.modes.includes("auto")) {
-        state.modes.push("auto");
-      }
-    }
-  }
-  if (ctx?.worktreePath) {
-    try {
-      const normalizedPath = ctx.worktreePath.replace(/\/+$/, "");
-      const projName = normalizedPath.replace(/\//g, "-");
-      const projDir = (0, import_node_path7.join)(CLAUDE_PROJECTS_DIR, projName);
-      if ((0, import_node_fs5.existsSync)(projDir)) {
-        const jsonlFiles = (0, import_node_fs5.readdirSync)(projDir).filter((f) => f.endsWith(".jsonl") && !f.includes("subagents")).map((f) => ({
-          path: (0, import_node_path7.join)(projDir, f),
-          mtime: (0, import_node_fs5.statSync)((0, import_node_path7.join)(projDir, f)).mtimeMs
-        })).sort((a, b) => b.mtime - a.mtime);
-        for (const item of jsonlFiles.slice(0, 3)) {
-          try {
-            const fd = (0, import_node_fs5.openSync)(item.path, "r");
-            const size = (0, import_node_fs5.fstatSync)(fd).size;
-            const readLen = Math.min(size, 64 * 1024);
-            const buf = Buffer.alloc(readLen);
-            (0, import_node_fs5.readSync)(fd, buf, 0, readLen, Math.max(0, size - readLen));
-            (0, import_node_fs5.closeSync)(fd);
-            const tail = buf.toString("utf8", 0, readLen);
-            const lines = tail.split("\n");
-            for (let i = lines.length - 1; i >= 0; i--) {
-              const line = lines[i].trim();
-              if (!line) continue;
-              try {
-                const d = JSON.parse(line);
-                if (!state.model) {
-                  if (d.type === "assistant" && typeof d.message === "object" && typeof d.message?.model === "string") {
-                    state.model = d.message.model;
-                  }
-                }
-                if (!state.mode) {
-                  if (d.type === "permission-mode" && typeof d.permissionMode === "string") {
-                    state.mode = normalizeClaudeMode(d.permissionMode);
-                    if (state.mode === "bypassPermissions") {
-                      state.modes = [...CLAUDE_BYPASS_MODES];
-                    } else if (state.mode === "auto" && !state.modes.includes("auto")) {
-                      state.modes.push("auto");
-                    }
-                  } else if (d.type === "mode" && typeof d.mode === "string") {
-                    state.mode = normalizeClaudeMode(d.mode);
-                    if (state.mode === "bypassPermissions") {
-                      state.modes = [...CLAUDE_BYPASS_MODES];
-                    } else if (state.mode === "auto" && !state.modes.includes("auto")) {
-                      state.modes.push("auto");
-                    }
-                  }
-                }
-                if (!state.effort) {
-                  if (typeof d.effort === "string") {
-                    state.effort = d.effort;
-                  } else if (typeof d.effortLevel === "string") {
-                    state.effort = d.effortLevel;
-                  }
-                }
-              } catch {
-              }
-              if (state.model && state.mode && state.effort) break;
-            }
-          } catch {
-          }
-          if (state.model && state.mode && state.effort) break;
-        }
-      }
-    } catch {
-    }
-  }
-  const settingsPaths = [];
-  if (ctx?.worktreePath) {
-    settingsPaths.push((0, import_node_path7.join)(ctx.worktreePath, ".claude", "settings.json"));
-    settingsPaths.push((0, import_node_path7.join)(ctx.worktreePath, ".claude.json"));
-  }
-  settingsPaths.push(CLAUDE_SETTINGS);
-  for (const p of settingsPaths) {
-    try {
-      if ((0, import_node_fs5.existsSync)(p)) {
-        const parsed = parseClaudeSettings((0, import_node_fs5.readFileSync)(p, "utf8"));
-        if (!state.model && parsed.model) state.model = parsed.model;
-        if (!state.effort && parsed.effort) state.effort = parsed.effort;
-        if (!state.mode && parsed.mode) {
-          state.mode = parsed.mode;
-          if (state.mode === "bypassPermissions") {
-            state.modes = [...CLAUDE_BYPASS_MODES];
-          } else if (state.mode === "auto" && !state.modes.includes("auto")) {
-            state.modes.push("auto");
-          }
-        }
-      }
-    } catch {
-    }
-  }
-  return state;
-}
-var ClaudeAgent = class extends AbstractAgent {
-  constructor() {
-    super(...arguments);
-    this.agentType = "claude";
-    this.label = "Claude";
-  }
-  supports(kind) {
-    return kind === "model" || kind === "effort" || kind === "mode";
-  }
-  getModels() {
-    const cached2 = readClaudeModelsCache();
-    if (cached2.length) return cached2;
-    return [...CLAUDE_DEFAULT_MODELS];
-  }
-  getEfforts(modelId) {
-    if (modelId) {
-      const specific = readClaudeModelEffortsCache(modelId);
-      if (specific.length) return specific;
-      if (modelId.includes("haiku")) return [];
-    }
-    return ["low", "medium", "high", "xhigh", "max"];
-  }
-  getModes(ctx) {
-    const isBypass = isClaudeBypassEnabled(ctx);
-    const hasAuto = ctx?.preview ? parseClaudeModeFromText(ctx.preview) === "auto" : false;
-    const base = isBypass ? [...CLAUDE_BYPASS_MODES] : [...CLAUDE_MODES];
-    if (hasAuto && !base.includes("auto")) {
-      base.push("auto");
-    }
-    return base;
-  }
-  getApplySteps(kind, value, fromValue, modeList) {
-    if (kind === "model") {
-      return slash("/model", value);
-    }
-    if (kind === "effort") {
-      return slash("/effort", value);
-    }
-    if (kind === "mode") {
-      return getClaudeShiftTabSteps(value, fromValue, modeList || this.getModes());
-    }
-    return [];
-  }
-  readCurrentState(ctx) {
-    return readClaudeState(ctx);
-  }
-};
-var CODEX_CONFIG = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".codex", "config.toml");
-var CODEX_MODELS_CACHE = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".codex", "models_cache.json");
-var CODEX_DEFAULT_MODELS = [
-  "gpt-5.6-luna",
-  "gpt-5.6-terra",
-  "gpt-5.5",
-  "gpt-5.4-mini",
-  "gpt-reserve"
-];
-function parseCodexConfig(tomlText) {
-  let model;
-  let effort;
-  let mode;
-  const modelMatch = /model\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
-  if (modelMatch) model = modelMatch[1];
-  const effortMatch = /model_reasoning_effort\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
-  if (effortMatch) effort = effortMatch[1];
-  const modeMatch = /sandbox_mode\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
-  if (modeMatch) mode = modeMatch[1];
-  return { model, effort, mode };
-}
-function parseCodexModelsCache(jsonText) {
-  try {
-    const data = JSON.parse(jsonText);
-    if (data && Array.isArray(data.models)) {
-      return data.models.map((m) => typeof m === "string" ? m : m?.slug || m?.id || m?.name).filter((id) => typeof id === "string" && id.trim().length > 0 && !id.toLowerCase().includes("auto-review"));
-    }
-  } catch {
-  }
-  return [];
-}
-function readCodexState(ctx) {
-  try {
-    if (ctx?.worktreePath) {
-      const localCfg = (0, import_node_path7.join)(ctx.worktreePath, ".codex", "config.toml");
-      if ((0, import_node_fs5.existsSync)(localCfg)) {
-        const cfg = parseCodexConfig((0, import_node_fs5.readFileSync)(localCfg, "utf8"));
-        return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
-      }
-    }
-    if ((0, import_node_fs5.existsSync)(CODEX_CONFIG)) {
-      const cfg = parseCodexConfig((0, import_node_fs5.readFileSync)(CODEX_CONFIG, "utf8"));
-      return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
-    }
-  } catch {
-  }
-  return {};
-}
-function readCodexModelsCache() {
-  try {
-    if ((0, import_node_fs5.existsSync)(CODEX_MODELS_CACHE)) {
-      return parseCodexModelsCache((0, import_node_fs5.readFileSync)(CODEX_MODELS_CACHE, "utf8"));
-    }
-  } catch {
-  }
-  return [];
-}
-var CodexAgent = class extends AbstractAgent {
-  constructor() {
-    super(...arguments);
-    this.agentType = "codex";
-    this.label = "Codex";
-  }
-  supports(kind) {
-    return kind === "model" || kind === "effort" || kind === "mode";
-  }
-  getModels() {
-    const cached2 = readCodexModelsCache();
-    if (cached2.length) return cached2;
-    return [...CODEX_DEFAULT_MODELS];
-  }
-  getEfforts() {
-    return ["none", "low", "medium", "high", "xhigh", "max"];
-  }
-  getModes() {
-    return ["workspace-write", "read-only", "danger-full-access"];
-  }
-  getApplySteps(kind, value) {
-    if (kind === "model") {
-      return slash("/model", value);
-    }
-    if (kind === "effort") {
-      return slash("/effort", value);
-    }
-    if (kind === "mode") {
-      return slash("/permissions", value);
-    }
-    return [];
-  }
-  readCurrentState(ctx) {
-    return readCodexState(ctx);
-  }
-};
-var OPENCODE_STATE = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".local", "state", "opencode", "model.json");
-var OPENCODE_TUI = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".local", "state", "opencode", "tui");
-function readOpenCodeState(ctx) {
-  try {
-    if (ctx?.worktreePath) {
-      const localState = (0, import_node_path7.join)(ctx.worktreePath, ".opencode", "model.json");
-      if ((0, import_node_fs5.existsSync)(localState)) {
-        return parseOpenCodeState((0, import_node_fs5.readFileSync)(localState, "utf8"));
-      }
-    }
-    return parseOpenCodeState((0, import_node_fs5.readFileSync)(OPENCODE_STATE, "utf8"));
-  } catch {
-    return {};
-  }
-}
-function readTuiAgent(ctx) {
-  try {
-    if (ctx?.worktreePath) {
-      const localTui = (0, import_node_path7.join)(ctx.worktreePath, ".opencode", "tui");
-      if ((0, import_node_fs5.existsSync)(localTui)) {
-        return parseTuiAgent((0, import_node_fs5.readFileSync)(localTui, "utf8"));
-      }
-    }
-    return parseTuiAgent((0, import_node_fs5.readFileSync)(OPENCODE_TUI, "utf8"));
-  } catch {
-    return void 0;
-  }
-}
-var OpenCodeAgent = class extends AbstractAgent {
-  constructor() {
-    super(...arguments);
-    this.agentType = "opencode";
-    this.label = "OpenCode";
-    this.modelNames = {};
-  }
-  supports(kind) {
-    return kind === "model" || kind === "effort" || kind === "mode";
-  }
-  getModels() {
-    return [];
-  }
-  getEfforts() {
-    return ["low", "medium", "high", "max"];
-  }
-  getModes() {
-    return ["build", "plan"];
-  }
-  setModelNames(names) {
-    this.modelNames = names;
-  }
-  getApplySteps(kind, value) {
-    if (kind === "model") {
-      return openCodeModelPicker(value, this.modelNames[value]);
-    }
-    if (kind === "effort") {
-      return picker("/variants", value);
-    }
-    if (kind === "mode") {
-      return modePicker(value);
-    }
-    return [];
-  }
-  getDiscoverModelCmd() {
-    return ["opencode", "models", "--verbose"];
-  }
-  parseDiscoveredModels(stdout) {
-    return parseModelIdLines(stdout);
-  }
-  parseDiscoveredModelNames(stdout) {
-    return parseOpenCodeModelNames(stdout);
-  }
-  getDiscoverAgentCmd() {
-    return ["opencode", "agent", "list"];
-  }
-  getDiscoverVariantCmd() {
-    return ["opencode", "models", "--verbose"];
-  }
-  readCurrentState(ctx) {
-    const st = readOpenCodeState(ctx);
-    const tuiAgent = readTuiAgent(ctx);
-    const model = st.model ? `${st.model.providerID}/${st.model.modelID}` : void 0;
-    const effort = model && st.variant ? st.variant[model] : void 0;
-    return {
-      model,
-      effort,
-      mode: tuiAgent,
-      recentModels: st.recent,
-      favoriteModels: st.favorites
-    };
-  }
-  getEffortForModel(model) {
-    const st = readOpenCodeState();
-    return st.variant ? st.variant[model] : void 0;
-  }
-};
-var AGY_SETTINGS = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".gemini", "antigravity-cli", "settings.json");
-function extractEffortFromModel(modelName) {
-  if (!modelName) return void 0;
-  const s = modelName.trim().toLowerCase();
-  const parenMatch = s.match(/\((low|medium|high|max|thinking)\)/);
-  if (parenMatch) return parenMatch[1];
-  const hyphenMatch = s.match(/-(low|medium|high|max|thinking)$/);
-  if (hyphenMatch) return hyphenMatch[1];
-  return void 0;
-}
-var AGY_MODES = ["default", "accept-edits", "plan"];
-function normalizeAgyMode(mode) {
-  if (!mode) return "default";
-  const m = mode.trim().toLowerCase();
-  if (m === "nothing" || m === "none" || m === "normal" || m === "default" || m === "") return "default";
-  if (m === "plan") return "plan";
-  if (m === "accept-edits" || m === "acceptedits" || m === "accept_edits" || m === "yolo") return "accept-edits";
-  return m;
-}
-function parseAgyHelpModes(text) {
-  const match = /--mode\s+.*?\((\s*[\w\-_,\s]+\s*)\)/i.exec(text || "");
-  if (!match) return [];
-  const rawList = match[1].split(/[,|\s]+/).map((s) => s.trim()).filter(Boolean);
-  if (!rawList.length) return [];
-  const set2 = /* @__PURE__ */ new Set(["default"]);
-  const out = ["default"];
-  const preferredOrder = ["accept-edits", "plan"];
-  for (const p of preferredOrder) {
-    if (rawList.some((r) => normalizeAgyMode(r) === p)) {
-      set2.add(p);
-      out.push(p);
-    }
-  }
-  for (const item of rawList) {
-    const normalized = normalizeAgyMode(item);
-    if (normalized && !set2.has(normalized)) {
-      set2.add(normalized);
-      out.push(normalized);
-    }
-  }
-  return out;
-}
-function getAgyShiftTabSteps(toMode, fromMode, modeList) {
-  const list = modeList && modeList.length ? modeList : AGY_MODES;
-  const target = normalizeAgyMode(toMode);
-  const current = normalizeAgyMode(fromMode);
-  const targetIdx = list.indexOf(target);
-  const currentIdx = list.indexOf(current);
-  if (targetIdx < 0) {
-    return [];
-  }
-  const fromIdx = currentIdx < 0 ? 0 : currentIdx;
-  const count = (targetIdx - fromIdx + list.length) % list.length;
-  if (count === 0) return [];
-  const steps = [];
-  for (let i = 0; i < count; i++) {
-    steps.push({
-      text: "\x1B[Z",
-      enter: false,
-      ...i > 0 ? { delayMs: 120 } : {}
-    });
-  }
-  return steps;
-}
-function parseAgySettings(text) {
-  try {
-    const data = JSON.parse(text);
-    const out = {};
-    if (typeof data?.model === "string" && data.model) {
-      out.model = data.model;
-    }
-    const rawMode = typeof data?.mode === "string" ? data.mode : typeof data?.agent === "string" ? data.agent : void 0;
-    if (rawMode) {
-      out.mode = normalizeAgyMode(rawMode);
-    }
-    return out;
-  } catch {
-  }
-  return {};
-}
-function parseAgyModels(stdout) {
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const raw of (stdout || "").split("\n")) {
-    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
-    if (!line || line.startsWith("Fetching")) continue;
-    const parts = line.split("	");
-    const id = parts[0]?.trim();
-    if (id && !seen.has(id)) {
-      seen.add(id);
-      out.push(id);
-    }
-  }
-  return out;
-}
-var AGY_LOG_DIR = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".gemini", "antigravity-cli", "log");
-function parseAgyLogWorkspace(headerText) {
-  if (!headerText) return [];
-  const dirs = [];
-  const wsMatch = /workspaceDirs=\[([^\]]*)\]/.exec(headerText);
-  if (wsMatch && wsMatch[1]) {
-    for (const d of wsMatch[1].split(/[,|\s]+/)) {
-      const trimmed = d.trim();
-      if (trimmed && !dirs.includes(trimmed)) dirs.push(trimmed);
-    }
-  }
-  const initMatch = /Initializing CLI store manager for workspace\s+([^\r\n]+)/.exec(headerText);
-  if (initMatch && initMatch[1]) {
-    const trimmed = initMatch[1].trim();
-    if (trimmed && !dirs.includes(trimmed)) dirs.push(trimmed);
-  }
-  return dirs;
-}
-function isMatchingWorkspace(wsPath, targetPath) {
-  if (!wsPath || !targetPath) return false;
-  const normalize = (p) => {
-    let s = p.trim();
-    while (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1);
-    return s;
-  };
-  const w = normalize(wsPath);
-  const t = normalize(targetPath);
-  if (w === t) return true;
-  if (t.startsWith(w + "/") || w.startsWith(t + "/")) return true;
-  return false;
-}
-function parseAgyLogModel(text) {
-  if (!text) return void 0;
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i];
-    const m1 = /Propagating selected model override to backend:\s*label="([^"]+)"/.exec(line);
-    if (m1 && m1[1].trim()) {
-      return m1[1].trim();
-    }
-    const m2 = /Resolving model\s+([^\r\n]+)/.exec(line);
-    if (m2 && m2[1].trim()) {
-      return m2[1].trim();
-    }
-    const m3 = /HandleUserInput called with text:\s*"\/model\s+([^"\r\n]+)"/.exec(line);
-    if (m3 && m3[1].trim()) {
-      return m3[1].trim();
-    }
-  }
-  return void 0;
-}
-function parseAgyLogEffort(text) {
-  if (!text) return void 0;
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i];
-    const m = /HandleUserInput called with text:\s*"\/effort\s+([^"\r\n]+)"/.exec(line);
-    if (m && m[1].trim()) {
-      return m[1].trim().toLowerCase();
-    }
-  }
-  return void 0;
-}
-function parseAgyLogMode(text) {
-  if (!text) return void 0;
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i];
-    const m = /\]\s+SetCycleMode called:\s*([a-zA-Z0-9_\-]*)/.exec(line);
-    if (m) {
-      return normalizeAgyMode(m[1]);
-    }
-    const mAgent = /HandleUserInput called with text:\s*"\/agent\s+([^"\r\n]+)"/.exec(line);
-    if (mAgent && mAgent[1].trim()) {
-      return normalizeAgyMode(mAgent[1].trim());
-    }
-    const mMode = /HandleUserInput called with text:\s*"\/mode\s+([^"\r\n]+)"/.exec(line);
-    if (mMode && mMode[1].trim()) {
-      return normalizeAgyMode(mMode[1].trim());
-    }
-  }
-  return void 0;
-}
-function readAgyLiveState(ctx) {
-  try {
-    if (!(0, import_node_fs5.existsSync)(AGY_LOG_DIR)) return {};
-    const allFiles = (0, import_node_fs5.readdirSync)(AGY_LOG_DIR).filter((f) => f.startsWith("cli-") && f.endsWith(".log")).map((f) => ({ path: (0, import_node_path7.join)(AGY_LOG_DIR, f), mtime: (0, import_node_fs5.statSync)((0, import_node_path7.join)(AGY_LOG_DIR, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
-    const targetPath = ctx?.worktreePath;
-    let candidateFiles = [];
-    if (targetPath) {
-      const matched = [];
-      for (const file2 of allFiles.slice(0, 30)) {
-        try {
-          const fd = (0, import_node_fs5.openSync)(file2.path, "r");
-          const size = (0, import_node_fs5.fstatSync)(fd).size;
-          const readHeaderLen = Math.min(size, 32 * 1024);
-          const buf = Buffer.alloc(readHeaderLen);
-          (0, import_node_fs5.readSync)(fd, buf, 0, readHeaderLen, 0);
-          (0, import_node_fs5.closeSync)(fd);
-          const header = buf.toString("utf8", 0, readHeaderLen);
-          const workspaces = parseAgyLogWorkspace(header);
-          if (workspaces.some((ws) => isMatchingWorkspace(ws, targetPath))) {
-            matched.push(file2);
-          }
-        } catch {
-        }
-      }
-      if (matched.length) {
-        candidateFiles = matched;
-      }
-    }
-    if (!candidateFiles.length) {
-      candidateFiles = allFiles.slice(0, 5);
-    }
-    let foundModel;
-    let foundEffort;
-    let foundMode;
-    for (const file2 of candidateFiles.slice(0, 5)) {
-      try {
-        const fd = (0, import_node_fs5.openSync)(file2.path, "r");
-        const size = (0, import_node_fs5.fstatSync)(fd).size;
-        const readLen = Math.min(size, 128 * 1024);
-        const buf = Buffer.alloc(readLen);
-        (0, import_node_fs5.readSync)(fd, buf, 0, readLen, Math.max(0, size - readLen));
-        (0, import_node_fs5.closeSync)(fd);
-        const tail = buf.toString("utf8", 0, readLen);
-        if (!foundModel) {
-          foundModel = parseAgyLogModel(tail);
-        }
-        if (!foundEffort) {
-          const rawEffort = parseAgyLogEffort(tail);
-          if (rawEffort) {
-            foundEffort = rawEffort;
-          } else if (foundModel) {
-            foundEffort = extractEffortFromModel(foundModel);
-          }
-        }
-        if (!foundMode) {
-          foundMode = parseAgyLogMode(tail);
-        }
-        if (foundModel && foundEffort && foundMode) break;
-      } catch {
-      }
-    }
-    return { model: foundModel, effort: foundEffort, mode: foundMode };
-  } catch {
-    return {};
-  }
-}
-function parseAgyModeFromText(text) {
-  if (!text) return void 0;
-  const clean = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
-  const lines = clean.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const l = lines[i].trim().toLowerCase();
-    if (!l) continue;
-    if (l.includes("plan mode") || l.includes("plan") && l.includes("shift+tab") && !l.includes("auto") && !l.includes("accept")) {
-      return "plan";
-    }
-    if (l.includes("auto-approve") || l.includes("accept edits") || l.includes("accept-edits") || l.includes("accept") && l.includes("shift+tab")) {
-      return "accept-edits";
-    }
-    if (l.includes("default mode") || l.includes("manual mode") || l.includes("default") && l.includes("shift+tab")) {
-      return "default";
-    }
-  }
-  return void 0;
-}
-function readAgyState(ctx) {
-  let model;
-  let effort;
-  let mode;
-  try {
-    if ((0, import_node_fs5.existsSync)(AGY_SETTINGS)) {
-      const cfg = parseAgySettings((0, import_node_fs5.readFileSync)(AGY_SETTINGS, "utf8"));
-      model = cfg.model;
-      effort = extractEffortFromModel(cfg.model);
-      if (cfg.mode) mode = normalizeAgyMode(cfg.mode);
-    }
-  } catch {
-  }
-  const live = readAgyLiveState(ctx);
-  if (live.model) {
-    model = live.model;
-    effort = extractEffortFromModel(live.model) || live.effort || effort;
-  } else if (live.effort) {
-    effort = live.effort;
-  }
-  if (live.mode) {
-    mode = live.mode;
-  }
-  if (ctx?.preview) {
-    const previewMode = parseAgyModeFromText(ctx.preview);
-    if (previewMode) {
-      mode = previewMode;
-    }
-  }
-  return { model, effort, mode };
-}
-var AgyAgent = class extends AbstractAgent {
-  constructor() {
-    super(...arguments);
-    this.agentType = "agy";
-    this.label = "Agy";
-  }
-  supports(kind) {
-    return kind === "model" || kind === "effort" || kind === "mode";
-  }
-  getModels() {
-    return [
-      "gemini-3.8-flash-medium",
-      "gemini-3.8-flash-high",
-      "gemini-3.8-flash-low",
-      "gemini-3.7-flash-medium",
-      "gemini-3.1-pro-high",
-      "claude-sonnet-4-6"
-    ];
-  }
-  getEfforts() {
-    return ["low", "medium", "high"];
-  }
-  getModes() {
-    return [...AGY_MODES];
-  }
-  getApplySteps(kind, value, fromValue, modeList) {
-    if (kind === "model") {
-      return slash("/model", value);
-    }
-    if (kind === "effort") {
-      return slash("/effort", value);
-    }
-    if (kind === "mode") {
-      return getAgyShiftTabSteps(value, fromValue, modeList || this.getModes());
-    }
-    return [];
-  }
-  getDiscoverModelCmd() {
-    return ["agy", "models"];
-  }
-  getDiscoverAgentCmd() {
-    return ["agy", "--help"];
-  }
-  parseDiscoveredModels(stdout) {
-    return parseAgyModels(stdout);
-  }
-  parseDiscoveredModes(stdout) {
-    return parseAgyHelpModes(stdout);
-  }
-  readCurrentState(ctx) {
-    return readAgyState(ctx);
-  }
-  getEffortForModel(model) {
-    return extractEffortFromModel(model);
-  }
-};
-var HERMES_CONFIG = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".hermes", "config.yaml");
-var HERMES_MODELS_CACHE = (0, import_node_path7.join)((0, import_node_os2.homedir)(), ".hermes", "provider_models_cache.json");
-function parseHermesConfig(yamlText) {
-  let model;
-  let effort;
-  const defaultModelMatch = /^\s*default:\s*['"]?([^'"\r\n]+)['"]?/m.exec(yamlText || "");
-  if (defaultModelMatch) {
-    model = defaultModelMatch[1].trim();
-  } else {
-    const rootModelMatch = /^model:\s*['"]?([^'"\r\n{]+)['"]?/m.exec(yamlText || "");
-    if (rootModelMatch && rootModelMatch[1].trim()) {
-      model = rootModelMatch[1].trim();
-    }
-  }
-  const effortMatch = /reasoning_effort:\s*['"]?([^'"\r\n]+)['"]?/m.exec(yamlText || "");
-  if (effortMatch && effortMatch[1].trim()) {
-    effort = effortMatch[1].trim();
-  }
-  return { model, effort };
-}
-function parseHermesModelsCache(jsonText) {
-  try {
-    const data = JSON.parse(jsonText);
-    const set2 = /* @__PURE__ */ new Set();
-    const out = [];
-    if (data && typeof data === "object") {
-      for (const val of Object.values(data)) {
-        if (val && Array.isArray(val.models)) {
-          for (const m of val.models) {
-            if (typeof m === "string" && m.trim()) {
-              const id = m.trim();
-              if (!set2.has(id)) {
-                set2.add(id);
-                out.push(id);
-              }
-            }
-          }
-        }
-      }
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
-function readHermesState(ctx) {
-  try {
-    if (ctx?.worktreePath) {
-      const localCfg = (0, import_node_path7.join)(ctx.worktreePath, ".hermes", "config.yaml");
-      if ((0, import_node_fs5.existsSync)(localCfg)) {
-        const cfg = parseHermesConfig((0, import_node_fs5.readFileSync)(localCfg, "utf8"));
-        return { model: cfg.model, effort: cfg.effort };
-      }
-    }
-    if ((0, import_node_fs5.existsSync)(HERMES_CONFIG)) {
-      const cfg = parseHermesConfig((0, import_node_fs5.readFileSync)(HERMES_CONFIG, "utf8"));
-      return { model: cfg.model, effort: cfg.effort };
-    }
-  } catch {
-  }
-  return {};
-}
-function readHermesModelsCache() {
-  try {
-    if ((0, import_node_fs5.existsSync)(HERMES_MODELS_CACHE)) {
-      return parseHermesModelsCache((0, import_node_fs5.readFileSync)(HERMES_MODELS_CACHE, "utf8"));
-    }
-  } catch {
-  }
-  return [];
-}
-var HermesAgent = class extends AbstractAgent {
-  constructor() {
-    super(...arguments);
-    this.agentType = "hermes";
-    this.label = "Hermes";
-  }
-  supports(kind) {
-    return kind === "model" || kind === "effort";
-  }
-  getModels() {
-    const cached2 = readHermesModelsCache();
-    if (cached2.length) return cached2;
-    return [
-      "deepseek/deepseek-v4-flash-0731",
-      "anthropic/claude-sonnet-4-6",
-      "openai/gpt-5.6-luna",
-      "google/gemini-3.8-flash",
-      "minimax/minimax-m3"
-    ];
-  }
-  getEfforts() {
-    return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-  }
-  getModes() {
-    return [];
-  }
-  getApplySteps(kind, value) {
-    if (kind === "model") {
-      return slash("/model", value);
-    }
-    if (kind === "effort") {
-      return slash("/reasoning", value);
-    }
-    return [];
-  }
-  readCurrentState(ctx) {
-    return readHermesState(ctx);
-  }
-};
-var UnsupportedAgent = class extends AbstractAgent {
-  constructor() {
-    super(...arguments);
-    this.agentType = "";
-    this.label = "Unsupported";
-  }
-  supports(_kind) {
-    return false;
-  }
-  getApplySteps(_kind, _value) {
-    return [];
-  }
-};
-var AGENT_INSTANCES = {
-  claude: new ClaudeAgent(),
-  codex: new CodexAgent(),
-  code: new CodexAgent(),
-  opencode: new OpenCodeAgent(),
-  agy: new AgyAgent(),
-  antigravity: new AgyAgent(),
-  hermes: new HermesAgent(),
-  "hermes-cli": new HermesAgent(),
-  "hermes-agent": new HermesAgent()
-};
-var UNSUPPORTED_AGENT = new UnsupportedAgent();
-function agentFor(agentType) {
-  if (!agentType) return UNSUPPORTED_AGENT;
-  const key = agentType.trim().toLowerCase();
-  return AGENT_INSTANCES[key] ?? UNSUPPORTED_AGENT;
-}
-function profileFor(agentType) {
-  const agent = agentFor(agentType);
-  return {
-    agentType: agent.agentType,
-    label: agent.label,
-    models: agent.getModels(),
-    efforts: agent.getEfforts(),
-    modes: agent.getModes(),
-    model: {
-      supported: agent.supports("model"),
-      steps: (v, from) => agent.getApplySteps("model", v, from)
-    },
-    effort: {
-      supported: agent.supports("effort"),
-      steps: (v, from) => agent.getApplySteps("effort", v, from)
-    },
-    mode: {
-      supported: agent.supports("mode"),
-      steps: (v, from) => agent.getApplySteps("mode", v, from)
-    }
-  };
-}
-var UNSUPPORTED_PROFILE = profileFor("");
-var AGENTS = {
-  claude: profileFor("claude"),
-  codex: profileFor("codex"),
-  code: profileFor("code"),
-  opencode: profileFor("opencode"),
-  agy: profileFor("agy"),
-  antigravity: profileFor("antigravity"),
-  hermes: profileFor("hermes"),
-  "hermes-cli": profileFor("hermes-cli"),
-  "hermes-agent": profileFor("hermes-agent")
-};
-var HIDDEN_PRIMARY_AGENTS = /* @__PURE__ */ new Set(["compaction", "summary", "title"]);
-function parsePrimaryAgents(stdout) {
-  const out = [];
-  for (let line of (stdout || "").split("\n")) {
-    line = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
-    const m = /^([\w.-]+)\s*\(primary\)$/.exec(line);
-    if (m && !HIDDEN_PRIMARY_AGENTS.has(m[1])) out.push(m[1]);
-  }
-  return out;
-}
-function parseModelVariants(stdout, modelId) {
-  for (const block of splitJsonBlocks(stdout || "")) {
-    if (block.id === modelId && block.variants && typeof block.variants === "object") {
-      const keys = Object.keys(block.variants);
-      if (keys.length) return ["default", ...keys];
-    }
-  }
-  return [];
-}
-function splitJsonBlocks(text) {
-  const out = [];
-  const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    if (!lines[i].trim().startsWith("{")) continue;
-    const buf = [lines[i]];
-    for (let j = i + 1; j < lines.length; j++) {
-      buf.push(lines[j]);
-      try {
-        const o = JSON.parse(buf.join("\n"));
-        if (typeof o === "object" && o !== null) {
-          out.push(o);
-          i = j;
-          break;
-        }
-      } catch {
-      }
-    }
-  }
-  return out;
-}
-function parseModels(stdout) {
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const raw of stdout.split("\n")) {
-    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
-    if (!line) continue;
-    if (seen.has(line)) continue;
-    seen.add(line);
-    out.push(line);
-  }
-  return out;
-}
-function parseModelIdLines(stdout) {
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const raw of (stdout || "").split("\n")) {
-    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
-    if (!line) continue;
-    if (/^[A-Za-z0-9_~.:-]+\/[A-Za-z0-9_~./:-]+$/.test(line) && !seen.has(line)) {
-      seen.add(line);
-      out.push(line);
-    }
-  }
-  return out;
-}
-function parseOpenCodeModelNames(stdout) {
-  const names = {};
-  for (const block of splitJsonBlocks(stdout || "")) {
-    const pid = block.providerID;
-    const id = block.id;
-    const name = block.name;
-    if (typeof pid === "string" && typeof id === "string" && typeof name === "string" && name) {
-      names[`${pid}/${id}`] = name;
-    }
-  }
-  return names;
-}
-function modelFilterText(id, name) {
-  const provider = id.split("/")[0] ?? "";
-  const display = name?.trim();
-  return display ? `${provider} ${display}` : provider;
-}
-function fullIds(entries) {
-  if (!Array.isArray(entries)) return void 0;
-  const out = [];
-  for (const e of entries) {
-    if (e && typeof e === "object" && e.providerID && e.modelID) {
-      out.push(`${String(e.providerID)}/${String(e.modelID)}`);
-    }
-  }
-  return out.length ? out : void 0;
-}
-function parseOpenCodeState(text) {
-  try {
-    const j = JSON.parse(text);
-    const r = Array.isArray(j?.recent) ? j.recent[0] : void 0;
-    const model = r && typeof r === "object" && r.providerID && r.modelID ? { providerID: String(r.providerID), modelID: String(r.modelID) } : void 0;
-    const variant = j?.variant && typeof j?.variant === "object" && !Array.isArray(j.variant) ? j.variant : void 0;
-    return { model, variant, recent: fullIds(j?.recent), favorites: fullIds(j?.favorite) };
-  } catch {
-    return {};
-  }
-}
-function sortModels(discovered, recent, favorites) {
-  const have = new Set(discovered);
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  const push = (id) => {
-    if (have.has(id) && !seen.has(id)) {
-      seen.add(id);
-      out.push(id);
-    }
-  };
-  for (const f of favorites ?? []) push(f);
-  for (const r of recent ?? []) push(r);
-  for (const d of discovered) push(d);
-  return out;
-}
-function parseTuiAgent(text) {
-  const m = /^agent\s*=\s*"([^"]+)"/m.exec(text || "");
-  return m ? m[1] : void 0;
 }
 
 // src/plugin.ts
@@ -56422,6 +56769,7 @@ var TALK_HINT = {
 };
 var talkHint = (code) => TALK_HINT[code] ?? "STT Error";
 var EXEC = { maxBuffer: 64 * 1024 * 1024 };
+var ORDER_BUCKET_MS = Number(process.env.AGENTDECK_ORDER_BUCKET_MS ?? "") > 0 ? Number(process.env.AGENTDECK_ORDER_BUCKET_MS) : DEFAULT_ACTIVITY_BUCKET_MS;
 async function orcaJson(args) {
   const { stdout } = await execFileP(ORCA, [...args, "--json"], EXEC);
   return JSON.parse(stdout);
@@ -57025,20 +57373,21 @@ async function poll() {
     ]);
     const hookEvents = getHookEvents();
     const visualLayouts = tl.result?.visualLayouts;
+    const now = Date.now();
     deck = buildDeck(
       { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-      { page: currentPage, perPage: 8 }
+      { page: currentPage, perPage: 8, now, activityBucketMs: ORDER_BUCKET_MS }
     );
     if (currentPage >= deck.pageCount) {
       currentPage = Math.max(0, deck.pageCount - 1);
       deck = buildDeck(
         { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-        { page: currentPage, perPage: 8 }
+        { page: currentPage, perPage: 8, now, activityBucketMs: ORDER_BUCKET_MS }
       );
     }
     const full = buildDeck(
       { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-      { page: 0, perPage: 9999 }
+      { page: 0, perPage: 9999, now, activityBucketMs: ORDER_BUCKET_MS }
     );
     allHandles = [];
     sessionByHandle.clear();
@@ -57093,7 +57442,7 @@ async function poll() {
     try {
       (0, import_node_fs6.writeFileSync)(
         "/tmp/agentdeck-debug.json",
-        JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, target: targetHandle, slots: deck.slots }, null, 2)
+        JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, target: targetHandle, dials: { model: dialValue("model"), effort: dialValue("effort"), mode: dialValue("mode") }, slots: deck.slots }, null, 2)
       );
     } catch {
     }
@@ -57409,7 +57758,9 @@ function setupFileWatchers() {
     (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".claude/cache/model-catalog"),
     (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".claude/projects"),
     (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".codex"),
-    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".gemini/antigravity-cli")
+    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".gemini/antigravity-cli"),
+    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".pi/agent"),
+    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".pi/agent/sessions")
   ];
   for (const dir of dirsToWatch) {
     try {

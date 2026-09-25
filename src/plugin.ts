@@ -7,7 +7,7 @@ import { writeFileSync, readFileSync, existsSync, unlinkSync, watch } from "node
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
-import { buildDeck, needsAttention, resolveActiveTerminal, nextWorktreeName, type Deck, type OrcaRepo } from "./deck";
+import { buildDeck, needsAttention, resolveActiveTerminal, nextWorktreeName, DEFAULT_ACTIVITY_BUCKET_MS, type Deck, type OrcaRepo } from "./deck";
 import { keyImage, dialImage } from "./render";
 import { prefetchRepoIcons } from "./icons";
 import {
@@ -67,6 +67,13 @@ const TALK_HINT: Record<string, string> = {
 };
 const talkHint = (code: string) => TALK_HINT[code] ?? "STT Error";
 const EXEC = { maxBuffer: 64 * 1024 * 1024 } as const;
+// Deck ordering debounce: sessions/groups active in the same wall-clock bucket keep their relative order,
+// so several concurrently working projects don't re-sort the keys on every poll. Override with
+// AGENTDECK_ORDER_BUCKET_MS (milliseconds).
+const ORDER_BUCKET_MS =
+  Number(process.env.AGENTDECK_ORDER_BUCKET_MS ?? "") > 0
+    ? Number(process.env.AGENTDECK_ORDER_BUCKET_MS)
+    : DEFAULT_ACTIVITY_BUCKET_MS;
 
 async function orcaJson(args: string[]): Promise<any> {
   const { stdout } = await execFileP(ORCA, [...args, "--json"], EXEC);
@@ -715,21 +722,23 @@ async function poll(): Promise<void> {
     ]);
     const hookEvents = getHookEvents();
     const visualLayouts = tl.result?.visualLayouts;
+    // One shared timestamp so the 8-key page and the full session list always agree on ordering buckets.
+    const now = Date.now();
     deck = buildDeck(
       { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-      { page: currentPage, perPage: 8 },
+      { page: currentPage, perPage: 8, now, activityBucketMs: ORDER_BUCKET_MS },
     );
     if (currentPage >= deck.pageCount) {
       currentPage = Math.max(0, deck.pageCount - 1);
       deck = buildDeck(
         { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-        { page: currentPage, perPage: 8 },
+        { page: currentPage, perPage: 8, now, activityBucketMs: ORDER_BUCKET_MS },
       );
     }
     // Full session list (sidebar total) — target dial can cycle past 8 keys
     const full = buildDeck(
       { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-      { page: 0, perPage: 9999 },
+      { page: 0, perPage: 9999, now, activityBucketMs: ORDER_BUCKET_MS },
     );
     allHandles = [];
     sessionByHandle.clear();
@@ -786,7 +795,7 @@ async function poll(): Promise<void> {
     try {
       writeFileSync(
         "/tmp/agentdeck-debug.json",
-        JSON.stringify({ at: new Date().toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, target: targetHandle, slots: deck.slots }, null, 2),
+        JSON.stringify({ at: new Date().toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, target: targetHandle, dials: { model: dialValue("model"), effort: dialValue("effort"), mode: dialValue("mode") }, slots: deck.slots }, null, 2),
       );
     } catch {}
   } catch (e) {
@@ -1098,6 +1107,8 @@ function setupFileWatchers(): void {
     join(homedir(), ".claude/projects"),
     join(homedir(), ".codex"),
     join(homedir(), ".gemini/antigravity-cli"),
+    join(homedir(), ".pi/agent"),
+    join(homedir(), ".pi/agent/sessions"),
   ];
   for (const dir of dirsToWatch) {
     try {

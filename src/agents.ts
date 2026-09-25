@@ -3,7 +3,7 @@
 // Core principle: Gate unsupported agents and features to prevent sending invalid commands. Unknown agent = unsupported.
 
 import { readFileSync, existsSync, readdirSync, statSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 
 export type ControlKind = "model" | "effort" | "mode";
@@ -102,6 +102,12 @@ export abstract class AbstractAgent {
 
   /** Set discovered model id -> display name map (e.g. OpenCode picker filter) */
   setModelNames(_names: Record<string, string>): void {}
+
+  /** Normalize a session/tab title for deck display. Agents whose hosts decorate titles
+   * (e.g. Orca prefixes opencode tabs with "OC | ") override this to strip their prefix. */
+  cleanTitle(title: string): string {
+    return title;
+  }
 
   /** Extract model id -> display name map from discovery output */
   parseDiscoveredModelNames(_stdout: string): Record<string, string> {
@@ -727,6 +733,11 @@ export class OpenCodeAgent extends AbstractAgent {
     this.modelNames = names;
   }
 
+  /** Orca prefixes opencode tab titles with "OC | " — strip it for the deck. */
+  override cleanTitle(title: string): string {
+    return title.replace(/^OC\s*[|｜]\s*/, "");
+  }
+
   getApplySteps(kind: ControlKind, value: string): ApplyStep[] {
     if (kind === "model") {
       return openCodeModelPicker(value, this.modelNames[value]);
@@ -1318,6 +1329,359 @@ export class HermesAgent extends AbstractAgent {
   }
 }
 
+// ---- Pi (pi coding agent) ----
+// State sources:
+//   1. Session JSONL `~/.pi/agent/sessions/--<hyphenated-cwd>--/*.jsonl` — `model_change` (provider + modelId)
+//      and `thinking_level_change` (thinkingLevel) entries are the live truth of the running TUI.
+//   2. settings.json defaults (`defaultProvider`/`defaultModel`/`defaultThinkingLevel`) — startup values.
+// Model catalog comes from the `pi --list-models` table (live, auth-filtered) or the local
+// `models-store.json` catalog as fallback; `reasoning: false` models clamp effort to `off`.
+// Apply commands are deterministic slash commands: `/model <provider/id>` (exact match applies directly)
+// and `/thinking <level>` (applies directly). Pi has no permission modes, so `mode` is gated off.
+export const PI_AGENT_DIR = process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+export const PI_SETTINGS = join(PI_AGENT_DIR, "settings.json");
+export const PI_MODELS_STORE = join(PI_AGENT_DIR, "models-store.json");
+
+/** Resolve the pi CLI across common install locations (Stream Deck's launch env may lack ~/.local/bin). */
+function firstExistingPath(candidates: string[], fallback: string): string {
+  for (const p of candidates) if (existsSync(p)) return p;
+  return fallback;
+}
+export const PI_CMD = firstExistingPath(
+  [join(homedir(), ".local", "bin", "pi"), "/opt/homebrew/bin/pi", "/usr/local/bin/pi"],
+  "pi",
+);
+
+export const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+export const PI_DEFAULT_MODELS = [
+  "anthropic/claude-sonnet-4-6",
+  "anthropic/claude-opus-4-6",
+  "openai-codex/gpt-5.6-luna",
+  "opencode/claude-opus-4-6",
+  "openrouter/~anthropic/claude-sonnet-latest",
+];
+
+/** Sessions root: PI_CODING_AGENT_SESSION_DIR > settings.json `sessionDir` > ~/.pi/agent/sessions */
+export function piSessionsRoot(): string {
+  const resolve = (p: string) =>
+    p.startsWith("~") ? join(homedir(), p.slice(1)) : p.startsWith("/") ? p : join(PI_AGENT_DIR, p);
+  const env = process.env.PI_CODING_AGENT_SESSION_DIR?.trim();
+  if (env) return resolve(env);
+  try {
+    const cfg = JSON.parse(readFileSync(PI_SETTINGS, "utf8"));
+    if (typeof cfg?.sessionDir === "string" && cfg.sessionDir.trim()) return resolve(cfg.sessionDir.trim());
+  } catch {}
+  return join(PI_AGENT_DIR, "sessions");
+}
+
+/** Pi stores sessions per working directory as `--<cwd-with-leading-slash-stripped-and-/:-replaced>--`.
+ * Mirrors pi's own encoder (core/session-manager.js `getDefaultSessionDirPath`). */
+export function piSessionDir(worktreePath: string): string {
+  const resolved = resolve(worktreePath);
+  const safePath = `--${resolved.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+  return join(piSessionsRoot(), safePath);
+}
+
+/** Tail-parse session JSONL entries: newest model_change / thinking_level_change, plus recently used models.
+ * The current model is also taken from the newest assistant message, because a `model_change` entry can sit far
+ * before EOF (long sessions) and fall outside the tail window. */
+export function parsePiSessionTail(text: string): { model?: string; effort?: string; recentModels?: string[] } {
+  let model: string | undefined;
+  let effort: string | undefined;
+  const recent: string[] = [];
+  const lines = (text || "").split("\n");
+
+  const idOf = (provider?: unknown, modelId?: unknown): string => {
+    const mid = typeof modelId === "string" ? modelId.trim() : "";
+    if (!mid) return "";
+    const prov = typeof provider === "string" ? provider.trim() : "";
+    if (!prov) return mid;
+    // Pi's canonical reference is always `provider/id`, even when the id itself contains slashes.
+    return mid.startsWith(`${prov}/`) ? mid : `${prov}/${mid}`;
+  };
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const raw = lines[i].trim();
+    if (!raw.startsWith("{")) continue;
+    let d: any;
+    try {
+      d = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!model && d?.type === "model_change") {
+      const id = idOf(d.provider, d.modelId ?? d.model);
+      if (id) model = id;
+    }
+    if (!effort && d?.type === "thinking_level_change" && typeof d.thinkingLevel === "string" && d.thinkingLevel.trim()) {
+      effort = d.thinkingLevel.trim();
+    }
+    const id =
+      d?.type === "model_change" ? idOf(d.provider, d.modelId ?? d.model) : idOf(d?.message?.provider, d?.message?.model);
+    if (id) {
+      // Newest message wins as the live model when no model_change is inside the tail window.
+      if (!model) model = id;
+      if (!recent.includes(id) && recent.length < 8) recent.push(id);
+    }
+  }
+
+  return { model, effort, ...(recent.length ? { recentModels: recent } : {}) };
+}
+
+/** Global/project settings defaults (`defaultProvider` + `defaultModel` + `defaultThinkingLevel`). */
+export function parsePiSettings(text: string): { model?: string; effort?: string } {
+  try {
+    const data = JSON.parse(text);
+    const provider = typeof data?.defaultProvider === "string" ? data.defaultProvider.trim() : "";
+    const modelId = typeof data?.defaultModel === "string" ? data.defaultModel.trim() : "";
+    const effort =
+      typeof data?.defaultThinkingLevel === "string" && data.defaultThinkingLevel.trim()
+        ? data.defaultThinkingLevel.trim()
+        : undefined;
+    const model = modelId ? (provider && !modelId.includes("/") ? `${provider}/${modelId}` : modelId) : undefined;
+    return { model, effort };
+  } catch {
+    return {};
+  }
+}
+
+/** Parse the `pi --list-models` table into `provider/model` ids (header row and non-table lines skipped). */
+export function parsePiListModels(stdout: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of (stdout || "").split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!line) continue;
+    const cols = line.split(/\s{2,}/).map((c) => c.trim()).filter(Boolean);
+    if (cols.length < 2) continue;
+    const [provider, model] = cols;
+    if (provider.toLowerCase() === "provider" && model.toLowerCase() === "model") continue;
+    if (!/^[A-Za-z0-9_.~:-]+$/.test(provider) || !/^[A-Za-z0-9_.~:/-]+$/.test(model)) continue;
+    const id = `${provider}/${model}`;
+    if (!seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+
+/** Parse `models-store.json` (provider -> models[]) into ids plus reasoning support and available levels. */
+export function parsePiModelsStore(text: string): {
+  models: string[];
+  reasoning: Record<string, boolean>;
+  efforts: Record<string, string[]>;
+} {
+  const models: string[] = [];
+  const reasoning: Record<string, boolean> = {};
+  const efforts: Record<string, string[]> = {};
+  const seen = new Set<string>();
+  try {
+    const data = JSON.parse(text);
+    if (!data || typeof data !== "object") return { models, reasoning, efforts };
+    for (const [provider, val] of Object.entries<any>(data)) {
+      const list = Array.isArray(val?.models) ? val.models : [];
+      for (const m of list) {
+        const id = typeof m?.id === "string" ? m.id.trim() : "";
+        if (!id) continue;
+        const full = `${provider}/${id}`;
+        if (!seen.has(full)) {
+          seen.add(full);
+          models.push(full);
+        }
+        reasoning[full] = m?.reasoning === true;
+        // `thinkingLevelMap` null entries mark levels the model cannot use.
+        const map = m?.thinkingLevelMap;
+        if (map && typeof map === "object") {
+          const levels = PI_THINKING_LEVELS.filter((lvl) => (map as Record<string, unknown>)[lvl] !== null);
+          if (levels.length) efforts[full] = levels;
+        }
+      }
+    }
+  } catch {}
+  return { models, reasoning, efforts };
+}
+
+let piStoreCache: {
+  mtimeMs: number;
+  data: { models: string[]; reasoning: Record<string, boolean>; efforts: Record<string, string[]> };
+} | null = null;
+
+/** Cached read of the local pi model catalog (1.9MB file — cached by mtime). */
+export function readPiModelsStore(): {
+  models: string[];
+  reasoning: Record<string, boolean>;
+  efforts: Record<string, string[]>;
+} {
+  try {
+    const mtimeMs = statSync(PI_MODELS_STORE).mtimeMs;
+    if (piStoreCache && piStoreCache.mtimeMs === mtimeMs) return piStoreCache.data;
+    const data = parsePiModelsStore(readFileSync(PI_MODELS_STORE, "utf8"));
+    piStoreCache = { mtimeMs, data };
+    return data;
+  } catch {
+    return { models: [], reasoning: {}, efforts: {} };
+  }
+}
+
+/** Merge two tail parses (newer wins), de-duplicating recent models. */
+function mergePiSessionParses(
+  newer: { model?: string; effort?: string; recentModels?: string[] },
+  older: { model?: string; effort?: string; recentModels?: string[] },
+): { model?: string; effort?: string; recentModels?: string[] } {
+  const recent: string[] = [];
+  for (const m of [...(newer.recentModels ?? []), ...(older.recentModels ?? [])]) {
+    if (!recent.includes(m) && recent.length < 8) recent.push(m);
+  }
+  return {
+    model: newer.model ?? older.model,
+    effort: newer.effort ?? older.effort,
+    ...(recent.length ? { recentModels: recent } : {}),
+  };
+}
+
+/** Read one pi session file: first `headBytes` (session-start state) plus last `tailBytes` (live state, newer wins).
+ * `model_change`/`thinking_level_change` entries are only written on change, so they can sit far from both ends
+ * in long sessions — the tail also carries the newest assistant message, which tracks the live model continuously. */
+export function readPiSessionState(
+  path: string,
+  opts: { headBytes?: number; tailBytes?: number } = {},
+): { model?: string; effort?: string; recentModels?: string[] } {
+  const headBytes = opts.headBytes ?? 16 * 1024;
+  const tailBytes = opts.tailBytes ?? 1024 * 1024;
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    if (size <= headBytes + tailBytes) {
+      const buf = Buffer.alloc(size);
+      readSync(fd, buf, 0, size, 0);
+      return parsePiSessionTail(buf.toString("utf8", 0, size));
+    }
+    const hlen = Math.min(size, headBytes);
+    const headBuf = Buffer.alloc(hlen);
+    readSync(fd, headBuf, 0, hlen, 0);
+    const head = parsePiSessionTail(headBuf.toString("utf8", 0, hlen));
+
+    const tlen = Math.min(size, tailBytes);
+    const tailBuf = Buffer.alloc(tlen);
+    readSync(fd, tailBuf, 0, tlen, size - tlen);
+    const tail = parsePiSessionTail(tailBuf.toString("utf8", 0, tlen));
+
+    return mergePiSessionParses(tail, head);
+  } catch {
+    return {};
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
+/** Live pi state: newest session transcript for the worktree, falling back to settings defaults. */
+export function readPiState(ctx?: AgentContext): AgentStateSnapshot {
+  const state: AgentStateSnapshot = {};
+
+  if (ctx?.worktreePath) {
+    try {
+      const dir = piSessionDir(ctx.worktreePath);
+      if (existsSync(dir)) {
+        const files = readdirSync(dir)
+          .filter((f) => f.endsWith(".jsonl"))
+          .map((f) => ({ path: join(dir, f), mtime: statSync(join(dir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime);
+        const recent: string[] = [];
+        for (const item of files.slice(0, 3)) {
+          const parsed = readPiSessionState(item.path);
+          if (!state.model && parsed.model) state.model = parsed.model;
+          if (!state.effort && parsed.effort) state.effort = parsed.effort;
+          for (const m of parsed.recentModels ?? []) {
+            if (!recent.includes(m) && recent.length < 8) recent.push(m);
+          }
+          if (state.model && state.effort && recent.length >= 8) break;
+        }
+        if (recent.length) state.recentModels = recent;
+      }
+    } catch {}
+  }
+
+  // Settings defaults: global first, project `.pi/settings.json` overrides.
+  const cfgPaths = [PI_SETTINGS];
+  if (ctx?.worktreePath) cfgPaths.push(join(ctx.worktreePath, ".pi", "settings.json"));
+  let cfgModel: string | undefined;
+  let cfgEffort: string | undefined;
+  for (const p of cfgPaths) {
+    try {
+      if (!existsSync(p)) continue;
+      const parsed = parsePiSettings(readFileSync(p, "utf8"));
+      if (parsed.model) cfgModel = parsed.model;
+      if (parsed.effort) cfgEffort = parsed.effort;
+    } catch {}
+  }
+  if (!state.model && cfgModel) state.model = cfgModel;
+  if (!state.effort && cfgEffort) state.effort = cfgEffort;
+
+  return state;
+}
+
+// Pi implementation
+export class PiAgent extends AbstractAgent {
+  readonly agentType = "pi";
+  readonly label = "Pi";
+
+  supports(kind: ControlKind): boolean {
+    return kind === "model" || kind === "effort";
+  }
+
+  override getModels(): string[] {
+    const cached = readPiModelsStore().models;
+    if (cached.length) return cached;
+    return [...PI_DEFAULT_MODELS];
+  }
+
+  override getEfforts(modelId?: string): string[] {
+    if (modelId) {
+      const store = readPiModelsStore();
+      if (store.reasoning[modelId] === false) return ["off"];
+      const levels = store.efforts[modelId];
+      if (levels && levels.length) return [...levels];
+    }
+    return [...PI_THINKING_LEVELS];
+  }
+
+  getApplySteps(kind: ControlKind, value: string): ApplyStep[] {
+    if (kind === "model") {
+      // `/model <provider/id>` applies directly on exact match, otherwise opens the filtered picker.
+      return slash("/model", value);
+    }
+    if (kind === "effort") {
+      // `/thinking <level>` applies directly (pi validates the level itself).
+      return slash("/thinking", value);
+    }
+    return [];
+  }
+
+  override getDiscoverModelCmd(): string[] | undefined {
+    return [PI_CMD, "--list-models"];
+  }
+
+  override parseDiscoveredModels(stdout: string): string[] {
+    return parsePiListModels(stdout);
+  }
+
+  override readCurrentState(ctx?: AgentContext): AgentStateSnapshot {
+    return readPiState(ctx);
+  }
+
+  override getEffortForModel(model: string): string | undefined {
+    // Non-reasoning models can only run `off`; other models keep pi's current level (pi clamps it itself).
+    return readPiModelsStore().reasoning[model] === false ? "off" : undefined;
+  }
+}
+
 // Unsupported agent fallback
 export class UnsupportedAgent extends AbstractAgent {
   readonly agentType = "";
@@ -1342,6 +1706,8 @@ const AGENT_INSTANCES: Record<string, AbstractAgent> = {
   hermes: new HermesAgent(),
   "hermes-cli": new HermesAgent(),
   "hermes-agent": new HermesAgent(),
+  pi: new PiAgent(),
+  "pi-cli": new PiAgent(),
 };
 
 export const UNSUPPORTED_AGENT = new UnsupportedAgent();
@@ -1400,6 +1766,8 @@ export const AGENTS: Record<string, AgentProfile> = {
   hermes: profileFor("hermes"),
   "hermes-cli": profileFor("hermes-cli"),
   "hermes-agent": profileFor("hermes-agent"),
+  pi: profileFor("pi"),
+  "pi-cli": profileFor("pi-cli"),
 };
 
 export function supported(agent: AbstractAgent | AgentProfile, kind: ControlKind): boolean {
@@ -1420,6 +1788,8 @@ export const DISCOVER_MODEL_CMD: Record<string, string[]> = {
   opencode: ["opencode", "models", "--verbose"],
   agy: ["agy", "models"],
   antigravity: ["agy", "models"],
+  pi: [PI_CMD, "--list-models"],
+  "pi-cli": [PI_CMD, "--list-models"],
 };
 export const DISCOVER_AGENT_CMD: Record<string, string[]> = {
   opencode: ["opencode", "agent", "list"],

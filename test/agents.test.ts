@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   agentFor,
   profileFor,
@@ -50,6 +53,16 @@ import {
   getAgyShiftTabSteps,
   parseHermesConfig,
   parseHermesModelsCache,
+  parsePiSessionTail,
+  readPiSessionState,
+  parsePiSettings,
+  parsePiListModels,
+  parsePiModelsStore,
+  readPiState,
+  piSessionDir,
+  PI_THINKING_LEVELS,
+  PI_DEFAULT_MODELS,
+  PiAgent,
   HermesAgent,
   ClaudeAgent,
   CodexAgent,
@@ -134,6 +147,23 @@ describe("supported — per-agent capability gating", () => {
     expect(a.supports("model")).toBe(false);
     expect(a.supports("effort")).toBe(false);
     expect(a.supports("mode")).toBe(false);
+  });
+});
+
+describe("cleanTitle — per-agent deck title normalization", () => {
+  it("opencode strips the Orca 'OC | ' prefix (also fullwidth bar + loose spacing)", () => {
+    const oc = agentFor("opencode");
+    expect(oc.cleanTitle("OC | Fix Auth Flow Bug")).toBe("Fix Auth Flow Bug");
+    expect(oc.cleanTitle("OC｜Fix Auth Flow Bug")).toBe("Fix Auth Flow Bug");
+    expect(oc.cleanTitle("OC|Fix Auth Flow Bug")).toBe("Fix Auth Flow Bug");
+    expect(oc.cleanTitle("Trade state update")).toBe("Trade state update"); // no prefix -> unchanged
+  });
+
+  it("other agents keep the title as-is until they need their own cleaning", () => {
+    expect(agentFor("claude").cleanTitle("OC | Candy crush clone PWA")).toBe("OC | Candy crush clone PWA");
+    expect(agentFor("hermes").cleanTitle("OC | anything")).toBe("OC | anything");
+    expect(agentFor("unknown").cleanTitle("OC | anything")).toBe("OC | anything");
+    expect(agentFor("opencode").cleanTitle("")).toBe("");
   });
 });
 
@@ -876,5 +906,192 @@ agent:
       "xhigh",
       "max",
     ]);
+  });
+});
+
+describe("Pi parser and state reader", () => {
+  it("agentFor / profileFor: pi maps to PiAgent and supports model + effort only", () => {
+    expect(agentFor("pi")).toBeInstanceOf(PiAgent);
+    expect(agentFor(" Pi ")).toBeInstanceOf(PiAgent);
+    expect(agentFor("pi-cli")).toBeInstanceOf(PiAgent);
+    expect(profileFor("pi").label).toBe("Pi");
+
+    const a = agentFor("pi");
+    expect(a.supports("model")).toBe(true);
+    expect(a.supports("effort")).toBe(true);
+    expect(a.supports("mode")).toBe(false);
+  });
+
+  it("apply steps: /model <provider/id> and /thinking <level>", () => {
+    const a = agentFor("pi");
+    expect(a.getApplySteps("model", "opencode/deepseek-v4-flash")).toEqual([
+      { text: "/model opencode/deepseek-v4-flash", enter: true, delayMs: 120 },
+    ]);
+    expect(a.getApplySteps("effort", "high")).toEqual([
+      { text: "/thinking high", enter: true, delayMs: 120 },
+    ]);
+    expect(a.getApplySteps("mode", "plan")).toEqual([]);
+  });
+
+  it("discovery: pi --list-models command", () => {
+    const cmd = discoverModelCmd("pi");
+    expect(cmd?.[1]).toBe("--list-models");
+    expect(cmd?.[0].endsWith("pi")).toBe(true);
+    expect(discoverAgentCmd("pi")).toBeUndefined();
+    expect(discoverVariantCmd("pi")).toBeUndefined();
+  });
+
+  it("parsePiSessionTail: newest model_change / thinking_level_change win, recent models collected", () => {
+    const tail = [
+      JSON.stringify({ type: "session", version: 3, id: "s1", cwd: "/Users/ben/w" }),
+      JSON.stringify({ type: "model_change", provider: "opencode", modelId: "deepseek-v4-flash" }),
+      JSON.stringify({ type: "thinking_level_change", thinkingLevel: "medium" }),
+      JSON.stringify({ type: "message", message: { role: "assistant", provider: "opencode", model: "deepseek-v4-flash" } }),
+      JSON.stringify({ type: "model_change", provider: "anthropic", modelId: "claude-sonnet-4-6" }),
+      JSON.stringify({ type: "thinking_level_change", thinkingLevel: "high" }),
+    ].join("\n");
+
+    expect(parsePiSessionTail(tail)).toEqual({
+      model: "anthropic/claude-sonnet-4-6",
+      effort: "high",
+      recentModels: ["anthropic/claude-sonnet-4-6", "opencode/deepseek-v4-flash"],
+    });
+  });
+
+  it("parsePiSessionTail: provider-qualifies ids that already contain slashes", () => {
+    const tail = [
+      JSON.stringify({ type: "model_change", provider: "openrouter", modelId: "deepseek/deepseek-v4.1-flash" }),
+      JSON.stringify({ type: "model_change", provider: "openrouter", modelId: "openrouter/anthropic/claude-sonnet-4-6" }),
+    ].join("\n");
+    expect(parsePiSessionTail(tail).model).toBe("openrouter/anthropic/claude-sonnet-4-6");
+
+    const only = JSON.stringify({ type: "model_change", provider: "openrouter", modelId: "deepseek/deepseek-v4.1-flash" });
+    expect(parsePiSessionTail(only).model).toBe("openrouter/deepseek/deepseek-v4.1-flash");
+  });
+
+  it("parsePiSessionTail: falls back to the newest assistant message when no model_change is in the window", () => {
+    const tail = [
+      JSON.stringify({ type: "thinking_level_change", thinkingLevel: "high" }),
+      JSON.stringify({ type: "message", message: { role: "assistant", provider: "openrouter", model: "deepseek/deepseek-v4.1-flash" } }),
+    ].join("\n");
+    expect(parsePiSessionTail(tail)).toEqual({
+      model: "openrouter/deepseek/deepseek-v4.1-flash",
+      effort: "high",
+      recentModels: ["openrouter/deepseek/deepseek-v4.1-flash"],
+    });
+  });
+
+  it("readPiSessionState: keeps session-start effort from the head and live model from the tail", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentdeck-pi-"));
+    const file = join(dir, "session.jsonl");
+    const lines = [
+      JSON.stringify({ type: "session", version: 3, id: "s1", cwd: "/Users/ben/w" }),
+      JSON.stringify({ type: "model_change", provider: "opencode", modelId: "deepseek-v4-flash" }),
+      JSON.stringify({ type: "thinking_level_change", thinkingLevel: "high" }),
+      // Filler larger than the head window, pushing the model_change out of the head.
+      JSON.stringify({ type: "message", message: { role: "assistant", provider: "opencode", model: "deepseek-v4-flash", content: "x".repeat(40 * 1024) } }),
+      JSON.stringify({ type: "model_change", provider: "openrouter", modelId: "deepseek/deepseek-v4.1-flash" }),
+      JSON.stringify({ type: "message", message: { role: "assistant", provider: "openrouter", model: "deepseek/deepseek-v4.1-flash" } }),
+    ];
+    writeFileSync(file, lines.join("\n") + "\n");
+
+    const st = readPiSessionState(file, { headBytes: 16 * 1024, tailBytes: 256 * 1024 });
+    expect(st.model).toBe("openrouter/deepseek/deepseek-v4.1-flash");
+    expect(st.effort).toBe("high");
+    expect(st.recentModels?.[0]).toBe("openrouter/deepseek/deepseek-v4.1-flash");
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("readPiSessionState: tolerates missing files and huge files with no state entries", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentdeck-pi-"));
+    const file = join(dir, "session.jsonl");
+    writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "s1", cwd: "/w" }) + "\n" + "y".repeat(300 * 1024));
+    expect(readPiSessionState(file, { headBytes: 1024, tailBytes: 8 * 1024 })).toEqual({});
+    expect(readPiSessionState(join(dir, "nope.jsonl"))).toEqual({});
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("parsePiSessionTail: tolerate partial/corrupt trailing lines", () => {
+    const tail = `${JSON.stringify({ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" })}\n{"type":"model_cha`;
+    expect(parsePiSessionTail(tail)).toEqual({
+      model: "openai-codex/gpt-5.6-luna",
+      recentModels: ["openai-codex/gpt-5.6-luna"],
+    });
+    expect(parsePiSessionTail("")).toEqual({});
+  });
+
+  it("parsePiSettings: qualify defaultModel with defaultProvider, project overrides handled by reader", () => {
+    expect(
+      parsePiSettings(JSON.stringify({ defaultProvider: "opencode", defaultModel: "deepseek-v4-flash", defaultThinkingLevel: "high" })),
+    ).toEqual({ model: "opencode/deepseek-v4-flash", effort: "high" });
+    expect(parsePiSettings(JSON.stringify({ defaultModel: "anthropic/claude-sonnet-4-6" }))).toEqual({
+      model: "anthropic/claude-sonnet-4-6",
+      effort: undefined,
+    });
+    expect(parsePiSettings("invalid")).toEqual({});
+  });
+
+  it("parsePiListModels: parse table rows into provider/model ids, skipping header and noise", () => {
+    const stdout = `provider      model                                                     context  max-out  thinking  images
+anthropic     claude-sonnet-4-6                                         1M       128K     yes       yes
+opencode      deepseek-v4-flash                                         131.1K   32.8K    yes       no
+openai-codex  gpt-5.6-luna                                              400K     128K     yes       yes
+
+some trailing noise
+`;
+    expect(parsePiListModels(stdout)).toEqual([
+      "anthropic/claude-sonnet-4-6",
+      "opencode/deepseek-v4-flash",
+      "openai-codex/gpt-5.6-luna",
+    ]);
+    expect(parsePiListModels(`\u001b[32manthropic\u001b[0m     claude-sonnet-4-6   1M  128K  yes  yes`)).toEqual([
+      "anthropic/claude-sonnet-4-6",
+    ]);
+  });
+
+  it("parsePiModelsStore: ids plus reasoning support and available thinking levels", () => {
+    const json = JSON.stringify({
+      anthropic: { models: [{ id: "claude-sonnet-4-6", reasoning: true, thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" } }] },
+      lmstudio: { models: [{ id: "gemma-4-e4b", reasoning: false }, { id: "qwen3-30b" }] },
+      anthropic2: { models: [] },
+    });
+    const parsed = parsePiModelsStore(json);
+    expect(parsed.models).toEqual([
+      "anthropic/claude-sonnet-4-6",
+      "lmstudio/gemma-4-e4b",
+      "lmstudio/qwen3-30b",
+    ]);
+    expect(parsed.reasoning["anthropic/claude-sonnet-4-6"]).toBe(true);
+    expect(parsed.reasoning["lmstudio/gemma-4-e4b"]).toBe(false);
+    expect(parsed.reasoning["lmstudio/qwen3-30b"]).toBe(false);
+    expect(parsed.efforts["anthropic/claude-sonnet-4-6"]).toEqual([
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    expect(parsePiModelsStore("nope")).toEqual({ models: [], reasoning: {}, efforts: {} });
+  });
+
+  it("piSessionDir: encodes the worktree path the way pi stores sessions", () => {
+    const dir = piSessionDir("/Users/ben/Workspaces/Tools/deep/");
+    expect(dir.endsWith("--Users-ben-Workspaces-Tools-deep--")).toBe(true);
+  });
+
+  it("PiAgent: thinking levels and model fallback", () => {
+    const a = agentFor("pi");
+    expect(a.getEfforts()).toEqual([...PI_THINKING_LEVELS]);
+    expect(a.getEfforts("not-a-real-provider/not-a-real-model")).toEqual([...PI_THINKING_LEVELS]);
+    expect(a.getModels().length).toBeGreaterThan(0);
+    expect(PI_DEFAULT_MODELS.length).toBeGreaterThan(0);
+  });
+
+  it("readPiState: returns an object (live session state or settings defaults)", () => {
+    const st = readPiState();
+    expect(st).toBeDefined();
+    expect(typeof st).toBe("object");
   });
 });

@@ -2,6 +2,7 @@
 // into a Stream Deck Plus 8-slot button model.
 // This layer is fully testable without physical hardware.
 
+import { agentFor } from "./agents.ts";
 import { resolveRepoBgIcon, type ResolvedBgIcon } from "./icons.ts";
 
 export type AgentState = "working" | "waiting" | "done" | "error" | "unverifiable" | "idle" | string | undefined;
@@ -79,6 +80,9 @@ export interface DeckOptions {
   page?: number;
   perPage?: number;
   now?: number;
+  /** Activity bucket size (ms) used for ordering. Sessions/groups active in the same bucket keep their
+   * relative order instead of re-sorting on every output line. Default 60_000. */
+  activityBucketMs?: number;
 }
 
 export type Button =
@@ -144,6 +148,71 @@ export function colorFor(state: AgentState): Color {
   return "white";
 }
 
+/** Latest evidence of activity among candidate timestamps (0 when unknown). */
+export function sessionRecency(...times: Array<number | null | undefined>): number {
+  let max = 0;
+  for (const t of times) {
+    if (typeof t === "number" && Number.isFinite(t) && t > max) max = t;
+  }
+  return max;
+}
+
+/** Ordering debounce: sessions active in the same wall-clock bucket tie, so the deck only re-sorts when
+ * activity crosses a bucket boundary instead of on every output line. Default 60s. */
+export const DEFAULT_ACTIVITY_BUCKET_MS = 60 * 1000;
+
+/** Coarse activity epoch of a timestamp (0 when unknown = oldest). */
+export function activityBucket(
+  timestamp: number | null | undefined,
+  bucketMs: number = DEFAULT_ACTIVITY_BUCKET_MS,
+): number {
+  if (typeof timestamp !== "number" || !Number.isFinite(timestamp) || timestamp <= 0) return 0;
+  return Math.floor(timestamp / Math.max(1, bucketMs));
+}
+
+/**
+ * Deck ordering: group sessions by project so a project's agents sit next to each other,
+ * order the groups by most recent activity (freshest bucket first), then most recent session first
+ * inside a group; the handle is the deterministic tiebreak so positions stay steady while activity
+ * is comparable (muscle memory for slots that never move). Activity is compared in coarse buckets
+ * (see `activityBucket`) so several concurrently working projects do not re-sort the deck constantly.
+ * Unknown projects (empty key) group together and sort last when they have no timestamps.
+ */
+export function sortSessionsByProject<T>(
+  sessions: T[],
+  projectOf: (s: T) => string | undefined,
+  recencyOf: (s: T) => number,
+  handleOf: (s: T) => string,
+  opts: { bucketMs?: number } = {},
+): T[] {
+  const bucketMs = opts.bucketMs ?? DEFAULT_ACTIVITY_BUCKET_MS;
+  const entries = sessions.map((s) => ({
+    s,
+    project: projectOf(s) ?? "",
+    bucket: activityBucket(recencyOf(s), bucketMs),
+    handle: handleOf(s),
+  }));
+
+  const groupBucket = new Map<string, number>();
+  for (const e of entries) {
+    const prev = groupBucket.get(e.project) ?? 0;
+    if (e.bucket > prev) groupBucket.set(e.project, e.bucket);
+  }
+
+  entries.sort((a, b) => {
+    if (a.project !== b.project) {
+      const ra = groupBucket.get(a.project) ?? 0;
+      const rb = groupBucket.get(b.project) ?? 0;
+      if (ra !== rb) return rb - ra; // most recently active project group first
+      return a.project.localeCompare(b.project); // deterministic group order
+    }
+    if (a.bucket !== b.bucket) return b.bucket - a.bucket; // most recently active session first
+    return a.handle.localeCompare(b.handle);
+  });
+
+  return entries.map((e) => e.s);
+}
+
 /**
  * Generate a new worktree name with max existing `repo-N` index + 1.
  * Considering the base repo as 1, the first new worktree will be `repo-2`.
@@ -180,7 +249,10 @@ const EMPTY: Button = { empty: true };
  * Merge two Orca sources into an 8-slot (default) button model.
  * - Join terminal (handle) and worktree agent (state) by paneKey (`tabId:leafId`).
  * - Exclude pure shell terminals without agent state.
- * - Stable sort by handle (keeps buttons steady across turns to preserve muscle memory).
+ * - Group by project: a project's agents are adjacent, groups ordered by most recent activity
+ *   (freshest activity bucket first), most recent session first inside a group, handle as deterministic
+ *   tiebreak. Activity is bucketed (`activityBucketMs`, default 60s) so concurrently working projects
+ *   do not re-sort the deck on every output line.
  * - Paginate by perPage (default 8), padding empty slots with `{ empty: true }`.
  */
 export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
@@ -202,6 +274,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   // paneKey -> state map + fallback agent type + worktreeId -> {repo, branch} metadata
   const stateByPane = new Map<string, AgentState>();
   const agentByPane = new Map<string, string>();
+  const timeByPane = new Map<string, number>(); // latest agent evidence timestamp per pane (for ordering)
   const metaByWt = new Map<string, { repo?: string; branch?: string; unread?: boolean }>();
   for (const wt of input.worktrees ?? []) {
     for (const a of wt.agents ?? []) {
@@ -220,6 +293,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       stateByPane.set(a.paneKey, st);
       // If multiple agents on same paneKey, keep first as fallback (normally 0-1)
       if (!agentByPane.has(a.paneKey)) agentByPane.set(a.paneKey, a.agentType ?? "");
+      timeByPane.set(a.paneKey, sessionRecency(timeByPane.get(a.paneKey), observedAt));
     }
     if (wt.worktreeId) {
       const branch = wt.displayName || (wt.branch ?? "").replace(/^refs\/heads\//, "");
@@ -239,9 +313,9 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
     return tabTitlesFromLayouts.get(tabId);
   };
 
-  // Keep only agent-bearing terminals as sessions. Fixed position = stable sort by handle.
+  // Keep only agent-bearing terminals as sessions. Grouped/sorted below for deck placement.
   // Validation: session is recognized if reported by worktree ps (hasWt) or active agent process detected (t.agentIdentity).
-  const sessions = (input.terminals ?? [])
+  const sessionsRaw = (input.terminals ?? [])
     .map((t) => {
       const pane = `${t.tabId}:${t.leafId}`;
       const hasWt = stateByPane.has(pane);
@@ -261,11 +335,22 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       let state: AgentState;
       if (hasWt) {
         state = stateByPane.get(pane) || "idle";
-        // PreToolUse/Notification phase awaits tool approval/response -> waiting (amber)
         // Does not overwrite unverifiable (stale) or done states with old hook remnants
         if (state !== "unverifiable" && state !== "done") {
           if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
-            state = "waiting";
+            // PreToolUse fires on *every* tool call — including auto-approved ones that never
+            // ask the user anything (Claude runs Bash/MCP freely once permissions allow it).
+            // So escalate to waiting (amber) only when:
+            //  1. Orca stamped the hook record and reports the agent paused on the user
+            //     (state waiting/blocked), or
+            //  2. the hook record carries no state AND the event genuinely requests attention,
+            //     or the agent's hooks fire before every approval pause (agy/antigravity).
+            // A stamped "working" record is never downgraded to waiting.
+            const hookSaysWaiting = hook.state === "waiting" || hook.state === "blocked";
+            const pauseOnTool = agent === "agy" || agent === "antigravity";
+            if (hookSaysWaiting || (!hook.state && (hookEvent === "Notification" || pauseOnTool))) {
+              state = "waiting";
+            }
           } else if (hookEvent === "PostToolUse" || hookEvent === "UserPrompt") {
             state = "working";
           }
@@ -303,10 +388,19 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
         state,
         agentType: agent,
         tabTitle,
+        recency: sessionRecency(t.lastOutputAt, timeByPane.get(pane), hook?.receivedAt),
       };
     })
-    .filter((x): x is NonNullable<typeof x> => x !== null)
-    .sort((a, b) => a.t.handle.localeCompare(b.t.handle));
+    .filter((x): x is NonNullable<typeof x> => x !== null);
+
+  // Group by project; groups sorted by most recent activity bucket, most recent session first inside a group.
+  const sessions = sortSessionsByProject(
+    sessionsRaw,
+    (s) => projectOf(s.t.worktreePath, s.t.worktreeId ? metaByWt.get(s.t.worktreeId)?.repo : undefined),
+    (s) => s.recency,
+    (s) => s.t.handle,
+    { bucketMs: opts.activityBucketMs },
+  );
 
   // Repository metadata index by repoId, path, and displayName
   const repoById = new Map<string, OrcaRepo>();
@@ -349,12 +443,14 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       (e.project ? repoByName.get(e.project.toLowerCase()) : undefined);
 
     const iconInfo = repo ? resolveRepoBgIcon(repo) : undefined;
+    // Per-agent display normalization (e.g. opencode strips Orca's "OC | " prefix) — deck stays agent-agnostic.
+    const shownTitle = agentFor(e.item.agentType).cleanTitle(e.item.tabTitle || e.item.t.title || "");
 
     slots.push({
       empty: false,
       handle: e.item.t.handle,
-      label: e.item.tabTitle || e.item.t.title || "",
-      tabTitle: e.item.tabTitle || e.item.t.title || undefined,
+      label: shownTitle,
+      tabTitle: shownTitle || undefined,
       state: e.item.state,
       color: colorFor(e.item.state),
       worktreePath: e.item.t.worktreePath,

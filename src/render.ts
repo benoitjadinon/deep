@@ -50,6 +50,13 @@ const ANTIGRAVITY_PNG_DATA =
 const HERMES_SVG_PATH =
   "M12 2a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm1 4.1a5.002 5.002 0 00-2 0V7c-1.54-.48-2.78-1.58-3.34-3.03a1 1 0 00-1.87.71C6.67 6.94 8.7 8.5 11 8.9V11c-2.3-.4-4.33-1.96-5.21-4.22a1 1 0 00-1.87.71C4.8 10.3 7.6 12.3 11 12.9V15c-2.3-.4-4.33-1.96-5.21-4.22a1 1 0 00-1.87.71C4.8 14.3 7.6 16.3 11 16.9V21a1 1 0 102 0v-4.1c3.4-.6 6.2-2.6 7.08-5.41a1 1 0 00-1.87-.71C17.33 13.04 15.3 14.6 13 15v-2.1c3.4-.6 6.2-2.6 7.08-5.41a1 1 0 00-1.87-.71C17.33 9.04 15.3 10.6 13 11V8.9c2.3-.4 4.33-1.96 5.21-4.22a1 1 0 00-1.87-.71C15.42 5.76 13.97 6.7 13 7.08V6.1z";
 
+// Pi agent glyph ('π') — no shipped logo asset, so the badge renders the pi letter in the pi accent color.
+const PI_ACCENT = "#8abeb7";
+function piGlyph(x: number, y: number, size: number): string {
+  const font = size * 1.15;
+  return `<text x="${(x + size / 2).toFixed(2)}" y="${(y + size / 2 + font * 0.35).toFixed(2)}" text-anchor="middle" fill="${PI_ACCENT}" font-family="sans-serif" font-size="${font.toFixed(2)}" font-weight="700">π</text>`;
+}
+
 // Agent badge: Supported agents show original Orca logo icon; unknown agents show 2-character pill fallback.
 export function agentBadge(agentType?: string | null): string {
   const a = (agentType || "").toLowerCase();
@@ -82,6 +89,9 @@ export function agentBadge(agentType?: string | null): string {
   if (a === "hermes" || a === "hermes-cli" || a === "hermes-agent") {
     const s = (isize / 24).toFixed(4);
     return `${bg}<g transform="translate(${ix}, ${iy}) scale(${s})"><path fill-rule="evenodd" clip-rule="evenodd" d="${HERMES_SVG_PATH}" fill="#10B981"/></g>`;
+  }
+  if (a === "pi" || a === "pi-cli") {
+    return `${bg}${piGlyph(ix, iy, isize)}`;
   }
 
   // Fallback: 2-character pill for unsupported or unknown agents
@@ -449,6 +459,9 @@ function agentBadgeForDial(agentType?: string | null): string {
   if (a === "hermes" || a === "hermes-cli" || a === "hermes-agent") {
     const s = (isize / 24).toFixed(4);
     return `${bg}<g transform="translate(${ix}, ${iy}) scale(${s})"><path fill-rule="evenodd" clip-rule="evenodd" d="${HERMES_SVG_PATH}" fill="#10B981"/></g>`;
+  }
+  if (a === "pi" || a === "pi-cli") {
+    return `${bg}${piGlyph(ix, iy, isize)}`;
   }
 
   // Fallback: 2-character pill for unsupported or unknown agents

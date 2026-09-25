@@ -85,11 +85,14 @@ describe("agentBadge — per-tile agent badge", () => {
     expect(agentBadge("hermes")).toContain('fill="#10B981"');
     expect(agentBadge("hermes-cli")).toContain('fill="#10B981"');
     expect(agentBadge("hermes-agent")).toContain('fill="#10B981"');
+    expect(agentBadge("pi")).toContain(">π</text>");
+    expect(agentBadge("pi")).toContain('fill="#8abeb7"');
   });
   it("case insensitive", () => {
     expect(agentBadge("OpenCode")).toContain('fill="#F1ECEC"');
     expect(agentBadge("Claude")).toContain('fill="#D97757"');
     expect(agentBadge("Hermes")).toContain('fill="#10B981"');
+    expect(agentBadge("PI")).toContain(">π</text>");
   });
   it("unknown types render gray pill with first 2 characters, or question mark", () => {
     const g = agentBadge("grok");
