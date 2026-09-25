@@ -56080,13 +56080,14 @@ var STATE_COLOR = {
   idle: "white"
 };
 function projectOf(path5, repo) {
+  if (repo) return repo;
   if (path5) {
     const segs = path5.split("/").filter(Boolean);
     const i = segs.indexOf("Projects");
     if (i >= 0 && segs[i + 1]) return segs[i + 1];
     if (segs.length) return segs[segs.length - 1];
   }
-  return repo;
+  return void 0;
 }
 function colorFor(state) {
   if (state && STATE_COLOR[state]) return STATE_COLOR[state];
@@ -56437,12 +56438,12 @@ function piGlyph(x, y, size) {
   const font = size * 1.15;
   return `<text x="${(x + size / 2).toFixed(2)}" y="${(y + size / 2 + font * 0.35).toFixed(2)}" text-anchor="middle" fill="${PI_ACCENT}" font-family="sans-serif" font-size="${font.toFixed(2)}" font-weight="700">\u03C0</text>`;
 }
-function agentBadge(agentType) {
+function agentBadge(agentType, pos) {
   const a = (agentType || "").toLowerCase();
-  const boxX = 108;
-  const boxY = 110;
-  const boxSize = 26;
-  const iconPad = 4;
+  const boxX = pos?.boxX ?? 108;
+  const boxY = pos?.boxY ?? 110;
+  const boxSize = pos?.boxSize ?? 26;
+  const iconPad = boxSize >= 26 ? 4 : 3;
   const ix = boxX + iconPad;
   const iy = boxY + iconPad;
   const isize = boxSize - iconPad * 2;
@@ -56471,6 +56472,9 @@ function agentBadge(agentType) {
     return `${bg}${piGlyph(ix, iy, isize)}`;
   }
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
+  if (pos) {
+    return `<rect x="${boxX}" y="${boxY + 4}" width="${boxSize}" height="10" rx="5" fill="#4b5563"/><text x="${boxX + boxSize / 2}" y="${boxY + 12.5}" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="8" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
+  }
   return `<rect x="104" y="118" width="32" height="18" rx="9" fill="#4b5563"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
 }
 function wrapWords(s, maxCharsPerLine = 15, maxLines = 2) {
@@ -56514,24 +56518,20 @@ function wrapWords(s, maxCharsPerLine = 15, maxLines = 2) {
   }
   return lines;
 }
-function stateIcon(state) {
+function stateIcon(state, cx = 12, cy = 8, r = 5.5, color = "#ffffff") {
   const s = (state || "").toLowerCase();
-  const x = 12;
-  const y = 114;
+  const ring = (extra = "", inner = "") => `<g><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="2"${extra ? " " + extra : ""}/>${inner}</g>`;
   if (s === "done") {
-    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#22c55e" stroke-width="2"/><path d="M4.8 8.2 L7.2 10.4 L11.2 5.8" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`;
+    const k = r / 7;
+    return `<g transform="translate(${(cx - 8 * k).toFixed(2)}, ${(cy - 8 * k).toFixed(2)}) scale(${k.toFixed(3)})"><circle cx="8" cy="8" r="7" fill="none" stroke="${color}" stroke-width="2.3"/><path d="M4.8 8.2 L7.2 10.4 L11.2 5.8" fill="none" stroke="${color}" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></g>`;
   }
-  if (s === "unverifiable") {
-    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="2.8 2.2" stroke-linecap="round"/></g>`;
-  }
-  if (s === "working") {
-    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#3b82f6" stroke-width="2" stroke-dasharray="8 4" stroke-linecap="round"/></g>`;
-  }
+  if (s === "unverifiable") return ring(`stroke-dasharray="3.4 2.6" stroke-linecap="round"`);
+  if (s === "working") return ring(`stroke-dasharray="7 4" stroke-linecap="round"`);
   if (s === "waiting") {
-    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#f59e0b" stroke-width="2"/><text x="8" y="11" text-anchor="middle" fill="#f59e0b" font-family="sans-serif" font-size="9" font-weight="800">?</text></g>`;
+    return ring("", `<text x="${cx}" y="${cy + 3.3}" text-anchor="middle" fill="${color}" font-family="sans-serif" font-size="9" font-weight="800">?</text>`);
   }
   if (s === "error" || s === "blocked" || s === "failed") {
-    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#ef4444" stroke-width="2"/><text x="8" y="11" text-anchor="middle" fill="#ef4444" font-family="sans-serif" font-size="9" font-weight="800">!</text></g>`;
+    return ring("", `<text x="${cx}" y="${cy + 3.3}" text-anchor="middle" fill="${color}" font-family="sans-serif" font-size="9" font-weight="800">!</text>`);
   }
   return "";
 }
@@ -56563,19 +56563,22 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   const num = b.dupIndex && b.dupIndex > 0 ? `-${b.dupIndex}` : "";
   const sub = b.branch ? `${b.branch}${num}` : num ? `#${b.dupIndex}` : "";
   const fit = 116 / units(proj);
-  const projSvg = fit >= 15 ? `<text x="72" y="41" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="${Math.min(21, Math.floor(fit))}" font-weight="700">${esc2(proj)}</text>` : `<text x="72" y="41" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="15" font-weight="700">${esc2(marqueeWindow(proj, 10, tick2))}</text>`;
+  const projSvg = fit >= 15 ? `<text x="72" y="45" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="${Math.min(19, Math.floor(fit))}" font-weight="700">${esc2(proj)}</text>` : `<text x="72" y="45" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="13" font-weight="700">${esc2(marqueeWindow(proj, 10, tick2))}</text>`;
   let subSvg = "";
   if (sub) {
-    subSvg = `<text x="72" y="58" text-anchor="middle" fill="#a1a1aa" font-family="sans-serif" font-size="15" font-weight="600">${esc2(sub)}</text>`;
+    subSvg = `<text x="72" y="70" text-anchor="middle" fill="#a1a1aa" font-family="sans-serif" font-size="18" font-weight="600">${esc2(sub)}</text>`;
   }
   const titleText = b.tabTitle || b.label || "";
   const rawTitle = titleText !== proj ? titleText : "";
-  const titleLines = wrapWords(rawTitle, 15, 2);
+  const titleLines = wrapWords(rawTitle, 15, 3);
   let titleSvg = "";
   if (titleLines.length > 0) {
-    const startY = sub ? 77 : 67;
-    titleSvg = titleLines.map((line, idx) => `<text x="72" y="${startY + idx * 16}" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="14" font-weight="500">${esc2(line)}</text>`).join("");
+    const startY = sub ? 96 : 86;
+    titleSvg = titleLines.map((line, idx) => `<text x="72" y="${startY + idx * 18}" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="16" font-weight="500">${esc2(line)}</text>`).join("");
   }
+  const stIcon = stateIcon(b.state, 14);
+  const divider = stIcon ? `<rect x="23" y="2.5" width="2" height="11" rx="1" fill="#ffffff" opacity="0.35"/>` : "";
+  const badge = agentBadge(b.agentType, { boxX: 114, boxY: 0, boxSize: 18 });
   const attn = needsAttention(b, isTarget);
   let glow = "";
   if (attn) {
@@ -56587,15 +56590,14 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   }
   const g0 = dim ? '<g opacity="0.32">' : "";
   const g1 = dim ? "</g>" : "";
-  const cornerTag = isTarget ? `<circle cx="124" cy="28" r="8" fill="#d97757"/>` : "";
-  const stIcon = stateIcon(b.state);
+  const cornerTag = isTarget ? `<circle cx="126" cy="126" r="9" fill="#d97757"/>` : "";
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="144" height="144">
   <defs><clipPath id="r"><rect width="144" height="144" rx="18"/></clipPath></defs>
   ${g0}<rect width="144" height="144" rx="18" fill="#1c1c1e"/>
   ${renderBgIcon(b)}
   ${glow}
-  <rect width="144" height="13" fill="${color}" clip-path="url(#r)"/>
-  ${projSvg}${subSvg}${titleSvg}${stIcon}${agentBadge(b.agentType)}${g1}${cornerTag}
+  <rect width="144" height="18" fill="${color}" clip-path="url(#r)"/>
+  ${projSvg}${subSvg}${titleSvg}${stIcon}${divider}${badge}${g1}${cornerTag}
 </svg>`;
 }
 function keyImage(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {

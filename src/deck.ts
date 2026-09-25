@@ -128,18 +128,22 @@ const STATE_COLOR: Record<string, Color> = {
 };
 
 /**
- * Extract human-readable project name from path.
- * If `/Projects/<X>/...`, returns X (e.g. AcmeApp/ko -> "AcmeApp"),
- * otherwise the last folder name (e.g. .../Notes -> "Notes"), or fallback to orca repo.
+ * Extract human-readable project name for a worktree/session.
+ * A git worktree carries its repo — that IS the project (e.g. the AltReady
+ * "screenshot" worktree under .../AltReady/screenshot shows "AltReady", not
+ * "screenshot"). Only fall back to path parsing for repo-less folder workspaces:
+ * `/Projects/<X>/...` returns X (e.g. AcmeApp/ko -> "AcmeApp"),
+ * otherwise the last folder name (e.g. .../Notes -> "Notes").
  */
 export function projectOf(path?: string, repo?: string): string | undefined {
+  if (repo) return repo;
   if (path) {
     const segs = path.split("/").filter(Boolean);
     const i = segs.indexOf("Projects");
     if (i >= 0 && segs[i + 1]) return segs[i + 1];
     if (segs.length) return segs[segs.length - 1];
   }
-  return repo;
+  return undefined;
 }
 
 /** State -> button color mapping. Unknown/empty state defaults to white. */

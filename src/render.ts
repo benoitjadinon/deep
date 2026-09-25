@@ -58,15 +58,19 @@ function piGlyph(x: number, y: number, size: number): string {
 }
 
 // Agent badge: Supported agents show original Orca logo icon; unknown agents show 2-character pill fallback.
-export function agentBadge(agentType?: string | null): string {
+// `pos` overrides the box placement so keys can sit the badge inside the top state bar.
+export function agentBadge(
+  agentType?: string | null,
+  pos?: { boxX?: number; boxY?: number; boxSize?: number },
+): string {
   const a = (agentType || "").toLowerCase();
-  const boxX = 108;
-  const boxY = 110;
-  const boxSize = 26;
-  const iconPad = 4;
+  const boxX = pos?.boxX ?? 108;
+  const boxY = pos?.boxY ?? 110;
+  const boxSize = pos?.boxSize ?? 26;
+  const iconPad = boxSize >= 26 ? 4 : 3;
   const ix = boxX + iconPad;
   const iy = boxY + iconPad;
-  const isize = boxSize - iconPad * 2; // 18px
+  const isize = boxSize - iconPad * 2; // 18px (legacy) / 12px (bar)
 
   const bg = `<rect x="${boxX}" y="${boxY}" width="${boxSize}" height="${boxSize}" rx="6" fill="#222225" stroke="#38383e" stroke-width="1"/>`;
 
@@ -96,6 +100,10 @@ export function agentBadge(agentType?: string | null): string {
 
   // Fallback: 2-character pill for unsupported or unknown agents
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
+  if (pos) {
+    // Bar-sized pill: 18x10, centered on the box's bar line
+    return `<rect x="${boxX}" y="${boxY + 4}" width="${boxSize}" height="10" rx="5" fill="#4b5563"/><text x="${boxX + boxSize / 2}" y="${boxY + 12.5}" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="8" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
+  }
   return `<rect x="104" y="118" width="32" height="18" rx="9" fill="#4b5563"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
 }
 
@@ -145,26 +153,24 @@ export function wrapWords(s: string, maxCharsPerLine = 15, maxLines = 2): string
   return lines;
 }
 
-// Agent session state icon matching Orca UI badges (placed bottom-left)
-// done = green checkmark circle, unverifiable = orange dashed circle, working = blue spinner ring, waiting = amber question, error = red exclamation
-export function stateIcon(state?: string): string {
+// Session state glyphs for the top state bar. The bar itself is state-colored (blue/amber/
+// green/red), so the glyph is white by default — a state-colored glyph would vanish into the bar.
+// done = checkmark circle, unverifiable = dashed circle, working = spinner ring, waiting = question, error = exclamation
+export function stateIcon(state?: string, cx = 12, cy = 8, r = 5.5, color = "#ffffff"): string {
   const s = (state || "").toLowerCase();
-  const x = 12;
-  const y = 114;
+  const ring = (extra = "", inner = "") =>
+    `<g><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="2"${extra ? " " + extra : ""}/>${inner}</g>`;
   if (s === "done") {
-    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#22c55e" stroke-width="2"/><path d="M4.8 8.2 L7.2 10.4 L11.2 5.8" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`;
+    const k = r / 7; // scale the 16-grid glyph about its center so it lands on (cx, cy)
+    return `<g transform="translate(${(cx - 8 * k).toFixed(2)}, ${(cy - 8 * k).toFixed(2)}) scale(${k.toFixed(3)})"><circle cx="8" cy="8" r="7" fill="none" stroke="${color}" stroke-width="2.3"/><path d="M4.8 8.2 L7.2 10.4 L11.2 5.8" fill="none" stroke="${color}" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></g>`;
   }
-  if (s === "unverifiable") {
-    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="2.8 2.2" stroke-linecap="round"/></g>`;
-  }
-  if (s === "working") {
-    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#3b82f6" stroke-width="2" stroke-dasharray="8 4" stroke-linecap="round"/></g>`;
-  }
+  if (s === "unverifiable") return ring(`stroke-dasharray="3.4 2.6" stroke-linecap="round"`);
+  if (s === "working") return ring(`stroke-dasharray="7 4" stroke-linecap="round"`);
   if (s === "waiting") {
-    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#f59e0b" stroke-width="2"/><text x="8" y="11" text-anchor="middle" fill="#f59e0b" font-family="sans-serif" font-size="9" font-weight="800">?</text></g>`;
+    return ring("", `<text x="${cx}" y="${cy + 3.3}" text-anchor="middle" fill="${color}" font-family="sans-serif" font-size="9" font-weight="800">?</text>`);
   }
   if (s === "error" || s === "blocked" || s === "failed") {
-    return `<g transform="translate(${x}, ${y})"><circle cx="8" cy="8" r="7" fill="none" stroke="#ef4444" stroke-width="2"/><text x="8" y="11" text-anchor="middle" fill="#ef4444" font-family="sans-serif" font-size="9" font-weight="800">!</text></g>`;
+    return ring("", `<text x="${cx}" y="${cy + 3.3}" text-anchor="middle" fill="${color}" font-family="sans-serif" font-size="9" font-weight="800">!</text>`);
   }
   return "";
 }
@@ -212,30 +218,36 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
   const num = b.dupIndex && b.dupIndex > 0 ? `-${b.dupIndex}` : "";
   const sub = b.branch ? `${b.branch}${num}` : num ? `#${b.dupIndex}` : "";
 
-  // Fit text within available width
+  // Fit text within available width (line 1 = project title, 19px max)
   const fit = 116 / units(proj);
   const projSvg =
     fit >= 15
-      ? `<text x="72" y="41" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="${Math.min(21, Math.floor(fit))}" font-weight="700">${esc(proj)}</text>`
-      : `<text x="72" y="41" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="15" font-weight="700">${esc(marqueeWindow(proj, 10, tick))}</text>`;
+      ? `<text x="72" y="45" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="${Math.min(19, Math.floor(fit))}" font-weight="700">${esc(proj)}</text>`
+      : `<text x="72" y="45" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="13" font-weight="700">${esc(marqueeWindow(proj, 10, tick))}</text>`;
 
   // 2. Branch name (below project name)
   let subSvg = "";
   if (sub) {
-    subSvg = `<text x="72" y="58" text-anchor="middle" fill="#a1a1aa" font-family="sans-serif" font-size="15" font-weight="600">${esc(sub)}</text>`;
+    subSvg = `<text x="72" y="70" text-anchor="middle" fill="#a1a1aa" font-family="sans-serif" font-size="18" font-weight="600">${esc(sub)}</text>`;
   }
 
-  // 3. Tab title (2-line summary below branch)
+  // 3. Tab title (3-line summary below branch)
   const titleText = (b as any).tabTitle || b.label || "";
   const rawTitle = titleText !== proj ? titleText : "";
-  const titleLines = wrapWords(rawTitle, 15, 2);
+  const titleLines = wrapWords(rawTitle, 15, 3);
   let titleSvg = "";
   if (titleLines.length > 0) {
-    const startY = sub ? 77 : 67;
+    const startY = sub ? 96 : 86;
     titleSvg = titleLines
-      .map((line, idx) => `<text x="72" y="${startY + idx * 16}" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="14" font-weight="500">${esc(line)}</text>`)
+      .map((line, idx) => `<text x="72" y="${startY + idx * 18}" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="16" font-weight="500">${esc(line)}</text>`)
       .join("");
   }
+
+  // Icons live in the top state bar now: [state glyph] [divider] [agent badge],
+  // target session marked by a coral dot at the bar's right end.
+  const stIcon = stateIcon(b.state, 14);
+  const divider = stIcon ? `<rect x="23" y="2.5" width="2" height="11" rx="1" fill="#ffffff" opacity="0.35"/>` : "";
+  const badge = agentBadge(b.agentType, { boxX: 114, boxY: 0, boxSize: 18 });
 
   // Pulse animation for attention-needed keys
   const attn = needsAttention(b, isTarget);
@@ -250,18 +262,18 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
   // Dim non-attention keys when attention keys exist
   const g0 = dim ? '<g opacity="0.32">' : "";
   const g1 = dim ? "</g>" : "";
-  // Coral dot in top-right for target session
+  // Coral dot at the bottom right for the target session (current focus);
+  // drawn last so it can overlap the summary text if the title is long.
   const cornerTag = isTarget
-    ? `<circle cx="124" cy="28" r="8" fill="#d97757"/>`
+    ? `<circle cx="126" cy="126" r="9" fill="#d97757"/>`
     : "";
-  const stIcon = stateIcon(b.state);
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="144" height="144">
   <defs><clipPath id="r"><rect width="144" height="144" rx="18"/></clipPath></defs>
   ${g0}<rect width="144" height="144" rx="18" fill="#1c1c1e"/>
   ${renderBgIcon(b)}
   ${glow}
-  <rect width="144" height="13" fill="${color}" clip-path="url(#r)"/>
-  ${projSvg}${subSvg}${titleSvg}${stIcon}${agentBadge(b.agentType)}${g1}${cornerTag}
+  <rect width="144" height="18" fill="${color}" clip-path="url(#r)"/>
+  ${projSvg}${subSvg}${titleSvg}${stIcon}${divider}${badge}${g1}${cornerTag}
 </svg>`;
 }
 

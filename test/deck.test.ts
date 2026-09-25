@@ -102,13 +102,17 @@ describe("colorFor — state to color mapping", () => {
 });
 
 describe("projectOf — extract project name from path", () => {
-  it("nested repos under Projects return parent project name", () => {
-    expect(projectOf("/Users/j/Projects/AcmeApp/ko", "ko")).toBe("AcmeApp");
-    expect(projectOf("/Users/j/Projects/AcmeApp/us", "us")).toBe("AcmeApp");
-  });
-  it("standard repo returns directory name", () => {
+  it("repo (project) wins over the worktree folder name", () => {
+    expect(projectOf("/Users/j/Workspaces/Tools/AltReady/screenshot", "AltReady")).toBe("AltReady");
+    expect(projectOf("/Users/j/Projects/AcmeApp/ko", "AcmeApp")).toBe("AcmeApp");
     expect(projectOf("/Users/j/Projects/sandbox", "sandbox")).toBe("sandbox");
     expect(projectOf("/Users/j/Library/x/Notes", "Notes")).toBe("Notes");
+  });
+  it("falls back to path parsing for repo-less folder workspaces", () => {
+    // nested under /Projects -> parent project name
+    expect(projectOf("/Users/j/Projects/AcmeApp/ko", undefined)).toBe("AcmeApp");
+    // otherwise last folder name
+    expect(projectOf("/Users/j/Desktop/scratch-workspace", undefined)).toBe("scratch-workspace");
   });
   it("falls back to repo when path is missing", () => {
     expect(projectOf(undefined, "svd")).toBe("svd");
@@ -122,8 +126,8 @@ describe("duplicate project index (dupIndex)", () => {
       { handle: "term_B", tabId: "t2", leafId: "l2", title: "US", worktreePath: "/x/Projects/AcmeApp/us", worktreeId: "wt2", lastOutputAt: 2 },
     ];
     const wts = [
-      { worktreeId: "wt1", repo: "ko", displayName: "main", agents: [{ paneKey: "t1:l1", state: "working" }] },
-      { worktreeId: "wt2", repo: "us", displayName: "main", agents: [{ paneKey: "t2:l2", state: "done" }] },
+      { worktreeId: "wt1", repo: "AcmeApp", displayName: "main", agents: [{ paneKey: "t1:l1", state: "working" }] },
+      { worktreeId: "wt2", repo: "AcmeApp", displayName: "main", agents: [{ paneKey: "t2:l2", state: "done" }] },
     ];
     const slots = buildDeck({ terminals: terms, worktrees: wts }).slots as any[];
     expect(slots[0]).toMatchObject({ repo: "AcmeApp", branch: "main", dupIndex: 0 });

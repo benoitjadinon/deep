@@ -59,16 +59,39 @@ describe("keySvg", () => {
     expect(svg).toContain("main-1");
     expect(svg).toContain("Design Feedback");
     expect(svg).toContain("URL");
+    // line 1 (project title) 19px max; line 2 (branch) 18px; both with wider line separation
+    expect(svg).toContain('font-size="19" font-weight="700"');
+    expect(svg).toContain('font-size="18" font-weight="600"');
   });
 
-  it("target slot renders top-right coral dot, non-target does not", () => {
+  it("target slot renders top-right coral dot in the bar, non-target does not", () => {
     const b = { empty: false as const, handle: "t", label: "x", state: "done", color: "green" as const, repo: "svd", branch: "main" };
     const on = keySvg(b, 0, true);
     const off = keySvg(b, 0, false);
-    expect(on).toContain('<circle cx="124" cy="28" r="8" fill="#d97757"');
+    expect(on).toContain('<circle cx="126" cy="126" r="9" fill="#d97757"');
     expect(on).toContain("main");
     expect(on).toContain('fill="#ffffff"');
     expect(off).not.toContain("#d97757");
+  });
+
+  it("moves state + agent icons into the taller top bar", () => {
+    const svg = keySvg({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main", agentType: "claude" });
+    expect(svg).toContain('width="144" height="18"'); // bar ~20% taller
+    expect(svg).toContain('cx="14" cy="8"'); // state glyph inside bar (left)
+    expect(svg).toContain('<rect x="23" y="2.5" width="2" height="11" rx="1" fill="#ffffff" opacity="0.35"/>'); // divider
+    expect(svg).toContain('x="114" y="0" width="18" height="18"'); // agent badge inside bar (right)
+  });
+
+  it("omits the bar divider when the session has no state icon", () => {
+    const svg = keySvg({ empty: false as const, handle: "t", label: "x", state: "idle", color: "white" as const, repo: "svd", branch: "main" });
+    expect(svg).not.toContain('x="23" y="2.5"');
+  });
+
+  it("renders a 3rd summary line when the tab title is long", () => {
+    const svg = keySvg({ empty: false as const, handle: "t", tabTitle: "Fix the flaky integration tests and review the auth refactor", state: "working", color: "blue" as const, repo: "svd", branch: "main" });
+    expect(svg).toContain('y="96"');
+    expect(svg).toContain('y="114"');
+    expect(svg).toContain('y="132"');
   });
 });
 
@@ -111,36 +134,40 @@ describe("agentBadge — per-tile agent badge", () => {
   });
 });
 
-describe("stateIcon — session state icons matching Orca UI", () => {
-  it("done is green checkmark circle", () => {
+describe("stateIcon — white glyphs for the state-colored top bar", () => {
+  it("done is white checkmark circle scaled into the bar", () => {
     const icon = stateIcon("done");
-    expect(icon).toContain('stroke="#22c55e"');
+    expect(icon).toContain('stroke="#ffffff"');
     expect(icon).toContain("<circle");
     expect(icon).toContain("<path");
   });
-  it("unverifiable (no recent update) is amber dashed circle", () => {
+  it("unverifiable (no recent update) is white dashed circle", () => {
     const icon = stateIcon("unverifiable");
-    expect(icon).toContain('stroke="#f59e0b"');
+    expect(icon).toContain('stroke="#ffffff"');
     expect(icon).toContain("stroke-dasharray");
   });
-  it("working is blue spinner ring", () => {
+  it("working is white spinner ring", () => {
     const icon = stateIcon("working");
-    expect(icon).toContain('stroke="#3b82f6"');
+    expect(icon).toContain('stroke="#ffffff"');
     expect(icon).toContain("stroke-dasharray");
   });
-  it("waiting is amber question mark", () => {
+  it("waiting is white question mark", () => {
     const icon = stateIcon("waiting");
-    expect(icon).toContain('stroke="#f59e0b"');
+    expect(icon).toContain('stroke="#ffffff"');
     expect(icon).toContain(">?</text>");
   });
-  it("error/blocked/failed is red exclamation mark", () => {
-    expect(stateIcon("error")).toContain('stroke="#ef4444"');
-    expect(stateIcon("blocked")).toContain('stroke="#ef4444"');
-    expect(stateIcon("failed")).toContain('stroke="#ef4444"');
+  it("error/blocked/failed is white exclamation mark", () => {
+    expect(stateIcon("error")).toContain('stroke="#ffffff"');
+    expect(stateIcon("blocked")).toContain('stroke="#ffffff"');
+    expect(stateIcon("failed")).toContain('stroke="#ffffff"');
   });
   it("idle or empty state has no icon", () => {
     expect(stateIcon("idle")).toBe("");
     expect(stateIcon(undefined)).toBe("");
+  });
+  it("honors custom position and size", () => {
+    const icon = stateIcon("working", 40, 30, 4);
+    expect(icon).toContain('cx="40" cy="30" r="4"');
   });
 });
 
