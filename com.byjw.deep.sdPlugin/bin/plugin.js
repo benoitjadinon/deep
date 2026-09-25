@@ -55821,7 +55821,8 @@ function parsePrimaryAgents(stdout) {
 }
 function parseModelVariants(stdout, modelId) {
   for (const block of splitJsonBlocks(stdout || "")) {
-    if (block.id === modelId && block.variants && typeof block.variants === "object") {
+    const idMatches = block.id === modelId || typeof block.providerID === "string" && typeof block.id === "string" && modelId === `${block.providerID}/${block.id}`;
+    if (idMatches && block.variants && typeof block.variants === "object") {
       const keys = Object.keys(block.variants);
       if (keys.length) return ["default", ...keys];
     }

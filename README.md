@@ -50,6 +50,8 @@ npx streamdeck link com.byjw.deep.sdPlugin
 |---|---|---|
 | **Model** | choose opus↔sonnet↔haiku | apply `/model` to the current session |
 | **Effort** | choose low↔…↔ultracode | apply `/effort` to the current session |
+
+> Effort options are **per agent and per selected model** (e.g. DeepSeek has no `medium` — it shows `Default(low/high/max)` in opencode and only its real levels in pi). See [`docs/effort-handling.md`](docs/effort-handling.md) for how each agent's effort/thinking list is resolved.
 | **Mode** | choose plan↔build↔… | apply mode to the current session |
 | **Talk** | — | push to start recording → speak → push again to stop and send (toggle) |
 | **Target session selection** | walk all sessions (moves focus) | jump to that session |

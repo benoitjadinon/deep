@@ -400,10 +400,25 @@ agent = "plan"
     const stdout = `deepseek/deepseek-v4-flash-0731\n{\n  "id": "deepseek/deepseek-v4-flash-0731",\n  "variants": { "low": {"reasoning":{"effort":"low"}}, "high": {"reasoning":{"effort":"high"}}, "max": {"reasoning":{"effort":"max"}} }\n}\nsome-other\n{\n  "id": "x/y",\n  "variants": {}\n}\n`;
     expect(parseModelVariants(stdout, "deepseek/deepseek-v4-flash-0731")).toEqual(["default", "low", "high", "max"]);
   });
+  it("parseModelVariants: real opencode verbose shape — block id drops outer provider prefix, canonical id keeps it", () => {
+    // `opencode models --verbose openrouter` prints canonical `openrouter/deepseek/...` ids
+    // but verbose JSON blocks carry the model id without the outer provider (`deepseek/...`)
+    // plus a providerID field. A deepseek model on openrouter has NO `medium` variant —
+    // exactly the user-visible case.
+    const stdout = `openrouter/deepseek/deepseek-v4-flash-0731\n{\n  "id": "deepseek/deepseek-v4-flash-0731",\n  "providerID": "openrouter",\n  "variants": { "low": {},"high": {},"max": {} }\n}\n`;
+    expect(parseModelVariants(stdout, "openrouter/deepseek/deepseek-v4-flash-0731")).toEqual(["default", "low", "high", "max"]);
+  });
+  it("parseModelVariants: tilded openrouter model keeps ~ in block id", () => {
+    const stdout = `openrouter/~deepseek/deepseek-v4-flash-latest\n{\n  "id": "~deepseek/deepseek-v4-flash-latest",\n  "providerID": "openrouter",\n  "variants": { "low": {},"high": {},"max": {} }\n}\n`;
+    expect(parseModelVariants(stdout, "openrouter/~deepseek/deepseek-v4-flash-latest")).toEqual(["default", "low", "high", "max"]);
+  });
   it("parseModelVariants: empty array when variants or model missing", () => {
     expect(parseModelVariants("", "a/b")).toEqual([]);
     expect(parseModelVariants('{"id":"x","variants":{}}', "x")).toEqual([]);
     expect(parseModelVariants('{"id":"x","variants":{"low":{}}}', "nope")).toEqual([]);
+    // provider-prefixed model id must NOT match a bare id block (avoid false positives)
+    expect(parseModelVariants('{"id":"x","variants":{"low":{}}}', "other/x")).toEqual([]);
+    expect(parseModelVariants('{"id":"deepseek/deepseek-chat","providerID":"openrouter","variants":{"low":{}}}', "openrouter/x/y")).toEqual([]);
   });
   it("sortModels: favorites first -> recent -> remaining, deduplicated", () => {
     const discovered = ["openrouter/a", "openrouter/b", "openrouter/c", "openrouter/d"];

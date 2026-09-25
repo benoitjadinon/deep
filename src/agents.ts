@@ -1824,7 +1824,17 @@ export function parsePrimaryAgents(stdout: string): string[] {
 
 export function parseModelVariants(stdout: string, modelId: string): string[] {
   for (const block of splitJsonBlocks(stdout || "")) {
-    if (block.id === modelId && block.variants && typeof block.variants === "object") {
+    // opencode prints verbose blocks with the model id without its outer provider prefix
+    // (e.g. canonical `openrouter/deepseek/deepseek-v4-flash-0731` -> block id
+    // `deepseek/deepseek-v4-flash-0731` + providerID `openrouter`; `~` kept on tilded
+    // openrouter models), so reconstruct the canonical `providerID/id` form. Blocks without
+    // a providerID (older fixtures) fall back to an exact id match.
+    const idMatches =
+      block.id === modelId ||
+      (typeof block.providerID === "string" &&
+        typeof block.id === "string" &&
+        modelId === `${block.providerID}/${block.id}`);
+    if (idMatches && block.variants && typeof block.variants === "object") {
       const keys = Object.keys(block.variants);
       if (keys.length) return ["default", ...keys];
     }
