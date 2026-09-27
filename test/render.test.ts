@@ -325,6 +325,87 @@ describe("dialImage — dial rendering", () => {
     const codexDanger = Buffer.from(dialImage("mode", "MODE", "danger-full-access", 0, false, "codex").split(",")[1], "base64").toString("utf8");
     expect(codexDanger).toContain('fill="#ef4444"');
   });
+
+  it("target dial with state renders a button-style state status bar instead of the accent rail", () => {
+    const svg = Buffer.from(
+      dialImage("target", "TARGET", "svd", 0, false, "opencode", "main", undefined, { state: "waiting", color: "amber", attention: false, nowMs: 0 }).split(",")[1],
+      "base64",
+    ).toString("utf8");
+    expect(svg).toContain('width="200" height="14"'); // status bar, same height language as keys
+    expect(svg).toContain('fill="#f59e0b"'); // amber state color on bar + label
+    expect(svg).not.toContain('width="7" height="100"'); // static accent rail replaced
+    expect(svg).toContain('fill="#ffffff"'); // white state glyph
+    expect(svg).toContain(">?</text>"); // waiting question mark
+    expect(svg).toContain('x="23" y="2.5" width="2" height="9"'); // glyph divider
+  });
+
+  it("target dial state glyph/colors follow session state like a key", () => {
+    // done -> green bar + checkmark
+    const done = Buffer.from(
+      dialImage("target", "TARGET", "svd", 0, false, "claude", "main", undefined, { state: "done", color: "green", attention: false, nowMs: 0 }).split(",")[1],
+      "base64",
+    ).toString("utf8");
+    expect(done).toContain('fill="#22c55e"');
+    expect(done).toContain('M4.8 8.2'); // checkmark path
+
+    // error -> red bar + exclamation
+    const err = Buffer.from(
+      dialImage("target", "TARGET", "svd", 0, false, "codex", "main", undefined, { state: "error", color: "red", attention: false, nowMs: 0 }).split(",")[1],
+      "base64",
+    ).toString("utf8");
+    expect(err).toContain('fill="#ef4444"');
+    expect(err).toContain(">!</text>");
+
+    // idle -> gray bar, no glyph/divider but the bar still renders
+    const idle = Buffer.from(
+      dialImage("target", "TARGET", "svd", 0, false, "claude", "main", undefined, { state: "idle", color: "white", attention: false, nowMs: 0 }).split(",")[1],
+      "base64",
+    ).toString("utf8");
+    expect(idle).toContain('fill="#6b7280"');
+    expect(idle).not.toContain('x="23" y="2.5"');
+  });
+
+  it("target dial blinks like a button when attention triggers, with urgent amber/red period", () => {
+    // amber attention at 160ms of a 640ms cycle -> p=0.5 -> 0.40*0.5 = 0.20
+    const mid = Buffer.from(
+      dialImage("target", "TARGET", "svd", 0, false, "opencode", "main", undefined, { state: "waiting", color: "amber", attention: true, nowMs: 160 }).split(",")[1],
+      "base64",
+    ).toString("utf8");
+    expect(mid).toContain('opacity="0.20"');
+    expect(mid).toContain('width="200" height="100" fill="#f59e0b" opacity');
+
+    // green (calm) attention: 1300ms period, at 325ms p=0.5 -> 0.28*0.5 = 0.14
+    const calm = Buffer.from(
+      dialImage("target", "TARGET", "svd", 0, false, "claude", "main", undefined, { state: "done", color: "green", attention: true, nowMs: 325 }).split(",")[1],
+      "base64",
+    ).toString("utf8");
+    expect(calm).toContain('opacity="0.14"');
+
+    // no attention -> no glow overlay at all
+    const off = Buffer.from(
+      dialImage("target", "TARGET", "svd", 0, false, "opencode", "main", undefined, { state: "waiting", color: "amber", attention: false, nowMs: 160 }).split(",")[1],
+      "base64",
+    ).toString("utf8");
+    expect(off).not.toContain('opacity="0.20"');
+    expect(off.match(/<rect width="200" height="100" fill/g) || []).toHaveLength(0);
+  });
+
+  it("target dial status bar sinks the agent badge below the 14px bar", () => {
+    const svg = Buffer.from(
+      dialImage("target", "TARGET", "svd", 0, false, "opencode", "main", undefined, { state: "working", color: "blue", attention: false, nowMs: 0 }).split(",")[1],
+      "base64",
+    ).toString("utf8");
+    expect(svg).toContain('x="172" y="15"');
+    expect(svg).not.toContain('x="172" y="6"');
+  });
+
+  it("target dial without state keeps the legacy amber rail and top-right badge", () => {
+    const svg = Buffer.from(dialImage("target", "TARGET", "svd", 0, false, "opencode").split(",")[1], "base64").toString("utf8");
+    expect(svg).toContain('width="7" height="100"');
+    expect(svg).toContain('fill="#f59e0b"');
+    expect(svg).toContain('x="172" y="6"');
+    expect(svg).not.toContain('width="200" height="14"');
+  });
 });
 
 describe("modeColor — mode to color mapping", () => {

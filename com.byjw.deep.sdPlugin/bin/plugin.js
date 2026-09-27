@@ -56975,9 +56975,10 @@ function modeColor(mode, agentType) {
   }
   return "#f43f5e";
 }
-function dialImage(role, label, value, tick2 = 0, disabled = false, badge, sub, customColor) {
+function dialImage(role, label, value, tick2 = 0, disabled = false, badge, sub, customColor, attention) {
   const roleAccent = customColor || (role === "mode" ? modeColor(value, badge) : DIAL_ACCENT[role] ?? "#8a8a90");
-  const accent = disabled ? "#2e2e34" : roleAccent;
+  const stateColor = attention?.color ? HEX[attention.color] ?? HEX.white : void 0;
+  const accent = disabled ? "#2e2e34" : stateColor || roleAccent;
   const labelColor = disabled ? "#4a4a52" : accent;
   const valueColor = disabled ? "#4a4a52" : "#ffffff";
   const val = disabled ? value && value !== " " && value !== "\u2026" ? value : "-" : value || " ";
@@ -57000,23 +57001,42 @@ function dialImage(role, label, value, tick2 = 0, disabled = false, badge, sub, 
   const subY = role === "model" ? lines.length > 2 ? 86 : 84 : valueY + 18;
   const valueSvg = lines.length > 1 ? lines.map((ln, i) => `<text x="${textX}" y="${(hasSub ? role === "model" ? 38 : 40 : top) + i * (hasSub && role === "model" ? 15 : lineH)}" fill="${valueColor}" font-family="sans-serif" font-size="${hasSub && role === "model" ? 14 : lineFont}" font-weight="700">${esc2(ln)}</text>`).join("") : `<text x="${textX}" y="${valueY}" fill="${valueColor}" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc2(lines[0])}</text>`;
   const subSvg = hasSub ? `<text x="${textX}" y="${subY}" fill="${subColor}" font-family="sans-serif" font-size="${subSize}" font-weight="600">${esc2(sub || "")}</text>` : "";
-  const badgeSvg = badge ? agentBadgeForDial(badge) : "";
+  const barColor = disabled ? "#2e2e34" : stateColor || HEX.white;
+  let statusBar = "";
+  if (attention) {
+    const stIcon = disabled ? "" : stateIcon(attention.state, 13, 7, 4.5, "#ffffff");
+    const divider = stIcon ? `<rect x="23" y="2.5" width="2" height="9" rx="1" fill="#ffffff" opacity="0.35"/>` : "";
+    statusBar = `<rect width="200" height="14" fill="${barColor}" clip-path="url(#dr)"/>${stIcon}${divider}`;
+  }
+  let glow = "";
+  if (attention?.attention && !disabled) {
+    const gcol = stateColor || HEX.white;
+    const urgent = gcol === HEX.amber || gcol === HEX.red;
+    const period = urgent ? 640 : 1300;
+    const now = attention.nowMs ?? 0;
+    const p = 0.5 - 0.5 * Math.cos(2 * Math.PI * (now % period) / period);
+    const op = (urgent ? 0.4 : 0.28) * p;
+    glow = `<rect width="200" height="100" fill="${gcol}" opacity="${op.toFixed(2)}" clip-path="url(#dr)"/>`;
+  }
+  const rail = attention ? "" : `<rect width="7" height="100" fill="${accent}"/>`;
+  const badgeSvg = badge ? attention ? agentBadgeForDial(badge, 15, 18) : agentBadgeForDial(badge) : "";
   const dimG0 = disabled ? '<g opacity="0.38">' : "";
   const dimG1 = disabled ? "</g>" : "";
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="200" height="100">
+  <defs><clipPath id="dr"><rect width="200" height="100" rx="12"/></clipPath></defs>
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
-  ${dimG0}<rect width="7" height="100" fill="${accent}"/>
+  ${glow}
+  ${statusBar}
+  ${dimG0}${rail}
   ${labelSvg}
   ${valueSvg}${subSvg}${dimG1}
   ${badgeSvg}
 </svg>`;
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
 }
-function agentBadgeForDial(agentType) {
+function agentBadgeForDial(agentType, boxY = 6, boxSize = 20) {
   const a = (agentType || "").toLowerCase();
   const boxX = 172;
-  const boxY = 6;
-  const boxSize = 20;
   const iconPad = 3;
   const ix = boxX + iconPad;
   const iy = boxY + iconPad;
@@ -57046,7 +57066,7 @@ function agentBadgeForDial(agentType) {
     return `${bg}${piGlyph(ix, iy, isize)}`;
   }
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
-  return `<rect x="166" y="6" width="28" height="16" rx="8" fill="#4b5563"/><text x="180" y="18" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
+  return `<rect x="166" y="${boxY}" width="28" height="16" rx="8" fill="#4b5563"/><text x="180" y="${boxY + 12}" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
 }
 function splitSlash(value, perLine) {
   const parts = (value || " ").split("/").filter((p) => p !== "");
@@ -57577,6 +57597,7 @@ async function refreshEfforts() {
 var slotViews = /* @__PURE__ */ new Map();
 var dialViews = /* @__PURE__ */ new Map();
 var lastImg = /* @__PURE__ */ new Map();
+var lastDialImg = /* @__PURE__ */ new Map();
 var slotIndex = (c) => c ? c.row * 4 + c.column : 0;
 function ensureTarget() {
   if (!targetHandle || !allHandles.includes(targetHandle)) {
@@ -57607,6 +57628,16 @@ function dialFeedback(role) {
   if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick, !isSupported, badge) };
   if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported, badge) };
   if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
+  if (role === "target") {
+    const tb2 = sessionByHandle.get(targetHandle ?? "");
+    const st = tb2 ? {
+      state: tb2.state,
+      color: tb2.color,
+      attention: needsAttention(tb2, true),
+      nowMs: Date.now()
+    } : void 0;
+    return { full: dialImage("target", "TARGET", v, tick, false, badge, branch, void 0, st) };
+  }
   return { full: dialImage("target", "TARGET", v, tick, false, badge, branch) };
 }
 function renderAll() {
@@ -57629,7 +57660,10 @@ function renderKeys() {
 }
 function renderDials() {
   for (const { action: a, role } of dialViews.values()) {
-    a.setFeedback(dialFeedback(role)).catch(() => {
+    const fb = dialFeedback(role);
+    if (lastDialImg.get(a.id) === fb.full) continue;
+    lastDialImg.set(a.id, fb.full);
+    a.setFeedback(fb).catch(() => {
     });
   }
 }
@@ -57639,6 +57673,10 @@ function anyAttention() {
     if (b && !b.empty && needsAttention(b, b.handle === targetHandle)) return true;
   }
   return false;
+}
+function targetAttention() {
+  const tb = targetHandle ? sessionByHandle.get(targetHandle) : void 0;
+  return Boolean(tb) && needsAttention(tb, true);
 }
 function getHookEvents() {
   const map2 = /* @__PURE__ */ new Map();
@@ -57930,6 +57968,7 @@ var DialBase = class extends SingletonAction {
   }
   onWillDisappear(ev) {
     dialViews.delete(ev.action.id);
+    lastDialImg.delete(ev.action.id);
   }
   onDialRotate(ev) {
     const dir = (ev.payload?.ticks ?? 0) > 0 ? 1 : (ev.payload?.ticks ?? 0) < 0 ? -1 : 0;
@@ -58137,13 +58176,15 @@ setInterval(() => {
 }, 450);
 var wasAttention = false;
 setInterval(() => {
-  const attn = anyAttention();
+  const attn = anyAttention() || targetAttention();
   if (attn) {
     wasAttention = true;
     renderKeys();
+    renderDials();
   } else if (wasAttention) {
     wasAttention = false;
     renderKeys();
+    renderDials();
   }
 }, 160);
 poll();

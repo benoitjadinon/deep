@@ -603,6 +603,7 @@ type Coords = { column: number; row: number };
 const slotViews = new Map<string, { action: any; coordinates?: Coords }>();
 const dialViews = new Map<string, { action: any; role: string }>();
 const lastImg = new Map<string, string>();
+const lastDialImg = new Map<string, string>();
 
 const slotIndex = (c?: Coords) => (c ? c.row * 4 + c.column : 0);
 
@@ -636,6 +637,20 @@ function dialFeedback(role: string): { full: string } {
   if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick, !isSupported, badge) };
   if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported, badge) };
   if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
+  if (role === "target") {
+    // Button-style state rendering: the target session drives the status bar color, glyph and the
+    // attention pulse (treated like an already-focused key — waiting/error still pulse, unread-done doesn't).
+    const tb = sessionByHandle.get(targetHandle ?? "");
+    const st = tb
+      ? {
+          state: (tb as any).state,
+          color: (tb as any).color as string | undefined,
+          attention: needsAttention(tb, true),
+          nowMs: Date.now(),
+        }
+      : undefined;
+    return { full: dialImage("target", "TARGET", v, tick, false, badge, branch, undefined, st) };
+  }
   return { full: dialImage("target", "TARGET", v, tick, false, badge, branch) };
 }
 
@@ -660,9 +675,13 @@ function renderKeys(): void {
 }
 
 // Re-render dials only — avoids key re-rendering overhead on dial rotation ticks.
+// lastDialImg skips identical frames so the pulse loop only pushes the blinking target dial.
 function renderDials(): void {
   for (const { action: a, role } of dialViews.values()) {
-    a.setFeedback(dialFeedback(role)).catch(() => {});
+    const fb = dialFeedback(role);
+    if (lastDialImg.get(a.id) === fb.full) continue;
+    lastDialImg.set(a.id, fb.full);
+    a.setFeedback(fb).catch(() => {});
   }
 }
 
@@ -673,6 +692,13 @@ function anyAttention(): boolean {
     if (b && !b.empty && needsAttention(b, (b as any).handle === targetHandle)) return true;
   }
   return false;
+}
+
+// Check if the target session (dial 4) itself requires attention — blinks even when it sits past
+// the 8 visible keys. Treated as an already-focused session (waiting/error pulse, unread-done doesn't).
+function targetAttention(): boolean {
+  const tb = targetHandle ? sessionByHandle.get(targetHandle) : undefined;
+  return Boolean(tb) && needsAttention(tb, true);
 }
 
 // Read latest hook states from Orca agent-hooks (last-status.json)
@@ -980,6 +1006,7 @@ class DialBase extends SingletonAction {
   }
   override onWillDisappear(ev: any): void {
     dialViews.delete(ev.action.id);
+    lastDialImg.delete(ev.action.id);
   }
   override onDialRotate(ev: any): void {
     const dir = (ev.payload?.ticks ?? 0) > 0 ? 1 : (ev.payload?.ticks ?? 0) < 0 ? -1 : 0;
@@ -1175,16 +1202,18 @@ setInterval(() => {
   tick++;
   if (anyAttention() || anyMarquee()) renderKeys();
 }, 450);
-// Smooth pulse loop for keys requiring attention (160ms ≈ 6fps)
+// Smooth pulse loop for keys AND the target dial requiring attention (160ms ≈ 6fps)
 let wasAttention = false;
 setInterval(() => {
-  const attn = anyAttention();
+  const attn = anyAttention() || targetAttention();
   if (attn) {
     wasAttention = true;
     renderKeys();
+    renderDials();
   } else if (wasAttention) {
     wasAttention = false;
     renderKeys();
+    renderDials();
   }
 }, 160);
 poll();

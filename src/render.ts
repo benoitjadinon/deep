@@ -382,6 +382,20 @@ export function modeColor(mode?: string | null, agentType?: string | null): stri
   return "#f43f5e";
 }
 
+/** Button-like state overlay for the target dial: state-colored top status bar with a white state
+ * glyph and an attention pulse — mirroring how keys render session state and alerts.
+ * When provided, the static accent rail is replaced by this status bar. */
+export interface DialAttention {
+  /** Session state (working/waiting/done/error/…) for the status-bar glyph. */
+  state?: string | null;
+  /** Button-style state color name (blue/amber/green/red/white) for bar, label and glow. */
+  color?: string;
+  /** Needs-attention pulse (same rule as buttons: waiting/error/read-unread-done). */
+  attention?: boolean;
+  /** Clock in ms for the pulse phase. */
+  nowMs?: number;
+}
+
 /** Custom render for dial touchscreen (200x100) */
 export function dialImage(
   role: string,
@@ -392,9 +406,13 @@ export function dialImage(
   badge?: string | null,
   sub?: string | null,
   customColor?: string | null,
+  attention?: DialAttention | null,
 ): string {
   const roleAccent = customColor || (role === "mode" ? modeColor(value, badge) : (DIAL_ACCENT[role] ?? "#8a8a90"));
-  const accent = disabled ? "#2e2e34" : roleAccent;
+  const stateColor = attention?.color ? (HEX[attention.color] ?? HEX.white) : undefined;
+  // For the target dial the state color drives the label accent (like the old amber rail), for
+  // every other dial the role accent is unchanged.
+  const accent = disabled ? "#2e2e34" : stateColor || roleAccent;
   const labelColor = disabled ? "#4a4a52" : accent;
   const valueColor = disabled ? "#4a4a52" : "#ffffff";
   const val = disabled ? (value && value !== " " && value !== "…" ? value : "-") : (value || " ");
@@ -435,14 +453,42 @@ export function dialImage(
     ? `<text x="${textX}" y="${subY}" fill="${subColor}" font-family="sans-serif" font-size="${subSize}" font-weight="600">${esc(sub || "")}</text>`
     : "";
 
-  const badgeSvg = badge ? agentBadgeForDial(badge) : "";
+  // Button-style state status bar: the target dial's accent strip becomes a state-colored top bar
+  // carrying the same white state glyph the keys show (working ring, ?, !, checkmark, dashed ring).
+  const barColor = disabled ? "#2e2e34" : stateColor || HEX.white;
+  let statusBar = "";
+  if (attention) {
+    const stIcon = disabled ? "" : stateIcon(attention.state, 13, 7, 4.5, "#ffffff");
+    const divider = stIcon ? `<rect x="23" y="2.5" width="2" height="9" rx="1" fill="#ffffff" opacity="0.35"/>` : "";
+    statusBar = `<rect width="200" height="14" fill="${barColor}" clip-path="url(#dr)"/>${stIcon}${divider}`;
+  }
+  // Attention pulse overlay — same phase/opacity rules as keySvg (urgent amber/red blink fast,
+  // calmer pulse for unread-done green), so the dial blinks exactly like a needs-attention button.
+  let glow = "";
+  if (attention?.attention && !disabled) {
+    const gcol = stateColor || HEX.white;
+    const urgent = gcol === HEX.amber || gcol === HEX.red;
+    const period = urgent ? 640 : 1300; // ms/cycle
+    const now = attention.nowMs ?? 0;
+    const p = 0.5 - 0.5 * Math.cos((2 * Math.PI * (now % period)) / period); // 0->1->0
+    const op = (urgent ? 0.4 : 0.28) * p;
+    glow = `<rect width="200" height="100" fill="${gcol}" opacity="${op.toFixed(2)}" clip-path="url(#dr)"/>`;
+  }
+
+  // When a state overlay is present the 7px accent rail is replaced by the status bar above.
+  const rail = attention ? "" : `<rect width="7" height="100" fill="${accent}"/>`;
+
+  const badgeSvg = badge ? (attention ? agentBadgeForDial(badge, 15, 18) : agentBadgeForDial(badge)) : "";
 
   const dimG0 = disabled ? '<g opacity="0.38">' : "";
   const dimG1 = disabled ? "</g>" : "";
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="200" height="100">
+  <defs><clipPath id="dr"><rect width="200" height="100" rx="12"/></clipPath></defs>
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
-  ${dimG0}<rect width="7" height="100" fill="${accent}"/>
+  ${glow}
+  ${statusBar}
+  ${dimG0}${rail}
   ${labelSvg}
   ${valueSvg}${subSvg}${dimG1}
   ${badgeSvg}
@@ -450,12 +496,11 @@ export function dialImage(
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
 }
 
-// Agent badge for top-right dial position (20x20)
-function agentBadgeForDial(agentType?: string | null): string {
+// Agent badge for top-right dial position (20x20; `boxY`/`boxSize` overrides keep it clear of the
+// state status bar on the target dial, which sinks the badge just below the 14px bar).
+function agentBadgeForDial(agentType?: string | null, boxY = 6, boxSize = 20): string {
   const a = (agentType || "").toLowerCase();
   const boxX = 172;
-  const boxY = 6;
-  const boxSize = 20;
   const iconPad = 3;
   const ix = boxX + iconPad;
   const iy = boxY + iconPad;
@@ -489,7 +534,7 @@ function agentBadgeForDial(agentType?: string | null): string {
 
   // Fallback: 2-character pill for unsupported or unknown agents
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
-  return `<rect x="166" y="6" width="28" height="16" rx="8" fill="#4b5563"/><text x="180" y="18" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
+  return `<rect x="166" y="${boxY}" width="28" height="16" rx="8" fill="#4b5563"/><text x="180" y="${boxY + 12}" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
 }
 
 // Split text by "/" boundary if multi-part, otherwise wrap by characters
