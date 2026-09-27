@@ -416,13 +416,23 @@ export function dialImage(
     : `<text x="${textX}" y="24" fill="${labelColor}" font-family="sans-serif" font-size="13" font-weight="800" letter-spacing="1">${esc(label)}</text>`;
 
   const hasSub = Boolean(sub && !disabled);
-  const valueY = hasSub ? 48 : 56;
+  const quotaMatch = hasSub && sub ? sub.match(/^(\d+)%/) : null;
+  const quotaPct = quotaMatch ? parseInt(quotaMatch[1], 10) : undefined;
+  const subColor = disabled
+    ? "#4a4a52"
+    : quotaPct !== undefined
+    ? (quotaPct >= 90 ? "#ef4444" : quotaPct >= 70 ? "#f59e0b" : "#a1a1aa")
+    : "#b8b8be";
+  const subSize = role === "model" ? 12 : 13;
+  const valueY = hasSub ? (role === "model" ? (lines.length > 1 ? 38 : 48) : 48) : 56;
+  const subY = role === "model" ? (lines.length > 2 ? 86 : 84) : valueY + 18;
+
   const valueSvg = lines.length > 1
-    ? lines.map((ln, i) => `<text x="${textX}" y="${(hasSub ? 40 : top) + i * lineH}" fill="${valueColor}" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc(ln)}</text>`).join("")
+    ? lines.map((ln, i) => `<text x="${textX}" y="${(hasSub ? (role === "model" ? 38 : 40) : top) + i * (hasSub && role === "model" ? 15 : lineH)}" fill="${valueColor}" font-family="sans-serif" font-size="${hasSub && role === "model" ? 14 : lineFont}" font-weight="700">${esc(ln)}</text>`).join("")
     : `<text x="${textX}" y="${valueY}" fill="${valueColor}" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc(lines[0])}</text>`;
 
   const subSvg = hasSub
-    ? `<text x="${textX}" y="${valueY + 18}" fill="${disabled ? "#4a4a52" : "#b8b8be"}" font-family="sans-serif" font-size="13" font-weight="600">${esc(sub || "")}</text>`
+    ? `<text x="${textX}" y="${subY}" fill="${subColor}" font-family="sans-serif" font-size="${subSize}" font-weight="600">${esc(sub || "")}</text>`
     : "";
 
   const badgeSvg = badge ? agentBadgeForDial(badge) : "";

@@ -31,6 +31,386 @@ export interface AgentStateSnapshot {
   favoriteModels?: string[];
 }
 
+export interface QuotaWindow {
+  usedPercent?: number;
+  windowMinutes?: number;
+  resetsAt?: number;
+  resetDescription?: string;
+}
+
+export interface ProviderRateLimit {
+  provider?: string;
+  session?: QuotaWindow | null;
+  weekly?: QuotaWindow | null;
+  monthly?: QuotaWindow | null;
+  status?: "ok" | "unavailable" | "error";
+  error?: string | null;
+  rateLimitResetCredits?: {
+    availableCount?: number;
+    nextExpiresAt?: number | null;
+    credits?: any[];
+  };
+  [key: string]: any;
+}
+
+export interface OrcaRateLimits {
+  claude?: ProviderRateLimit | null;
+  codex?: ProviderRateLimit | null;
+  gemini?: ProviderRateLimit | null;
+  antigravity?: ProviderRateLimit | null;
+  opencodeGo?: ProviderRateLimit | null;
+  kimi?: ProviderRateLimit | null;
+  minimax?: ProviderRateLimit | null;
+  grok?: ProviderRateLimit | null;
+  cursor?: ProviderRateLimit | null;
+  [key: string]: any;
+}
+
+/** Formats rate limit window into a compact dial row (e.g. '39% · 1:59 PM · wk 7%') */
+export function formatQuotaDisplay(
+  window?: QuotaWindow | null,
+  secondary?: { label: string; window?: QuotaWindow | null },
+  suffix?: string,
+): string | undefined {
+  if (!window || window.usedPercent === undefined || !Number.isFinite(window.usedPercent)) {
+    return undefined;
+  }
+  const pct = Math.round(window.usedPercent);
+  const reset = window.resetDescription?.trim();
+  const sec = secondary?.window?.usedPercent !== undefined && Number.isFinite(secondary.window.usedPercent)
+    ? Math.round(secondary.window.usedPercent)
+    : undefined;
+
+  let base = `${pct}%`;
+  if (reset && sec !== undefined) {
+    base = `${pct}% · ${reset} · ${secondary!.label} ${sec}%`;
+  } else if (reset) {
+    base = `${pct}% · ${reset}`;
+  } else if (sec !== undefined) {
+    base = `${pct}% · ${secondary!.label} ${sec}%`;
+  }
+
+  return suffix ? `${base} ${suffix}` : base;
+}
+
+export const AGY_QUOTA_PATHS = [
+  "/tmp/agentdeck-agy-quota.json",
+  join(homedir(), ".gemini", "quota.json"),
+  join(homedir(), ".pi", "agent", "antigravity-bridge", "quota.json"),
+  join(homedir(), ".pi", "agent", "antigravity-quota.json"),
+];
+
+/** Parses a quota sidecar file content into standard ProviderRateLimit format */
+export function parseQuotaFileContent(content: string): ProviderRateLimit | undefined {
+  if (!content || !content.trim()) return undefined;
+  try {
+    const raw = JSON.parse(content);
+    if (!raw || typeof raw !== "object") return undefined;
+
+    // 1. If wrapped in ProviderRateLimit format ({ status, session: { usedPercent, ... } })
+    if (raw.session && typeof raw.session.usedPercent === "number" && Number.isFinite(raw.session.usedPercent)) {
+      return {
+        status: raw.status ?? "ok",
+        session: raw.session,
+        weekly: raw.weekly,
+      };
+    }
+
+    // 2. If nested under provider key (e.g. { antigravity: { ... } } or { gemini: { ... } })
+    if (raw.antigravity && typeof raw.antigravity === "object") {
+      const nested = parseQuotaFileContent(JSON.stringify(raw.antigravity));
+      if (nested) return nested;
+    }
+    if (raw.gemini && typeof raw.gemini === "object") {
+      const nested = parseQuotaFileContent(JSON.stringify(raw.gemini));
+      if (nested) return nested;
+    }
+
+    // 3. If in ACP / QuotaSnapshot format: { remaining, limit, resetAt }
+    const remaining =
+      typeof raw.remaining === "number"
+        ? raw.remaining
+        : typeof raw.remainingRequests === "number"
+        ? raw.remainingRequests
+        : typeof raw.remainingQueries === "number"
+        ? raw.remainingQueries
+        : undefined;
+
+    const limit =
+      typeof raw.limit === "number"
+        ? raw.limit
+        : typeof raw.requestLimit === "number"
+        ? raw.requestLimit
+        : typeof raw.queryLimit === "number"
+        ? raw.queryLimit
+        : undefined;
+
+    if (remaining !== undefined && limit !== undefined && limit > 0) {
+      const usedPercent = Math.max(0, Math.min(100, Math.round(((limit - remaining) / limit) * 100)));
+      let resetDescription: string | undefined;
+      const reset = raw.resetAt ?? raw.resetTimestamp ?? raw.reset_time;
+      if (typeof reset === "string" && reset.trim()) {
+        const d = new Date(reset);
+        if (!isNaN(d.getTime())) {
+          resetDescription = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+        } else {
+          resetDescription = reset.trim();
+        }
+      } else if (typeof reset === "number" && Number.isFinite(reset)) {
+        const d = new Date(reset > 1e12 ? reset : reset * 1000);
+        if (!isNaN(d.getTime())) {
+          resetDescription = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+        }
+      }
+
+      return {
+        status: "ok",
+        session: {
+          usedPercent,
+          resetDescription,
+        },
+      };
+    }
+
+    // 4. If direct { usedPercent, resetDescription } at root
+    if (typeof raw.usedPercent === "number" && Number.isFinite(raw.usedPercent)) {
+      return {
+        status: raw.status ?? "ok",
+        session: {
+          usedPercent: raw.usedPercent,
+          resetDescription: typeof raw.resetDescription === "string" ? raw.resetDescription : undefined,
+        },
+        weekly: raw.weekly,
+      };
+    }
+  } catch {}
+  return undefined;
+}
+
+export const AGY_BRAIN_DIR = join(homedir(), ".gemini", "antigravity-cli", "brain");
+
+/** Calculates 5-hour rolling session quota and 7-day weekly quota from local agy transcripts */
+export function calculateAgyTranscriptQuota(
+  brainDir: string = AGY_BRAIN_DIR,
+  now: number = Date.now(),
+  sessionWindowMs: number = 5 * 3600 * 1000,
+  weeklyWindowMs: number = 7 * 24 * 3600 * 1000,
+  sessionRequestLimit: number = 50,
+  weeklyRequestLimit: number = 500,
+): ProviderRateLimit | undefined {
+  try {
+    if (!existsSync(brainDir)) return undefined;
+    const sessionStart = now - sessionWindowMs;
+    const weeklyStart = now - weeklyWindowMs;
+    const sessionTimestamps: number[] = [];
+    const weeklyTimestamps: number[] = [];
+
+    const convDirs = readdirSync(brainDir);
+    for (const dir of convDirs) {
+      const transcriptPath = join(brainDir, dir, ".system_generated", "logs", "transcript.jsonl");
+      if (!existsSync(transcriptPath)) continue;
+      try {
+        const stat = statSync(transcriptPath);
+        if (stat.mtimeMs < weeklyStart) continue;
+
+        const content = readFileSync(transcriptPath, "utf8");
+        const lines = content.split("\n");
+        for (const line of lines) {
+          if (!line.includes('"USER_INPUT"')) continue;
+          try {
+            const entry = JSON.parse(line);
+            if (entry.type === "USER_INPUT" && entry.created_at) {
+              const ts = new Date(entry.created_at).getTime();
+              if (!isNaN(ts) && ts <= now) {
+                if (ts >= weeklyStart) {
+                  weeklyTimestamps.push(ts);
+                }
+                if (ts >= sessionStart) {
+                  sessionTimestamps.push(ts);
+                }
+              }
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+
+    if (!sessionTimestamps.length && !weeklyTimestamps.length) return undefined;
+    sessionTimestamps.sort((a, b) => a - b);
+    weeklyTimestamps.sort((a, b) => a - b);
+
+    // Session (5-hour) window
+    const sessionCount = sessionTimestamps.length;
+    const sessionUsedPercent = Math.max(0, Math.min(100, Math.round((sessionCount / sessionRequestLimit) * 100)));
+    let sessionResetDescription: string | undefined;
+    let sessionResetsAt: number | undefined;
+    if (sessionTimestamps.length) {
+      sessionResetsAt = sessionTimestamps[0] + sessionWindowMs;
+      sessionResetDescription = new Date(sessionResetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    }
+
+    // Weekly (7-day) window
+    const weeklyCount = weeklyTimestamps.length;
+    const weeklyUsedPercent = Math.max(0, Math.min(100, Math.round((weeklyCount / weeklyRequestLimit) * 100)));
+    let weeklyResetDescription: string | undefined;
+    let weeklyResetsAt: number | undefined;
+    if (weeklyTimestamps.length) {
+      weeklyResetsAt = weeklyTimestamps[0] + weeklyWindowMs;
+      weeklyResetDescription = new Date(weeklyResetsAt).toLocaleDateString([], { weekday: "short" }) + " " +
+        new Date(weeklyResetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    }
+
+    return {
+      status: "ok",
+      session: {
+        usedPercent: sessionUsedPercent,
+        resetDescription: sessionResetDescription,
+        windowMinutes: Math.round(sessionWindowMs / 60000),
+        resetsAt: sessionResetsAt,
+      },
+      weekly: {
+        usedPercent: weeklyUsedPercent,
+        resetDescription: weeklyResetDescription,
+        windowMinutes: Math.round(weeklyWindowMs / 60000),
+        resetsAt: weeklyResetsAt,
+      },
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Reads local sidecar quota file or calculates live transcript quota for Antigravity / Gemini */
+export function readLocalAgyQuota(
+  paths: string[] = AGY_QUOTA_PATHS,
+  brainDir: string = AGY_BRAIN_DIR,
+): ProviderRateLimit | undefined {
+  // 1. Check explicit sidecar files first
+  for (const p of paths) {
+    try {
+      if (existsSync(p)) {
+        const txt = readFileSync(p, "utf8");
+        const parsed = parseQuotaFileContent(txt);
+        if (parsed) return parsed;
+      }
+    } catch {}
+  }
+
+  // 2. Fallback to live 5-hour rolling turn tracker across agy transcripts
+  return calculateAgyTranscriptQuota(brainDir);
+}
+
+export type AgentProviderKind = "single" | "multi";
+export type ProviderId = "claude" | "codex" | "gemini" | "antigravity" | "opencode-go" | "minimax" | "grok" | "cursor" | "other";
+
+/** Infers underlying provider from model string (e.g. 'anthropic/claude-sonnet-4-6' -> 'claude') */
+export function inferProviderFromModel(modelId?: string): ProviderId {
+  if (!modelId || modelId === "-" || modelId === "…" || modelId.trim() === "") return "other";
+  const m = modelId.trim().toLowerCase();
+
+  // 1. Explicit provider prefix (provider/model)
+  if (m.startsWith("opencode-go/") || m.startsWith("opencode/") || m.startsWith("opencodego/")) {
+    return "opencode-go";
+  }
+  if (m.startsWith("anthropic/") || m.startsWith("claude/")) {
+    return "claude";
+  }
+  if (m.startsWith("openai/") || m.startsWith("codex/") || m.startsWith("chatgpt/")) {
+    return "codex";
+  }
+  if (m.startsWith("google/") || m.startsWith("gemini/") || m.startsWith("vertex/")) {
+    return "gemini";
+  }
+  if (m.startsWith("minimax/")) {
+    return "minimax";
+  }
+  if (m.startsWith("xai/") || m.startsWith("grok/")) {
+    return "grok";
+  }
+  if (m.startsWith("cursor/")) {
+    return "cursor";
+  }
+  if (m.startsWith("lmstudio/") || m.startsWith("ollama/") || m.startsWith("local/")) {
+    return "other";
+  }
+
+  // 2. Keyword fallback for bare model names without provider prefix
+  if (m.includes("claude") || m === "opus" || m === "sonnet" || m === "haiku") {
+    return "claude";
+  }
+  if (
+    m.includes("gpt-") ||
+    m.includes("o1-") ||
+    m.includes("o3-") ||
+    m.includes("o4-") ||
+    m.includes("codex")
+  ) {
+    return "codex";
+  }
+  if (m.includes("gemini-") || m.includes("gemini")) {
+    return "gemini";
+  }
+  if (m.includes("minimax-") || m.includes("minimax")) {
+    return "minimax";
+  }
+  if (m.includes("grok-") || m.includes("grok")) {
+    return "grok";
+  }
+
+  return "other";
+}
+
+/** Resolves quota for a specific inferred provider from Orca rate limits */
+export function getProviderQuotaDisplay(provider: ProviderId, rateLimits?: OrcaRateLimits | null): string | undefined {
+  if (!rateLimits) return undefined;
+
+  if (provider === "claude") {
+    const claude = rateLimits.claude;
+    if (!claude || claude.status !== "ok") return undefined;
+    return formatQuotaDisplay(claude.session, { label: "wk", window: claude.weekly });
+  }
+
+  if (provider === "codex") {
+    const codex = rateLimits.codex;
+    if (!codex || codex.status !== "ok") return undefined;
+    const credits = codex.rateLimitResetCredits?.availableCount ?? 0;
+    const suffix = credits > 0 ? `(+${credits}cr)` : undefined;
+    return formatQuotaDisplay(codex.session, { label: "wk", window: codex.weekly }, suffix);
+  }
+
+  if (provider === "gemini" || provider === "antigravity") {
+    const agy = rateLimits.antigravity?.status === "ok" ? rateLimits.antigravity : rateLimits.gemini;
+    if (!agy || agy.status !== "ok") return undefined;
+    return formatQuotaDisplay(agy.session, { label: "wk", window: agy.weekly });
+  }
+
+  if (provider === "opencode-go") {
+    const oc = rateLimits.opencodeGo;
+    if (!oc || oc.status !== "ok") return undefined;
+    return formatQuotaDisplay(oc.session, { label: "wk", window: oc.weekly });
+  }
+
+  if (provider === "minimax") {
+    const mm = rateLimits.minimax;
+    if (!mm || mm.status !== "ok") return undefined;
+    return formatQuotaDisplay(mm.session, { label: "wk", window: mm.weekly });
+  }
+
+  if (provider === "grok") {
+    const grok = rateLimits.grok;
+    if (!grok || grok.status !== "ok") return undefined;
+    return formatQuotaDisplay(grok.session, { label: "wk", window: grok.weekly });
+  }
+
+  if (provider === "cursor") {
+    const cur = rateLimits.cursor;
+    if (!cur || cur.status !== "ok") return undefined;
+    return formatQuotaDisplay(cur.session, { label: "wk", window: cur.weekly });
+  }
+
+  return undefined;
+}
+
 /**
  * Abstract Agent Interface
  * Standard interface for inspecting supported features and requesting commands/lists for a given agent.
@@ -38,6 +418,7 @@ export interface AgentStateSnapshot {
 export abstract class AbstractAgent {
   abstract readonly agentType: string;
   abstract readonly label: string;
+  readonly providerKind: AgentProviderKind = "single";
 
   /** Check if a control kind (model, effort, mode) is supported */
   abstract supports(kind: ControlKind): boolean;
@@ -97,6 +478,11 @@ export abstract class AbstractAgent {
 
   /** Return effort/variant bound to or inferred by a selected model */
   getEffortForModel(_model: string): string | undefined {
+    return undefined;
+  }
+
+  /** Formatted quota/rate-limit status to display on the Model dial */
+  getQuotaDisplay(_rateLimits?: OrcaRateLimits | null, _ctx?: AgentContext, _modelId?: string): string | undefined {
     return undefined;
   }
 
@@ -518,6 +904,7 @@ export function readClaudeState(ctx?: AgentContext): AgentStateSnapshot {
 export class ClaudeAgent extends AbstractAgent {
   readonly agentType = "claude";
   readonly label = "Claude";
+  override readonly providerKind: AgentProviderKind = "single";
 
   supports(kind: ControlKind): boolean {
     return kind === "model" || kind === "effort" || kind === "mode";
@@ -563,6 +950,10 @@ export class ClaudeAgent extends AbstractAgent {
 
   override readCurrentState(ctx?: AgentContext): AgentStateSnapshot {
     return readClaudeState(ctx);
+  }
+
+  override getQuotaDisplay(rateLimits?: OrcaRateLimits | null): string | undefined {
+    return getProviderQuotaDisplay("claude", rateLimits);
   }
 }
 
@@ -637,6 +1028,7 @@ export function readCodexModelsCache(): string[] {
 export class CodexAgent extends AbstractAgent {
   readonly agentType = "codex";
   readonly label = "Codex";
+  override readonly providerKind: AgentProviderKind = "single";
 
   supports(kind: ControlKind): boolean {
     return kind === "model" || kind === "effort" || kind === "mode";
@@ -671,6 +1063,10 @@ export class CodexAgent extends AbstractAgent {
 
   override readCurrentState(ctx?: AgentContext): AgentStateSnapshot {
     return readCodexState(ctx);
+  }
+
+  override getQuotaDisplay(rateLimits?: OrcaRateLimits | null): string | undefined {
+    return getProviderQuotaDisplay("codex", rateLimits);
   }
 }
 
@@ -710,6 +1106,7 @@ export function readTuiAgent(ctx?: AgentContext): string | undefined {
 export class OpenCodeAgent extends AbstractAgent {
   readonly agentType = "opencode";
   readonly label = "OpenCode";
+  override readonly providerKind: AgentProviderKind = "multi";
 
   private modelNames: Record<string, string> = {};
 
@@ -788,6 +1185,16 @@ export class OpenCodeAgent extends AbstractAgent {
   override getEffortForModel(model: string): string | undefined {
     const st = readOpenCodeState();
     return st.variant ? st.variant[model] : undefined;
+  }
+
+  override getQuotaDisplay(rateLimits?: OrcaRateLimits | null, ctx?: AgentContext, modelId?: string): string | undefined {
+    const targetModel = modelId || ctx?.model || this.readCurrentState(ctx).model;
+    const provider = inferProviderFromModel(targetModel);
+    if (provider !== "other") {
+      const quota = getProviderQuotaDisplay(provider, rateLimits);
+      if (quota) return quota;
+    }
+    return getProviderQuotaDisplay("opencode-go", rateLimits);
   }
 }
 
@@ -1145,6 +1552,7 @@ export function readAgyState(ctx?: AgentContext): AgentStateSnapshot {
 export class AgyAgent extends AbstractAgent {
   readonly agentType = "agy";
   readonly label = "Agy";
+  override readonly providerKind: AgentProviderKind = "single";
 
   supports(kind: ControlKind): boolean {
     return kind === "model" || kind === "effort" || kind === "mode";
@@ -1204,6 +1612,10 @@ export class AgyAgent extends AbstractAgent {
 
   override getEffortForModel(model: string): string | undefined {
     return extractEffortFromModel(model);
+  }
+
+  override getQuotaDisplay(rateLimits?: OrcaRateLimits | null): string | undefined {
+    return getProviderQuotaDisplay("antigravity", rateLimits);
   }
 }
 
@@ -1289,6 +1701,7 @@ export function readHermesModelsCache(): string[] {
 export class HermesAgent extends AbstractAgent {
   readonly agentType = "hermes";
   readonly label = "Hermes";
+  override readonly providerKind: AgentProviderKind = "multi";
 
   supports(kind: ControlKind): boolean {
     return kind === "model" || kind === "effort";
@@ -1326,6 +1739,15 @@ export class HermesAgent extends AbstractAgent {
 
   override readCurrentState(ctx?: AgentContext): AgentStateSnapshot {
     return readHermesState(ctx);
+  }
+
+  override getQuotaDisplay(rateLimits?: OrcaRateLimits | null, ctx?: AgentContext, modelId?: string): string | undefined {
+    const targetModel = modelId || ctx?.model || this.readCurrentState(ctx).model;
+    const provider = inferProviderFromModel(targetModel);
+    if (provider !== "other") {
+      return getProviderQuotaDisplay(provider, rateLimits);
+    }
+    return undefined;
   }
 }
 
@@ -1631,6 +2053,7 @@ export function readPiState(ctx?: AgentContext): AgentStateSnapshot {
 export class PiAgent extends AbstractAgent {
   readonly agentType = "pi";
   readonly label = "Pi";
+  override readonly providerKind: AgentProviderKind = "multi";
 
   supports(kind: ControlKind): boolean {
     return kind === "model" || kind === "effort";
@@ -1680,12 +2103,22 @@ export class PiAgent extends AbstractAgent {
     // Non-reasoning models can only run `off`; other models keep pi's current level (pi clamps it itself).
     return readPiModelsStore().reasoning[model] === false ? "off" : undefined;
   }
+
+  override getQuotaDisplay(rateLimits?: OrcaRateLimits | null, ctx?: AgentContext, modelId?: string): string | undefined {
+    const targetModel = modelId || ctx?.model || this.readCurrentState(ctx).model;
+    const provider = inferProviderFromModel(targetModel);
+    if (provider !== "other") {
+      return getProviderQuotaDisplay(provider, rateLimits);
+    }
+    return undefined;
+  }
 }
 
 // Unsupported agent fallback
 export class UnsupportedAgent extends AbstractAgent {
   readonly agentType = "";
   readonly label = "Unsupported";
+  override readonly providerKind: AgentProviderKind = "single";
 
   supports(_kind: ControlKind): boolean {
     return false;

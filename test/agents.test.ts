@@ -68,6 +68,13 @@ import {
   CodexAgent,
   OpenCodeAgent,
   AgyAgent,
+  formatQuotaDisplay,
+  inferProviderFromModel,
+  getProviderQuotaDisplay,
+  parseQuotaFileContent,
+  calculateAgyTranscriptQuota,
+  readLocalAgyQuota,
+  AGY_QUOTA_PATHS,
   UnsupportedAgent,
   UNSUPPORTED_AGENT,
   UNSUPPORTED_PROFILE,
@@ -1108,5 +1115,314 @@ some trailing noise
     const st = readPiState();
     expect(st).toBeDefined();
     expect(typeof st).toBe("object");
+  });
+});
+
+describe("formatQuotaDisplay & getQuotaDisplay — agent quota extraction", () => {
+  it("providerKind: distinguishes single-provider vs multi-provider agents", () => {
+    expect(agentFor("claude").providerKind).toBe("single");
+    expect(agentFor("codex").providerKind).toBe("single");
+    expect(agentFor("agy").providerKind).toBe("single");
+    expect(agentFor("antigravity").providerKind).toBe("single");
+    expect(agentFor("opencode").providerKind).toBe("multi");
+    expect(agentFor("pi").providerKind).toBe("multi");
+    expect(agentFor("hermes").providerKind).toBe("multi");
+    expect(new UnsupportedAgent().providerKind).toBe("single");
+  });
+
+  it("inferProviderFromModel: resolves provider from model name/prefix", () => {
+    expect(inferProviderFromModel("anthropic/claude-sonnet-4-6")).toBe("claude");
+    expect(inferProviderFromModel("claude-3-7-sonnet")).toBe("claude");
+    expect(inferProviderFromModel("sonnet")).toBe("claude");
+    expect(inferProviderFromModel("opus")).toBe("claude");
+
+    expect(inferProviderFromModel("openai/gpt-5.6-luna")).toBe("codex");
+    expect(inferProviderFromModel("gpt-5.5")).toBe("codex");
+    expect(inferProviderFromModel("o3-mini")).toBe("codex");
+    expect(inferProviderFromModel("codex/custom")).toBe("codex");
+
+    expect(inferProviderFromModel("google/gemini-3.8-flash")).toBe("gemini");
+    expect(inferProviderFromModel("gemini-3.7-flash")).toBe("gemini");
+    expect(inferProviderFromModel("vertex/gemini-pro")).toBe("gemini");
+
+    expect(inferProviderFromModel("minimax/minimax-m3")).toBe("minimax");
+    expect(inferProviderFromModel("opencode-go/claude-sonnet-4-6")).toBe("opencode-go");
+    expect(inferProviderFromModel("xai/grok-2")).toBe("grok");
+    expect(inferProviderFromModel("cursor/composer")).toBe("cursor");
+
+    expect(inferProviderFromModel("lmstudio/gemma-4-e4b")).toBe("other");
+    expect(inferProviderFromModel("ollama/qwen3")).toBe("other");
+    expect(inferProviderFromModel("-")).toBe("other");
+    expect(inferProviderFromModel("…")).toBe("other");
+    expect(inferProviderFromModel(undefined)).toBe("other");
+  });
+
+  it("formatQuotaDisplay: formats basic session window", () => {
+    expect(formatQuotaDisplay({ usedPercent: 39, resetDescription: "1:59 PM" })).toBe("39% · 1:59 PM");
+    expect(formatQuotaDisplay({ usedPercent: 0, resetDescription: "Sat 7:00 PM" })).toBe("0% · Sat 7:00 PM");
+    expect(formatQuotaDisplay({ usedPercent: 100 })).toBe("100%");
+    expect(formatQuotaDisplay(null)).toBeUndefined();
+    expect(formatQuotaDisplay(undefined)).toBeUndefined();
+    expect(formatQuotaDisplay({ usedPercent: undefined })).toBeUndefined();
+  });
+
+  it("formatQuotaDisplay: shows secondary window when high (>80%)", () => {
+    const session = { usedPercent: 20, resetDescription: "1:59 PM" };
+    const weeklyHigh = { usedPercent: 92, resetDescription: "Sat" };
+    const weeklyLow = { usedPercent: 15, resetDescription: "Sat" };
+    expect(formatQuotaDisplay(session, { label: "wk", window: weeklyHigh })).toBe("20% · 1:59 PM · wk 92%");
+    expect(formatQuotaDisplay(session, { label: "wk", window: weeklyLow })).toBe("20% · 1:59 PM · wk 15%");
+  });
+
+  it("formatQuotaDisplay: appends suffix if provided", () => {
+    expect(formatQuotaDisplay({ usedPercent: 17, resetDescription: "Sat 7:48 PM" }, undefined, "(+2cr)")).toBe("17% · Sat 7:48 PM (+2cr)");
+  });
+
+  const fullRateLimits = {
+    claude: {
+      provider: "claude",
+      session: { usedPercent: 39, resetDescription: "1:59 PM" },
+      weekly: { usedPercent: 7, resetDescription: "Sat 1:59 PM" },
+      status: "ok" as const,
+    },
+    codex: {
+      provider: "codex",
+      session: { usedPercent: 17, resetDescription: "Sat 7:48 PM" },
+      rateLimitResetCredits: { availableCount: 2, credits: [] },
+      status: "ok" as const,
+    },
+    antigravity: {
+      provider: "antigravity",
+      session: { usedPercent: 45, resetDescription: "3:00 PM" },
+      status: "ok" as const,
+    },
+    gemini: {
+      provider: "gemini",
+      session: { usedPercent: 10, resetDescription: "4:00 PM" },
+      status: "ok" as const,
+    },
+    opencodeGo: {
+      provider: "opencode-go",
+      session: { usedPercent: 55, resetDescription: "5:00 PM" },
+      status: "ok" as const,
+    },
+    minimax: {
+      provider: "minimax",
+      session: { usedPercent: 80, resetDescription: "6:00 PM" },
+      status: "ok" as const,
+    },
+  };
+
+  it("ClaudeAgent.getQuotaDisplay: extracts session and weekly quota", () => {
+    const agent = new ClaudeAgent();
+    expect(agent.getQuotaDisplay(fullRateLimits)).toBe("39% · 1:59 PM · wk 7%");
+
+    const highWeekly = {
+      claude: {
+        provider: "claude",
+        session: { usedPercent: 39, resetDescription: "1:59 PM" },
+        weekly: { usedPercent: 95, resetDescription: "Sat 1:59 PM" },
+        status: "ok" as const,
+      },
+    };
+    expect(agent.getQuotaDisplay(highWeekly)).toBe("39% · 1:59 PM · wk 95%");
+
+    expect(agent.getQuotaDisplay({ claude: { status: "unavailable" } as any })).toBeUndefined();
+    expect(agent.getQuotaDisplay(null)).toBeUndefined();
+  });
+
+  it("CodexAgent.getQuotaDisplay: extracts session and available reset credits", () => {
+    const agent = new CodexAgent();
+    expect(agent.getQuotaDisplay(fullRateLimits)).toBe("17% · Sat 7:48 PM (+2cr)");
+
+    const noCredits = {
+      codex: {
+        provider: "codex",
+        session: { usedPercent: 17, resetDescription: "Sat 7:48 PM" },
+        rateLimitResetCredits: { availableCount: 0, credits: [] },
+        status: "ok" as const,
+      },
+    };
+    expect(agent.getQuotaDisplay(noCredits)).toBe("17% · Sat 7:48 PM");
+  });
+
+  it("AgyAgent.getQuotaDisplay: extracts antigravity or gemini quota", () => {
+    const agent = new AgyAgent();
+    expect(agent.getQuotaDisplay(fullRateLimits)).toBe("45% · 3:00 PM");
+
+    const geminiOnly = {
+      antigravity: { status: "unavailable" as const },
+      gemini: {
+        provider: "gemini",
+        session: { usedPercent: 10, resetDescription: "4:00 PM" },
+        status: "ok" as const,
+      },
+    };
+    expect(agent.getQuotaDisplay(geminiOnly)).toBe("10% · 4:00 PM");
+  });
+
+  it("OpenCodeAgent.getQuotaDisplay: infers quota dynamically from selected model", () => {
+    const agent = new OpenCodeAgent();
+    // 1. Claude model -> Claude quota
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "anthropic/claude-sonnet-4-6")).toBe("39% · 1:59 PM · wk 7%");
+    // 2. OpenAI model -> Codex quota
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "openai/gpt-5.6-luna")).toBe("17% · Sat 7:48 PM (+2cr)");
+    // 3. Gemini model -> Gemini/Antigravity quota
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "google/gemini-3.8-flash")).toBe("45% · 3:00 PM");
+    // 4. MiniMax model -> MiniMax quota
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "minimax/minimax-m3")).toBe("80% · 6:00 PM");
+    // 5. Explicit OpenCode Go prefix or unknown model fallback -> OpenCode Go quota
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "opencode-go/custom-model")).toBe("55% · 5:00 PM");
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "unknown-provider/custom")).toBe("55% · 5:00 PM");
+  });
+
+  it("PiAgent.getQuotaDisplay: infers quota dynamically from selected model, ignores local models", () => {
+    const agent = new PiAgent();
+    // 1. Claude model in Pi -> Claude quota
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "anthropic/claude-sonnet-4-6")).toBe("39% · 1:59 PM · wk 7%");
+    // 2. OpenAI model in Pi -> Codex quota
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "openai/gpt-5.6-luna")).toBe("17% · Sat 7:48 PM (+2cr)");
+    // 3. Google model in Pi -> Gemini quota
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "google/gemini-3.8-flash")).toBe("45% · 3:00 PM");
+    // 4. Local LM Studio model -> returns undefined (no cloud quota)
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "lmstudio/gemma-4-e4b")).toBeUndefined();
+  });
+
+  it("HermesAgent.getQuotaDisplay: infers quota from selected model", () => {
+    const agent = new HermesAgent();
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "anthropic/claude-sonnet-4-6")).toBe("39% · 1:59 PM · wk 7%");
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "openai/gpt-5.6-luna")).toBe("17% · Sat 7:48 PM (+2cr)");
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "deepseek/deepseek-v4-flash-0731")).toBeUndefined();
+  });
+
+  it("UnsupportedAgent returns undefined", () => {
+    expect(new UnsupportedAgent().getQuotaDisplay(fullRateLimits)).toBeUndefined();
+  });
+});
+
+describe("parseQuotaFileContent & readLocalAgyQuota — sidecar quota loader", () => {
+  it("parses full ProviderRateLimit JSON format", () => {
+    const json = JSON.stringify({
+      status: "ok",
+      session: { usedPercent: 42, resetDescription: "3:30 PM" },
+      weekly: { usedPercent: 15 },
+    });
+    const parsed = parseQuotaFileContent(json);
+    expect(parsed).toEqual({
+      status: "ok",
+      session: { usedPercent: 42, resetDescription: "3:30 PM" },
+      weekly: { usedPercent: 15 },
+    });
+  });
+
+  it("parses nested antigravity or gemini object", () => {
+    const json = JSON.stringify({
+      antigravity: {
+        status: "ok",
+        session: { usedPercent: 28, resetDescription: "4:00 PM" },
+      },
+    });
+    const parsed = parseQuotaFileContent(json);
+    expect(parsed?.session?.usedPercent).toBe(28);
+    expect(parsed?.session?.resetDescription).toBe("4:00 PM");
+  });
+
+  it("parses ACP QuotaSnapshot format with remaining and limit", () => {
+    const json = JSON.stringify({
+      remaining: 40,
+      limit: 50,
+      resetAt: "2026-09-27T15:30:00.000Z",
+      tier: "personal-pro",
+    });
+    const parsed = parseQuotaFileContent(json);
+    expect(parsed?.status).toBe("ok");
+    // (50 - 40) / 50 * 100 = 20%
+    expect(parsed?.session?.usedPercent).toBe(20);
+    expect(parsed?.session?.resetDescription).toBeDefined();
+  });
+
+  it("parses ACP QuotaSnapshot format with remainingRequests and requestLimit", () => {
+    const json = JSON.stringify({
+      remainingRequests: 25,
+      requestLimit: 100,
+      resetTimestamp: 1790515200000,
+    });
+    const parsed = parseQuotaFileContent(json);
+    expect(parsed?.status).toBe("ok");
+    // (100 - 25) / 100 * 100 = 75%
+    expect(parsed?.session?.usedPercent).toBe(75);
+    expect(parsed?.session?.resetDescription).toBeDefined();
+  });
+
+  it("parses direct root usedPercent and resetDescription", () => {
+    const json = JSON.stringify({
+      usedPercent: 60,
+      resetDescription: "in 45m",
+    });
+    const parsed = parseQuotaFileContent(json);
+    expect(parsed).toEqual({
+      status: "ok",
+      session: { usedPercent: 60, resetDescription: "in 45m" },
+      weekly: undefined,
+    });
+  });
+
+  it("returns undefined for invalid or empty inputs", () => {
+    expect(parseQuotaFileContent("")).toBeUndefined();
+    expect(parseQuotaFileContent("not json")).toBeUndefined();
+    expect(parseQuotaFileContent("{}")).toBeUndefined();
+    expect(parseQuotaFileContent(JSON.stringify({ random: 123 }))).toBeUndefined();
+  });
+
+  it("readLocalAgyQuota reads from candidate files in order", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentdeck-quota-test-"));
+    const p1 = join(dir, "quota1.json");
+    const p2 = join(dir, "quota2.json");
+
+    try {
+      expect(readLocalAgyQuota([p1, p2], join(dir, "nonexistent-brain"))).toBeUndefined();
+
+      writeFileSync(p2, JSON.stringify({ usedPercent: 33, resetDescription: "2:00 PM" }));
+      expect(readLocalAgyQuota([p1, p2], join(dir, "nonexistent-brain"))?.session?.usedPercent).toBe(33);
+
+      writeFileSync(p1, JSON.stringify({ usedPercent: 55, resetDescription: "1:00 PM" }));
+      expect(readLocalAgyQuota([p1, p2], join(dir, "nonexistent-brain"))?.session?.usedPercent).toBe(55);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("calculateAgyTranscriptQuota: computes 5-hour rolling turn percentage and reset time", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentdeck-transcript-quota-test-"));
+    const convDir = join(dir, "conv-1", ".system_generated", "logs");
+    const { mkdirSync } = require("node:fs");
+    mkdirSync(convDir, { recursive: true });
+
+    const now = 1790510000000;
+    const windowMs = 5 * 3600 * 1000;
+    const t1 = new Date(now - 3 * 3600 * 1000).toISOString(); // inside window (2h remaining)
+    const t2 = new Date(now - 1 * 3600 * 1000).toISOString(); // inside window
+    const tOld = new Date(now - 6 * 3600 * 1000).toISOString(); // outside window
+
+    const lines = [
+      JSON.stringify({ type: "USER_INPUT", created_at: tOld }),
+      JSON.stringify({ type: "PLANNER_RESPONSE", created_at: t1 }),
+      JSON.stringify({ type: "USER_INPUT", created_at: t1 }),
+      JSON.stringify({ type: "USER_INPUT", created_at: t2 }),
+    ];
+    writeFileSync(join(convDir, "transcript.jsonl"), lines.join("\n"));
+
+    try {
+      const quota = calculateAgyTranscriptQuota(dir, now, windowMs, 7 * 24 * 3600 * 1000, 10, 100);
+      expect(quota).toBeDefined();
+      expect(quota?.status).toBe("ok");
+      // 2 user inputs inside window out of limit 10 = 20%
+      expect(quota?.session?.usedPercent).toBe(20);
+      expect(quota?.session?.resetDescription).toBeDefined();
+      expect(quota?.session?.resetsAt).toBe(new Date(t1).getTime() + windowMs);
+      expect(quota?.weekly?.usedPercent).toBe(3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

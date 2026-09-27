@@ -54385,7 +54385,268 @@ var import_node_util = require("node:util");
 var import_node_fs4 = require("node:fs");
 var import_node_path6 = require("node:path");
 var import_node_os = require("node:os");
+function formatQuotaDisplay(window, secondary, suffix) {
+  if (!window || window.usedPercent === void 0 || !Number.isFinite(window.usedPercent)) {
+    return void 0;
+  }
+  const pct = Math.round(window.usedPercent);
+  const reset = window.resetDescription?.trim();
+  const sec = secondary?.window?.usedPercent !== void 0 && Number.isFinite(secondary.window.usedPercent) ? Math.round(secondary.window.usedPercent) : void 0;
+  let base = `${pct}%`;
+  if (reset && sec !== void 0) {
+    base = `${pct}% \xB7 ${reset} \xB7 ${secondary.label} ${sec}%`;
+  } else if (reset) {
+    base = `${pct}% \xB7 ${reset}`;
+  } else if (sec !== void 0) {
+    base = `${pct}% \xB7 ${secondary.label} ${sec}%`;
+  }
+  return suffix ? `${base} ${suffix}` : base;
+}
+var AGY_QUOTA_PATHS = [
+  "/tmp/agentdeck-agy-quota.json",
+  (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "quota.json"),
+  (0, import_node_path6.join)((0, import_node_os.homedir)(), ".pi", "agent", "antigravity-bridge", "quota.json"),
+  (0, import_node_path6.join)((0, import_node_os.homedir)(), ".pi", "agent", "antigravity-quota.json")
+];
+function parseQuotaFileContent(content) {
+  if (!content || !content.trim()) return void 0;
+  try {
+    const raw = JSON.parse(content);
+    if (!raw || typeof raw !== "object") return void 0;
+    if (raw.session && typeof raw.session.usedPercent === "number" && Number.isFinite(raw.session.usedPercent)) {
+      return {
+        status: raw.status ?? "ok",
+        session: raw.session,
+        weekly: raw.weekly
+      };
+    }
+    if (raw.antigravity && typeof raw.antigravity === "object") {
+      const nested = parseQuotaFileContent(JSON.stringify(raw.antigravity));
+      if (nested) return nested;
+    }
+    if (raw.gemini && typeof raw.gemini === "object") {
+      const nested = parseQuotaFileContent(JSON.stringify(raw.gemini));
+      if (nested) return nested;
+    }
+    const remaining = typeof raw.remaining === "number" ? raw.remaining : typeof raw.remainingRequests === "number" ? raw.remainingRequests : typeof raw.remainingQueries === "number" ? raw.remainingQueries : void 0;
+    const limit = typeof raw.limit === "number" ? raw.limit : typeof raw.requestLimit === "number" ? raw.requestLimit : typeof raw.queryLimit === "number" ? raw.queryLimit : void 0;
+    if (remaining !== void 0 && limit !== void 0 && limit > 0) {
+      const usedPercent = Math.max(0, Math.min(100, Math.round((limit - remaining) / limit * 100)));
+      let resetDescription;
+      const reset = raw.resetAt ?? raw.resetTimestamp ?? raw.reset_time;
+      if (typeof reset === "string" && reset.trim()) {
+        const d = new Date(reset);
+        if (!isNaN(d.getTime())) {
+          resetDescription = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+        } else {
+          resetDescription = reset.trim();
+        }
+      } else if (typeof reset === "number" && Number.isFinite(reset)) {
+        const d = new Date(reset > 1e12 ? reset : reset * 1e3);
+        if (!isNaN(d.getTime())) {
+          resetDescription = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+        }
+      }
+      return {
+        status: "ok",
+        session: {
+          usedPercent,
+          resetDescription
+        }
+      };
+    }
+    if (typeof raw.usedPercent === "number" && Number.isFinite(raw.usedPercent)) {
+      return {
+        status: raw.status ?? "ok",
+        session: {
+          usedPercent: raw.usedPercent,
+          resetDescription: typeof raw.resetDescription === "string" ? raw.resetDescription : void 0
+        },
+        weekly: raw.weekly
+      };
+    }
+  } catch {
+  }
+  return void 0;
+}
+var AGY_BRAIN_DIR = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "brain");
+function calculateAgyTranscriptQuota(brainDir = AGY_BRAIN_DIR, now = Date.now(), sessionWindowMs = 5 * 3600 * 1e3, weeklyWindowMs = 7 * 24 * 3600 * 1e3, sessionRequestLimit = 50, weeklyRequestLimit = 500) {
+  try {
+    if (!(0, import_node_fs4.existsSync)(brainDir)) return void 0;
+    const sessionStart = now - sessionWindowMs;
+    const weeklyStart = now - weeklyWindowMs;
+    const sessionTimestamps = [];
+    const weeklyTimestamps = [];
+    const convDirs = (0, import_node_fs4.readdirSync)(brainDir);
+    for (const dir of convDirs) {
+      const transcriptPath = (0, import_node_path6.join)(brainDir, dir, ".system_generated", "logs", "transcript.jsonl");
+      if (!(0, import_node_fs4.existsSync)(transcriptPath)) continue;
+      try {
+        const stat = (0, import_node_fs4.statSync)(transcriptPath);
+        if (stat.mtimeMs < weeklyStart) continue;
+        const content = (0, import_node_fs4.readFileSync)(transcriptPath, "utf8");
+        const lines = content.split("\n");
+        for (const line of lines) {
+          if (!line.includes('"USER_INPUT"')) continue;
+          try {
+            const entry = JSON.parse(line);
+            if (entry.type === "USER_INPUT" && entry.created_at) {
+              const ts = new Date(entry.created_at).getTime();
+              if (!isNaN(ts) && ts <= now) {
+                if (ts >= weeklyStart) {
+                  weeklyTimestamps.push(ts);
+                }
+                if (ts >= sessionStart) {
+                  sessionTimestamps.push(ts);
+                }
+              }
+            }
+          } catch {
+          }
+        }
+      } catch {
+      }
+    }
+    if (!sessionTimestamps.length && !weeklyTimestamps.length) return void 0;
+    sessionTimestamps.sort((a, b) => a - b);
+    weeklyTimestamps.sort((a, b) => a - b);
+    const sessionCount = sessionTimestamps.length;
+    const sessionUsedPercent = Math.max(0, Math.min(100, Math.round(sessionCount / sessionRequestLimit * 100)));
+    let sessionResetDescription;
+    let sessionResetsAt;
+    if (sessionTimestamps.length) {
+      sessionResetsAt = sessionTimestamps[0] + sessionWindowMs;
+      sessionResetDescription = new Date(sessionResetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    }
+    const weeklyCount = weeklyTimestamps.length;
+    const weeklyUsedPercent = Math.max(0, Math.min(100, Math.round(weeklyCount / weeklyRequestLimit * 100)));
+    let weeklyResetDescription;
+    let weeklyResetsAt;
+    if (weeklyTimestamps.length) {
+      weeklyResetsAt = weeklyTimestamps[0] + weeklyWindowMs;
+      weeklyResetDescription = new Date(weeklyResetsAt).toLocaleDateString([], { weekday: "short" }) + " " + new Date(weeklyResetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    }
+    return {
+      status: "ok",
+      session: {
+        usedPercent: sessionUsedPercent,
+        resetDescription: sessionResetDescription,
+        windowMinutes: Math.round(sessionWindowMs / 6e4),
+        resetsAt: sessionResetsAt
+      },
+      weekly: {
+        usedPercent: weeklyUsedPercent,
+        resetDescription: weeklyResetDescription,
+        windowMinutes: Math.round(weeklyWindowMs / 6e4),
+        resetsAt: weeklyResetsAt
+      }
+    };
+  } catch {
+    return void 0;
+  }
+}
+function readLocalAgyQuota(paths = AGY_QUOTA_PATHS, brainDir = AGY_BRAIN_DIR) {
+  for (const p of paths) {
+    try {
+      if ((0, import_node_fs4.existsSync)(p)) {
+        const txt = (0, import_node_fs4.readFileSync)(p, "utf8");
+        const parsed = parseQuotaFileContent(txt);
+        if (parsed) return parsed;
+      }
+    } catch {
+    }
+  }
+  return calculateAgyTranscriptQuota(brainDir);
+}
+function inferProviderFromModel(modelId) {
+  if (!modelId || modelId === "-" || modelId === "\u2026" || modelId.trim() === "") return "other";
+  const m = modelId.trim().toLowerCase();
+  if (m.startsWith("opencode-go/") || m.startsWith("opencode/") || m.startsWith("opencodego/")) {
+    return "opencode-go";
+  }
+  if (m.startsWith("anthropic/") || m.startsWith("claude/")) {
+    return "claude";
+  }
+  if (m.startsWith("openai/") || m.startsWith("codex/") || m.startsWith("chatgpt/")) {
+    return "codex";
+  }
+  if (m.startsWith("google/") || m.startsWith("gemini/") || m.startsWith("vertex/")) {
+    return "gemini";
+  }
+  if (m.startsWith("minimax/")) {
+    return "minimax";
+  }
+  if (m.startsWith("xai/") || m.startsWith("grok/")) {
+    return "grok";
+  }
+  if (m.startsWith("cursor/")) {
+    return "cursor";
+  }
+  if (m.startsWith("lmstudio/") || m.startsWith("ollama/") || m.startsWith("local/")) {
+    return "other";
+  }
+  if (m.includes("claude") || m === "opus" || m === "sonnet" || m === "haiku") {
+    return "claude";
+  }
+  if (m.includes("gpt-") || m.includes("o1-") || m.includes("o3-") || m.includes("o4-") || m.includes("codex")) {
+    return "codex";
+  }
+  if (m.includes("gemini-") || m.includes("gemini")) {
+    return "gemini";
+  }
+  if (m.includes("minimax-") || m.includes("minimax")) {
+    return "minimax";
+  }
+  if (m.includes("grok-") || m.includes("grok")) {
+    return "grok";
+  }
+  return "other";
+}
+function getProviderQuotaDisplay(provider, rateLimits) {
+  if (!rateLimits) return void 0;
+  if (provider === "claude") {
+    const claude = rateLimits.claude;
+    if (!claude || claude.status !== "ok") return void 0;
+    return formatQuotaDisplay(claude.session, { label: "wk", window: claude.weekly });
+  }
+  if (provider === "codex") {
+    const codex = rateLimits.codex;
+    if (!codex || codex.status !== "ok") return void 0;
+    const credits = codex.rateLimitResetCredits?.availableCount ?? 0;
+    const suffix = credits > 0 ? `(+${credits}cr)` : void 0;
+    return formatQuotaDisplay(codex.session, { label: "wk", window: codex.weekly }, suffix);
+  }
+  if (provider === "gemini" || provider === "antigravity") {
+    const agy = rateLimits.antigravity?.status === "ok" ? rateLimits.antigravity : rateLimits.gemini;
+    if (!agy || agy.status !== "ok") return void 0;
+    return formatQuotaDisplay(agy.session, { label: "wk", window: agy.weekly });
+  }
+  if (provider === "opencode-go") {
+    const oc = rateLimits.opencodeGo;
+    if (!oc || oc.status !== "ok") return void 0;
+    return formatQuotaDisplay(oc.session, { label: "wk", window: oc.weekly });
+  }
+  if (provider === "minimax") {
+    const mm = rateLimits.minimax;
+    if (!mm || mm.status !== "ok") return void 0;
+    return formatQuotaDisplay(mm.session, { label: "wk", window: mm.weekly });
+  }
+  if (provider === "grok") {
+    const grok = rateLimits.grok;
+    if (!grok || grok.status !== "ok") return void 0;
+    return formatQuotaDisplay(grok.session, { label: "wk", window: grok.weekly });
+  }
+  if (provider === "cursor") {
+    const cur = rateLimits.cursor;
+    if (!cur || cur.status !== "ok") return void 0;
+    return formatQuotaDisplay(cur.session, { label: "wk", window: cur.weekly });
+  }
+  return void 0;
+}
 var AbstractAgent = class {
+  constructor() {
+    this.providerKind = "single";
+  }
   /** Available model list (static fallback or defaults) */
   getModels() {
     return [];
@@ -54428,6 +54689,10 @@ var AbstractAgent = class {
   }
   /** Return effort/variant bound to or inferred by a selected model */
   getEffortForModel(_model) {
+    return void 0;
+  }
+  /** Formatted quota/rate-limit status to display on the Model dial */
+  getQuotaDisplay(_rateLimits, _ctx, _modelId) {
     return void 0;
   }
   /** Set discovered model id -> display name map (e.g. OpenCode picker filter) */
@@ -54776,6 +55041,7 @@ var ClaudeAgent = class extends AbstractAgent {
     super(...arguments);
     this.agentType = "claude";
     this.label = "Claude";
+    this.providerKind = "single";
   }
   supports(kind) {
     return kind === "model" || kind === "effort" || kind === "mode";
@@ -54816,6 +55082,9 @@ var ClaudeAgent = class extends AbstractAgent {
   }
   readCurrentState(ctx) {
     return readClaudeState(ctx);
+  }
+  getQuotaDisplay(rateLimits) {
+    return getProviderQuotaDisplay("claude", rateLimits);
   }
 };
 var CODEX_CONFIG = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".codex", "config.toml");
@@ -54880,6 +55149,7 @@ var CodexAgent = class extends AbstractAgent {
     super(...arguments);
     this.agentType = "codex";
     this.label = "Codex";
+    this.providerKind = "single";
   }
   supports(kind) {
     return kind === "model" || kind === "effort" || kind === "mode";
@@ -54909,6 +55179,9 @@ var CodexAgent = class extends AbstractAgent {
   }
   readCurrentState(ctx) {
     return readCodexState(ctx);
+  }
+  getQuotaDisplay(rateLimits) {
+    return getProviderQuotaDisplay("codex", rateLimits);
   }
 };
 var OPENCODE_STATE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "model.json");
@@ -54944,6 +55217,7 @@ var OpenCodeAgent = class extends AbstractAgent {
     super(...arguments);
     this.agentType = "opencode";
     this.label = "OpenCode";
+    this.providerKind = "multi";
     this.modelNames = {};
   }
   supports(kind) {
@@ -55008,6 +55282,15 @@ var OpenCodeAgent = class extends AbstractAgent {
   getEffortForModel(model) {
     const st = readOpenCodeState();
     return st.variant ? st.variant[model] : void 0;
+  }
+  getQuotaDisplay(rateLimits, ctx, modelId) {
+    const targetModel = modelId || ctx?.model || this.readCurrentState(ctx).model;
+    const provider = inferProviderFromModel(targetModel);
+    if (provider !== "other") {
+      const quota = getProviderQuotaDisplay(provider, rateLimits);
+      if (quota) return quota;
+    }
+    return getProviderQuotaDisplay("opencode-go", rateLimits);
   }
 };
 var AGY_SETTINGS = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "settings.json");
@@ -55309,6 +55592,7 @@ var AgyAgent = class extends AbstractAgent {
     super(...arguments);
     this.agentType = "agy";
     this.label = "Agy";
+    this.providerKind = "single";
   }
   supports(kind) {
     return kind === "model" || kind === "effort" || kind === "mode";
@@ -55358,6 +55642,9 @@ var AgyAgent = class extends AbstractAgent {
   }
   getEffortForModel(model) {
     return extractEffortFromModel(model);
+  }
+  getQuotaDisplay(rateLimits) {
+    return getProviderQuotaDisplay("antigravity", rateLimits);
   }
 };
 var HERMES_CONFIG = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".hermes", "config.yaml");
@@ -55436,6 +55723,7 @@ var HermesAgent = class extends AbstractAgent {
     super(...arguments);
     this.agentType = "hermes";
     this.label = "Hermes";
+    this.providerKind = "multi";
   }
   supports(kind) {
     return kind === "model" || kind === "effort";
@@ -55468,6 +55756,14 @@ var HermesAgent = class extends AbstractAgent {
   }
   readCurrentState(ctx) {
     return readHermesState(ctx);
+  }
+  getQuotaDisplay(rateLimits, ctx, modelId) {
+    const targetModel = modelId || ctx?.model || this.readCurrentState(ctx).model;
+    const provider = inferProviderFromModel(targetModel);
+    if (provider !== "other") {
+      return getProviderQuotaDisplay(provider, rateLimits);
+    }
+    return void 0;
   }
 };
 var PI_AGENT_DIR = process.env.PI_CODING_AGENT_DIR?.trim() || (0, import_node_path6.join)((0, import_node_os.homedir)(), ".pi", "agent");
@@ -55701,6 +55997,7 @@ var PiAgent = class extends AbstractAgent {
     super(...arguments);
     this.agentType = "pi";
     this.label = "Pi";
+    this.providerKind = "multi";
   }
   supports(kind) {
     return kind === "model" || kind === "effort";
@@ -55740,12 +56037,21 @@ var PiAgent = class extends AbstractAgent {
   getEffortForModel(model) {
     return readPiModelsStore().reasoning[model] === false ? "off" : void 0;
   }
+  getQuotaDisplay(rateLimits, ctx, modelId) {
+    const targetModel = modelId || ctx?.model || this.readCurrentState(ctx).model;
+    const provider = inferProviderFromModel(targetModel);
+    if (provider !== "other") {
+      return getProviderQuotaDisplay(provider, rateLimits);
+    }
+    return void 0;
+  }
 };
 var UnsupportedAgent = class extends AbstractAgent {
   constructor() {
     super(...arguments);
     this.agentType = "";
     this.label = "Unsupported";
+    this.providerKind = "single";
   }
   supports(_kind) {
     return false;
@@ -56686,9 +56992,14 @@ function dialImage(role, label, value, tick2 = 0, disabled = false, badge, sub, 
   const singleSize = oneLineFits ? Math.min(28, Math.max(16, Math.floor((avail - 4) / units(val)))) : lineFont;
   const labelSvg = role === "model" ? `<text x="${textX}" y="20" fill="${labelColor}" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="2">${esc2(label)}</text>` : `<text x="${textX}" y="24" fill="${labelColor}" font-family="sans-serif" font-size="13" font-weight="800" letter-spacing="1">${esc2(label)}</text>`;
   const hasSub = Boolean(sub && !disabled);
-  const valueY = hasSub ? 48 : 56;
-  const valueSvg = lines.length > 1 ? lines.map((ln, i) => `<text x="${textX}" y="${(hasSub ? 40 : top) + i * lineH}" fill="${valueColor}" font-family="sans-serif" font-size="${lineFont}" font-weight="700">${esc2(ln)}</text>`).join("") : `<text x="${textX}" y="${valueY}" fill="${valueColor}" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc2(lines[0])}</text>`;
-  const subSvg = hasSub ? `<text x="${textX}" y="${valueY + 18}" fill="${disabled ? "#4a4a52" : "#b8b8be"}" font-family="sans-serif" font-size="13" font-weight="600">${esc2(sub || "")}</text>` : "";
+  const quotaMatch = hasSub && sub ? sub.match(/^(\d+)%/) : null;
+  const quotaPct = quotaMatch ? parseInt(quotaMatch[1], 10) : void 0;
+  const subColor = disabled ? "#4a4a52" : quotaPct !== void 0 ? quotaPct >= 90 ? "#ef4444" : quotaPct >= 70 ? "#f59e0b" : "#a1a1aa" : "#b8b8be";
+  const subSize = role === "model" ? 12 : 13;
+  const valueY = hasSub ? role === "model" ? lines.length > 1 ? 38 : 48 : 48 : 56;
+  const subY = role === "model" ? lines.length > 2 ? 86 : 84 : valueY + 18;
+  const valueSvg = lines.length > 1 ? lines.map((ln, i) => `<text x="${textX}" y="${(hasSub ? role === "model" ? 38 : 40 : top) + i * (hasSub && role === "model" ? 15 : lineH)}" fill="${valueColor}" font-family="sans-serif" font-size="${hasSub && role === "model" ? 14 : lineFont}" font-weight="700">${esc2(ln)}</text>`).join("") : `<text x="${textX}" y="${valueY}" fill="${valueColor}" font-family="sans-serif" font-size="${singleSize}" font-weight="700">${esc2(lines[0])}</text>`;
+  const subSvg = hasSub ? `<text x="${textX}" y="${subY}" fill="${subColor}" font-family="sans-serif" font-size="${subSize}" font-weight="600">${esc2(sub || "")}</text>` : "";
   const badgeSvg = badge ? agentBadgeForDial(badge) : "";
   const dimG0 = disabled ? '<g opacity="0.38">' : "";
   const dimG1 = disabled ? "</g>" : "";
@@ -57288,7 +57599,11 @@ function dialFeedback(role) {
   const badge = tb ? tb.agentType : void 0;
   const branch = tb ? tb.branch : void 0;
   const v = dialValue(role);
-  if (role === "model") return { full: dialImage("model", "MODEL", v, tick, !isSupported, badge) };
+  if (role === "model") {
+    mergeLocalRateLimits();
+    const quota = agent.getQuotaDisplay(cachedRateLimits, contextForHandle(targetHandle ?? ""), v);
+    return { full: dialImage("model", "MODEL", v, tick, !isSupported, badge, quota) };
+  }
   if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick, !isSupported, badge) };
   if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported, badge) };
   if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
@@ -57364,12 +57679,47 @@ async function refreshRepos() {
     plugin_default.logger.error(`fetch repos: ${e}`);
   }
 }
+var cachedRateLimits = null;
+var lastRateLimitFetchAt = 0;
+function mergeLocalRateLimits() {
+  const localAgy = readLocalAgyQuota();
+  if (localAgy) {
+    if (!cachedRateLimits) {
+      cachedRateLimits = { antigravity: localAgy, gemini: localAgy };
+    } else {
+      if (!cachedRateLimits.antigravity || cachedRateLimits.antigravity.status !== "ok") {
+        cachedRateLimits.antigravity = localAgy;
+      }
+      if (!cachedRateLimits.gemini || cachedRateLimits.gemini.status !== "ok") {
+        cachedRateLimits.gemini = localAgy;
+      }
+    }
+  }
+}
+async function refreshRateLimits() {
+  if (Date.now() - lastRateLimitFetchAt < 3e4 && cachedRateLimits !== null) {
+    mergeLocalRateLimits();
+    return;
+  }
+  try {
+    const data = await orcaJson(["account", "list"]);
+    if (data?.result?.rateLimits) {
+      cachedRateLimits = data.result.rateLimits;
+      lastRateLimitFetchAt = Date.now();
+    }
+  } catch (e) {
+    plugin_default.logger.error(`fetch rate limits: ${e}`);
+  }
+  mergeLocalRateLimits();
+}
 var pollBusy = false;
 async function poll() {
   if (pollBusy) return;
   pollBusy = true;
   try {
     refreshRepos().catch(() => {
+    });
+    refreshRateLimits().catch(() => {
     });
     const [tl, wp] = await Promise.all([
       orcaJson(["terminal", "list", "--include-visual-layouts"]),

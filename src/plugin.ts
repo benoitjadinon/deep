@@ -32,6 +32,8 @@ import {
   type ApplyStep,
   type ControlKind,
   type OpenCodeModelState,
+  type OrcaRateLimits,
+  readLocalAgyQuota,
 } from "./agents";
 
 const execFileP = promisify(execFile);
@@ -626,7 +628,11 @@ function dialFeedback(role: string): { full: string } {
   const badge = tb ? (tb as any).agentType : undefined;
   const branch = tb ? (tb as any).branch : undefined;
   const v = dialValue(role);
-  if (role === "model") return { full: dialImage("model", "MODEL", v, tick, !isSupported, badge) };
+  if (role === "model") {
+    mergeLocalRateLimits();
+    const quota = agent.getQuotaDisplay(cachedRateLimits, contextForHandle(targetHandle ?? ""), v);
+    return { full: dialImage("model", "MODEL", v, tick, !isSupported, badge, quota) };
+  }
   if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick, !isSupported, badge) };
   if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported, badge) };
   if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
@@ -710,12 +716,49 @@ async function refreshRepos(): Promise<void> {
   }
 }
 
+let cachedRateLimits: OrcaRateLimits | null = null;
+let lastRateLimitFetchAt = 0;
+
+function mergeLocalRateLimits(): void {
+  const localAgy = readLocalAgyQuota();
+  if (localAgy) {
+    if (!cachedRateLimits) {
+      cachedRateLimits = { antigravity: localAgy, gemini: localAgy };
+    } else {
+      if (!cachedRateLimits.antigravity || cachedRateLimits.antigravity.status !== "ok") {
+        cachedRateLimits.antigravity = localAgy;
+      }
+      if (!cachedRateLimits.gemini || cachedRateLimits.gemini.status !== "ok") {
+        cachedRateLimits.gemini = localAgy;
+      }
+    }
+  }
+}
+
+async function refreshRateLimits(): Promise<void> {
+  if (Date.now() - lastRateLimitFetchAt < 30000 && cachedRateLimits !== null) {
+    mergeLocalRateLimits();
+    return;
+  }
+  try {
+    const data = await orcaJson(["account", "list"]);
+    if (data?.result?.rateLimits) {
+      cachedRateLimits = data.result.rateLimits;
+      lastRateLimitFetchAt = Date.now();
+    }
+  } catch (e) {
+    streamDeck.logger.error(`fetch rate limits: ${e}`);
+  }
+  mergeLocalRateLimits();
+}
+
 let pollBusy = false;
 async function poll(): Promise<void> {
   if (pollBusy) return;
   pollBusy = true;
   try {
     refreshRepos().catch(() => {});
+    refreshRateLimits().catch(() => {});
     const [tl, wp] = await Promise.all([
       orcaJson(["terminal", "list", "--include-visual-layouts"]),
       orcaJson(["worktree", "ps"]),

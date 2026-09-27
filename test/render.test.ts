@@ -262,6 +262,29 @@ describe("dialImage — dial rendering", () => {
     expect(svg).toContain(">main</text>");
     expect(svg).toContain('font-size="13" font-weight="600"');
   });
+  it("renders model quota subtitle with threshold-based color coding", () => {
+    // 1. Normal usage (<70%) -> gray/muted (#a1a1aa)
+    const normal = Buffer.from(dialImage("model", "MODEL", "sonnet-4-6", 0, false, "claude", "39% · 1:59 PM").split(",")[1], "base64").toString("utf8");
+    expect(normal).toContain(">39% · 1:59 PM</text>");
+    expect(normal).toContain('fill="#a1a1aa"');
+    expect(normal).toContain('font-size="12"');
+
+    // 2. Warning usage (70-89%) -> amber (#f59e0b)
+    const warning = Buffer.from(dialImage("model", "MODEL", "sonnet-4-6", 0, false, "claude", "75% · 1:59 PM").split(",")[1], "base64").toString("utf8");
+    expect(warning).toContain(">75% · 1:59 PM</text>");
+    expect(warning).toContain('fill="#f59e0b"');
+
+    // 3. High usage (>=90%) -> red (#ef4444)
+    const danger = Buffer.from(dialImage("model", "MODEL", "gpt-5.5", 0, false, "codex", "95% · Sat 7:48 PM").split(",")[1], "base64").toString("utf8");
+    expect(danger).toContain(">95% · Sat 7:48 PM</text>");
+    expect(danger).toContain('fill="#ef4444"');
+
+    // 4. Multi-line model with quota
+    const multi = Buffer.from(dialImage("model", "MODEL", "openrouter/minimax/minimax-m3", 0, false, "opencode", "50% · 2:00 PM").split(",")[1], "base64").toString("utf8");
+    expect(multi).toContain(">50% · 2:00 PM</text>");
+    expect(multi).toContain(">openrouter</text>");
+    expect(multi).toContain(">minimax</text>");
+  });
   it("omits top-right badge when badge is not passed", () => {
     const svg = Buffer.from(dialImage("target", "TARGET", "svd", 0).split(",")[1], "base64").toString("utf8");
     expect(svg).not.toContain('x="172" y="6"');
