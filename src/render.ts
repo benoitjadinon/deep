@@ -70,7 +70,7 @@ export function agentBadge(
   const iconPad = boxSize >= 26 ? 4 : 3;
   const ix = boxX + iconPad;
   const iy = boxY + iconPad;
-  const isize = boxSize - iconPad * 2; // 18px (legacy) / 12px (bar)
+  const isize = boxSize - iconPad * 2; // 18px at default boxSize, 19px at 27 (key badge)
 
   const bg = `<rect x="${boxX}" y="${boxY}" width="${boxSize}" height="${boxSize}" rx="6" fill="#222225" stroke="#38383e" stroke-width="1"/>`;
 
@@ -101,8 +101,9 @@ export function agentBadge(
   // Fallback: 2-character pill for unsupported or unknown agents
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
   if (pos) {
-    // Bar-sized pill: 18x10, centered on the box's bar line
-    return `<rect x="${boxX}" y="${boxY + 4}" width="${boxSize}" height="10" rx="5" fill="#4b5563"/><text x="${boxX + boxSize / 2}" y="${boxY + 12.5}" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="8" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
+    // Box-filling pill with the label centered, scaled to the box
+    const fs = boxSize * 0.48;
+    return `<rect x="${boxX}" y="${boxY}" width="${boxSize}" height="${boxSize}" rx="8" fill="#4b5563"/><text x="${boxX + boxSize / 2}" y="${boxY + boxSize / 2 + fs * 0.36}" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="${fs.toFixed(1)}" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
   }
   return `<rect x="104" y="118" width="32" height="18" rx="9" fill="#4b5563"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
 }
@@ -243,11 +244,11 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
       .join("");
   }
 
-  // Icons live in the top state bar now: [state glyph] [divider] [agent badge],
-  // target session marked by a coral dot at the bar's right end.
+  // Top state bar: [state glyph] [divider]; the agent badge lives in the
+  // bottom-left corner (50% larger than the old top-bar badge).
   const stIcon = stateIcon(b.state, 14);
   const divider = stIcon ? `<rect x="23" y="2.5" width="2" height="11" rx="1" fill="#ffffff" opacity="0.35"/>` : "";
-  const badge = agentBadge(b.agentType, { boxX: 114, boxY: 0, boxSize: 18 });
+  const badge = agentBadge(b.agentType, { boxX: 5, boxY: 112, boxSize: 27 });
 
   // Pulse animation for attention-needed keys
   const attn = needsAttention(b, isTarget);

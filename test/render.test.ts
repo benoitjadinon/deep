@@ -74,12 +74,12 @@ describe("keySvg", () => {
     expect(off).not.toContain("#d97757");
   });
 
-  it("moves state + agent icons into the taller top bar", () => {
+  it("places state glyph in the top bar and agent badge bottom-left", () => {
     const svg = keySvg({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main", agentType: "claude" });
     expect(svg).toContain('width="144" height="18"'); // bar ~20% taller
     expect(svg).toContain('cx="14" cy="8"'); // state glyph inside bar (left)
     expect(svg).toContain('<rect x="23" y="2.5" width="2" height="11" rx="1" fill="#ffffff" opacity="0.35"/>'); // divider
-    expect(svg).toContain('x="114" y="0" width="18" height="18"'); // agent badge inside bar (right)
+    expect(svg).toContain('x="5" y="112" width="27" height="27"'); // agent badge bottom-left, 50% larger
   });
 
   it("omits the bar divider when the session has no state icon", () => {

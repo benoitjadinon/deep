@@ -10,7 +10,7 @@
     "poll": "node scripts/poll.mjs",
     "icons": "node scripts/gen-icons.mjs",
     "build": "esbuild src/plugin.ts --bundle --platform=node --target=node20 --format=cjs --outfile=com.byjw.deep.sdPlugin/bin/plugin.js --log-level=warning",
-    "restart": "bash scripts/restart-streamdeck.sh",
+    "restart": "bash scripts/restart-opendeck.sh",
     "package": "npm run icons && npm run build"
   },
   "devDependencies": {

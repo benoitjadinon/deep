@@ -56473,7 +56473,8 @@ function agentBadge(agentType, pos) {
   }
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
   if (pos) {
-    return `<rect x="${boxX}" y="${boxY + 4}" width="${boxSize}" height="10" rx="5" fill="#4b5563"/><text x="${boxX + boxSize / 2}" y="${boxY + 12.5}" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="8" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
+    const fs3 = boxSize * 0.48;
+    return `<rect x="${boxX}" y="${boxY}" width="${boxSize}" height="${boxSize}" rx="8" fill="#4b5563"/><text x="${boxX + boxSize / 2}" y="${boxY + boxSize / 2 + fs3 * 0.36}" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="${fs3.toFixed(1)}" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
   }
   return `<rect x="104" y="118" width="32" height="18" rx="9" fill="#4b5563"/><text x="120" y="131" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="800" letter-spacing="0.5">${esc2(label)}</text>`;
 }
@@ -56578,7 +56579,7 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   }
   const stIcon = stateIcon(b.state, 14);
   const divider = stIcon ? `<rect x="23" y="2.5" width="2" height="11" rx="1" fill="#ffffff" opacity="0.35"/>` : "";
-  const badge = agentBadge(b.agentType, { boxX: 114, boxY: 0, boxSize: 18 });
+  const badge = agentBadge(b.agentType, { boxX: 5, boxY: 112, boxSize: 27 });
   const attn = needsAttention(b, isTarget);
   let glow = "";
   if (attn) {
