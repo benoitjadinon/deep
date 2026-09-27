@@ -640,7 +640,6 @@ function dialFeedback(role: string): { full: string } {
   if (role === "target") {
     // Button-style state rendering: the target session drives the status bar color, glyph and the
     // attention pulse (treated like an already-focused key — waiting/error still pulse, unread-done doesn't).
-    const tb = sessionByHandle.get(targetHandle ?? "");
     const st = tb
       ? {
           state: (tb as any).state,

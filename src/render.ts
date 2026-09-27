@@ -416,8 +416,9 @@ export function dialImage(
   const labelColor = disabled ? "#4a4a52" : accent;
   const valueColor = disabled ? "#4a4a52" : "#ffffff";
   const val = disabled ? (value && value !== " " && value !== "…" ? value : "-") : (value || " ");
-  const textX = 18;
-  const avail = 195 - textX; // available width excluding 7px accent rail
+  // With the vertical state rail the text starts after it; the plain accent rail is 7px wide.
+  const textX = attention ? 28 : 18;
+  const avail = 195 - textX; // available width excluding accent rail
   const lineFont = 15;
   const lineH = 16;
   const top = 44;
@@ -453,14 +454,14 @@ export function dialImage(
     ? `<text x="${textX}" y="${subY}" fill="${subColor}" font-family="sans-serif" font-size="${subSize}" font-weight="600">${esc(sub || "")}</text>`
     : "";
 
-  // Button-style state status bar: the target dial's accent strip becomes a state-colored top bar
-  // carrying the same white state glyph the keys show (working ring, ?, !, checkmark, dashed ring).
+  // Button-style state status rail: the target dial's left accent strip becomes a vertical,
+  // state-colored bar flush with the left edge, carrying the same white state glyph the keys show
+  // (working ring, ?, !, checkmark, dashed ring) centered vertically.
   const barColor = disabled ? "#2e2e34" : stateColor || HEX.white;
   let statusBar = "";
   if (attention) {
-    const stIcon = disabled ? "" : stateIcon(attention.state, 13, 7, 4.5, "#ffffff");
-    const divider = stIcon ? `<rect x="23" y="2.5" width="2" height="9" rx="1" fill="#ffffff" opacity="0.35"/>` : "";
-    statusBar = `<rect width="200" height="14" fill="${barColor}" clip-path="url(#dr)"/>${stIcon}${divider}`;
+    const stIcon = disabled ? "" : stateIcon(attention.state, 9, 50, 4.5, "#ffffff");
+    statusBar = `<rect width="18" height="100" fill="${barColor}" clip-path="url(#dr)"/>${stIcon}`;
   }
   // Attention pulse overlay — same phase/opacity rules as keySvg (urgent amber/red blink fast,
   // calmer pulse for unread-done green), so the dial blinks exactly like a needs-attention button.
@@ -478,7 +479,7 @@ export function dialImage(
   // When a state overlay is present the 7px accent rail is replaced by the status bar above.
   const rail = attention ? "" : `<rect width="7" height="100" fill="${accent}"/>`;
 
-  const badgeSvg = badge ? (attention ? agentBadgeForDial(badge, 15, 18) : agentBadgeForDial(badge)) : "";
+  const badgeSvg = badge ? agentBadgeForDial(badge) : "";
 
   const dimG0 = disabled ? '<g opacity="0.38">' : "";
   const dimG1 = disabled ? "</g>" : "";
@@ -496,11 +497,12 @@ export function dialImage(
   return "data:image/svg+xml;base64," + Buffer.from(svg, "utf8").toString("base64");
 }
 
-// Agent badge for top-right dial position (20x20; `boxY`/`boxSize` overrides keep it clear of the
-// state status bar on the target dial, which sinks the badge just below the 14px bar).
-function agentBadgeForDial(agentType?: string | null, boxY = 6, boxSize = 20): string {
+// Agent badge for top-right dial position (20x20)
+function agentBadgeForDial(agentType?: string | null): string {
   const a = (agentType || "").toLowerCase();
   const boxX = 172;
+  const boxY = 6;
+  const boxSize = 20;
   const iconPad = 3;
   const ix = boxX + iconPad;
   const iy = boxY + iconPad;
@@ -534,7 +536,7 @@ function agentBadgeForDial(agentType?: string | null, boxY = 6, boxSize = 20): s
 
   // Fallback: 2-character pill for unsupported or unknown agents
   const label = a ? [...a].slice(0, 2).join("").toUpperCase() : "?";
-  return `<rect x="166" y="${boxY}" width="28" height="16" rx="8" fill="#4b5563"/><text x="180" y="${boxY + 12}" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
+  return `<rect x="166" y="6" width="28" height="16" rx="8" fill="#4b5563"/><text x="180" y="18" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="10" font-weight="800" letter-spacing="0.5">${esc(label)}</text>`;
 }
 
 // Split text by "/" boundary if multi-part, otherwise wrap by characters

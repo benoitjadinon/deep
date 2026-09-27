@@ -326,17 +326,18 @@ describe("dialImage — dial rendering", () => {
     expect(codexDanger).toContain('fill="#ef4444"');
   });
 
-  it("target dial with state renders a button-style state status bar instead of the accent rail", () => {
+  it("target dial with state renders a vertical state status rail on the left edge", () => {
     const svg = Buffer.from(
       dialImage("target", "TARGET", "svd", 0, false, "opencode", "main", undefined, { state: "waiting", color: "amber", attention: false, nowMs: 0 }).split(",")[1],
       "base64",
     ).toString("utf8");
-    expect(svg).toContain('width="200" height="14"'); // status bar, same height language as keys
-    expect(svg).toContain('fill="#f59e0b"'); // amber state color on bar + label
+    expect(svg).toContain('width="18" height="100"'); // vertical rail flush with left edge
+    expect(svg).toContain('fill="#f59e0b"'); // amber state color on rail + label
     expect(svg).not.toContain('width="7" height="100"'); // static accent rail replaced
+    expect(svg).toContain('cy="50"'); // state glyph vertically centered in the rail
     expect(svg).toContain('fill="#ffffff"'); // white state glyph
     expect(svg).toContain(">?</text>"); // waiting question mark
-    expect(svg).toContain('x="23" y="2.5" width="2" height="9"'); // glyph divider
+    expect(svg).toContain('x="28"'); // text starts after the wider rail
   });
 
   it("target dial state glyph/colors follow session state like a key", () => {
@@ -362,7 +363,7 @@ describe("dialImage — dial rendering", () => {
       "base64",
     ).toString("utf8");
     expect(idle).toContain('fill="#6b7280"');
-    expect(idle).not.toContain('x="23" y="2.5"');
+    expect(idle).not.toContain('cy="50"'); // no glyph when idle
   });
 
   it("target dial blinks like a button when attention triggers, with urgent amber/red period", () => {
@@ -390,13 +391,12 @@ describe("dialImage — dial rendering", () => {
     expect(off.match(/<rect width="200" height="100" fill/g) || []).toHaveLength(0);
   });
 
-  it("target dial status bar sinks the agent badge below the 14px bar", () => {
+  it("target dial state bar keeps the agent badge at its default top-right spot", () => {
     const svg = Buffer.from(
       dialImage("target", "TARGET", "svd", 0, false, "opencode", "main", undefined, { state: "working", color: "blue", attention: false, nowMs: 0 }).split(",")[1],
       "base64",
     ).toString("utf8");
-    expect(svg).toContain('x="172" y="15"');
-    expect(svg).not.toContain('x="172" y="6"');
+    expect(svg).toContain('x="172" y="6"');
   });
 
   it("target dial without state keeps the legacy amber rail and top-right badge", () => {
@@ -404,7 +404,7 @@ describe("dialImage — dial rendering", () => {
     expect(svg).toContain('width="7" height="100"');
     expect(svg).toContain('fill="#f59e0b"');
     expect(svg).toContain('x="172" y="6"');
-    expect(svg).not.toContain('width="200" height="14"');
+    expect(svg).not.toContain('width="18" height="100"');
   });
 });
 
