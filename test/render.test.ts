@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { keySvg, agentBadge, stateIcon, keyImage, wrap, wrapWords, stripSpinner, marqueeWindow, dialImage, modeColor } from "../src/render.js";
+import { keySvg, agentBadge, stateIcon, keyImage, wrap, wrapWords, stripSpinner, marqueeWindow, dialImage, modeColor, pageButtonSvg } from "../src/render.js";
 
 describe("stripSpinner / wrap / wrapWords", () => {
   it("strip leading spinner glyph while preserving text", () => {
@@ -74,17 +74,11 @@ describe("keySvg", () => {
     expect(off).not.toContain("#d97757");
   });
 
-  it("places state glyph in the top bar and agent badge bottom-left", () => {
+  it("places state glyph on the right side of the top bar and agent badge bottom-left", () => {
     const svg = keySvg({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main", agentType: "claude" });
-    expect(svg).toContain('width="144" height="18"'); // bar ~20% taller
-    expect(svg).toContain('cx="14" cy="8"'); // state glyph inside bar (left)
-    expect(svg).toContain('<rect x="23" y="2.5" width="2" height="11" rx="1" fill="#ffffff" opacity="0.35"/>'); // divider
-    expect(svg).toContain('x="5" y="112" width="27" height="27"'); // agent badge bottom-left, 50% larger
-  });
-
-  it("omits the bar divider when the session has no state icon", () => {
-    const svg = keySvg({ empty: false as const, handle: "t", label: "x", state: "idle", color: "white" as const, repo: "svd", branch: "main" });
-    expect(svg).not.toContain('x="23" y="2.5"');
+    expect(svg).toContain('width="144" height="18"'); // bar height
+    expect(svg).toContain('cx="130" cy="9"'); // state glyph on right side of the bar
+    expect(svg).toContain('x="5" y="112" width="27" height="27"'); // agent badge bottom-left
   });
 
   it("renders a 3rd summary line when the tab title is long", () => {
@@ -92,6 +86,80 @@ describe("keySvg", () => {
     expect(svg).toContain('y="96"');
     expect(svg).toContain('y="114"');
     expect(svg).toContain('y="132"');
+  });
+
+  it("renders page switcher key when isPageButton is true", () => {
+    const svg = keySvg({ empty: false, isPageButton: true, page: 0, pageCount: 2, hasAlertOnOtherPage: false });
+    expect(svg).toContain("PAGE");
+    expect(svg).toContain("1 ");
+    expect(svg).toContain("/ 2");
+    expect(svg).toContain("NEXT ❯");
+  });
+});
+
+describe("pageButtonSvg — dedicated page switcher button rendering", () => {
+  it("renders page 1 of 2 with NEXT ❯ action when on first page", () => {
+    const svg = pageButtonSvg(0, 2, false);
+    expect(svg).toContain("PAGE");
+    expect(svg).toContain(">1 <tspan");
+    expect(svg).toContain("/ 2</tspan>");
+    expect(svg).toContain("NEXT ❯");
+    expect(svg).not.toContain('fill="#f59e0b"');
+  });
+
+  it("renders page 2 of 2 with PREV ❮ action when on last page", () => {
+    const svg = pageButtonSvg(1, 2, false);
+    expect(svg).toContain("PAGE");
+    expect(svg).toContain(">2 <tspan");
+    expect(svg).toContain("/ 2</tspan>");
+    expect(svg).toContain("PREV ❮");
+    expect(svg).not.toContain('fill="#f59e0b"');
+  });
+
+  it("renders representative state bar and glyph for other pages", () => {
+    // Waiting state (violet) with bell glyph
+    const waitingSvg = pageButtonSvg({
+      page: 0,
+      pageCount: 3,
+      otherState: "waiting",
+      otherColor: "violet",
+    });
+    expect(waitingSvg).toContain('fill="#a855f7"'); // Violet bar
+    expect(waitingSvg).toContain('M6 8a6 6'); // Bell icon path
+
+    // Error state (red) with exclamation mark glyph
+    const errorSvg = pageButtonSvg({
+      page: 0,
+      pageCount: 3,
+      otherState: "error",
+      otherColor: "red",
+    });
+    expect(errorSvg).toContain('fill="#ef4444"'); // Red bar
+    expect(errorSvg).toContain("!"); // Exclamation mark glyph
+
+    // Working state (orange)
+    const workingSvg = pageButtonSvg({
+      page: 0,
+      pageCount: 3,
+      otherState: "working",
+      otherColor: "orange",
+    });
+    expect(workingSvg).toContain('fill="#fb923c"'); // Orange bar
+  });
+
+  it("renders pulsing attention glow when other page has attention-demanding state", () => {
+    const glowingSvg = pageButtonSvg(
+      {
+        page: 0,
+        pageCount: 2,
+        otherState: "waiting",
+        otherColor: "violet",
+      },
+      0,
+      160, // nowMs during pulse
+    );
+    expect(glowingSvg).toContain('fill="#a855f7"');
+    expect(glowingSvg).toMatch(/opacity="0\.\d+"/); // Animated glow opacity
   });
 });
 
@@ -151,10 +219,20 @@ describe("stateIcon — white glyphs for the state-colored top bar", () => {
     expect(icon).toContain('stroke="#ffffff"');
     expect(icon).toContain("stroke-dasharray");
   });
-  it("waiting is white question mark", () => {
+  it("waiting is white bell icon", () => {
     const icon = stateIcon("waiting");
     expect(icon).toContain('stroke="#ffffff"');
-    expect(icon).toContain(">?</text>");
+    expect(icon).toContain('M6 8a6 6');
+  });
+  it("interrupted is solid white circle dot", () => {
+    const icon = stateIcon("interrupted");
+    expect(icon).toContain('fill="#ffffff"');
+    expect(icon).toContain('<circle cx="130" cy="9"');
+  });
+  it("monitoring is activity waveform line", () => {
+    const icon = stateIcon("monitoring");
+    expect(icon).toContain('stroke="#ffffff"');
+    expect(icon).toContain('M22 12h-2.48');
   });
   it("error/blocked/failed is white exclamation mark", () => {
     expect(stateIcon("error")).toContain('stroke="#ffffff"');
@@ -180,14 +258,12 @@ describe("keySvg attention animation (pulse ring)", () => {
   it("static (working) key is invariant to nowMs", () => {
     expect(keySvg(calm, 0, false, 0)).toBe(keySvg(calm, 0, false, 999));
   });
-  it("target session done state does not animate", () => {
+  it("target session stops pulsing for all states when focused (isTarget true)", () => {
     const done = { empty: false as const, handle: "t", label: "x", state: "done", color: "green" as const, repo: "svd", branch: "main" };
     expect(keySvg(done, 0, true, 0)).toBe(keySvg(done, 0, true, 500));
+    expect(keySvg(attn, 0, true, 0)).toBe(keySvg(attn, 0, true, 320));
   });
-  it("target session waiting state continues animating for input prompt", () => {
-    expect(keySvg(attn, 0, true, 0)).not.toBe(keySvg(attn, 0, true, 320));
-  });
-  it("attention key pulses background with state color", () => {
+  it("attention key pulses background with state color when not focused", () => {
     expect((keySvg(attn, 0, false, 200).match(/fill="#f59e0b"/g) || []).length).toBeGreaterThanOrEqual(2);
     expect((keySvg(calm, 0, false, 200).match(/fill="#3b82f6"/g) || []).length).toBe(1);
   });
@@ -334,13 +410,35 @@ describe("dialImage — dial rendering", () => {
     expect(svg).toContain('width="18" height="100"'); // vertical rail flush with left edge
     expect(svg).toContain('fill="#f59e0b"'); // amber state color on rail + label
     expect(svg).not.toContain('width="7" height="100"'); // static accent rail replaced
-    expect(svg).toContain('cy="50"'); // state glyph vertically centered in the rail
     expect(svg).toContain('fill="#ffffff"'); // white state glyph
-    expect(svg).toContain(">?</text>"); // waiting question mark
+    expect(svg).toContain('M6 8a6 6'); // waiting bell icon
     expect(svg).toContain('x="28"'); // text starts after the wider rail
   });
 
   it("target dial state glyph/colors follow session state like a key", () => {
+    // working -> orange bar
+    const working = Buffer.from(
+      dialImage("target", "TARGET", "svd", 0, false, "claude", "main", undefined, { state: "working", color: "orange", attention: false, nowMs: 0 }).split(",")[1],
+      "base64",
+    ).toString("utf8");
+    expect(working).toContain('fill="#fb923c"'); // orange bar
+
+    // waiting -> violet bar + bell icon
+    const waiting = Buffer.from(
+      dialImage("target", "TARGET", "svd", 0, false, "claude", "main", undefined, { state: "waiting", color: "violet", attention: false, nowMs: 0 }).split(",")[1],
+      "base64",
+    ).toString("utf8");
+    expect(waiting).toContain('fill="#a855f7"'); // violet bar
+    expect(waiting).toContain('M6 8a6 6');
+
+    // interrupted -> red bar + solid dot
+    const interrupted = Buffer.from(
+      dialImage("target", "TARGET", "svd", 0, false, "claude", "main", undefined, { state: "interrupted", color: "red", attention: false, nowMs: 0 }).split(",")[1],
+      "base64",
+    ).toString("utf8");
+    expect(interrupted).toContain('fill="#ef4444"');
+    expect(interrupted).toContain('<circle cx="9" cy="50"');
+
     // done -> green bar + checkmark
     const done = Buffer.from(
       dialImage("target", "TARGET", "svd", 0, false, "claude", "main", undefined, { state: "done", color: "green", attention: false, nowMs: 0 }).split(",")[1],

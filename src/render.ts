@@ -2,7 +2,13 @@
 import { needsAttention, type Button, type Deck } from "./deck";
 
 const HEX: Record<string, string> = {
-  blue: "#3b82f6", amber: "#f59e0b", green: "#22c55e", red: "#ef4444", white: "#6b7280",
+  orange: "#fb923c",
+  violet: "#a855f7",
+  blue: "#3b82f6",
+  amber: "#f59e0b",
+  green: "#22c55e",
+  red: "#ef4444",
+  white: "#6b7280",
 };
 
 const esc = (s: string) =>
@@ -154,22 +160,35 @@ export function wrapWords(s: string, maxCharsPerLine = 15, maxLines = 2): string
   return lines;
 }
 
-// Session state glyphs for the top state bar. The bar itself is state-colored (blue/amber/
-// green/red), so the glyph is white by default — a state-colored glyph would vanish into the bar.
-// done = checkmark circle, unverifiable = dashed circle, working = spinner ring, waiting = question, error = exclamation
-export function stateIcon(state?: string, cx = 12, cy = 8, r = 5.5, color = "#ffffff"): string {
+// Session state glyphs for the top state bar. The bar itself is state-colored (orange/violet/
+// green/red/white), so the glyph is white by default — a state-colored glyph would vanish into the bar.
+// done = circle-check, interrupted = solid dot, monitoring = activity pulse, waiting/permission = bell,
+// unverifiable = dashed circle, working = spinner ring, error/blocked/failed = exclamation
+export function stateIcon(state?: string, cx = 130, cy = 9, r = 5.5, color = "#ffffff"): string {
   const s = (state || "").toLowerCase();
   const ring = (extra = "", inner = "") =>
     `<g><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="2"${extra ? " " + extra : ""}/>${inner}</g>`;
+
   if (s === "done") {
     const k = r / 7; // scale the 16-grid glyph about its center so it lands on (cx, cy)
     return `<g transform="translate(${(cx - 8 * k).toFixed(2)}, ${(cy - 8 * k).toFixed(2)}) scale(${k.toFixed(3)})"><circle cx="8" cy="8" r="7" fill="none" stroke="${color}" stroke-width="2.3"/><path d="M4.8 8.2 L7.2 10.4 L11.2 5.8" fill="none" stroke="${color}" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></g>`;
   }
+  if (s === "interrupted") {
+    // Solid dot matching Orca's red interrupted indicator
+    return `<circle cx="${cx}" cy="${cy}" r="${(r * 0.85).toFixed(2)}" fill="${color}"/>`;
+  }
+  if (s === "monitoring") {
+    // Lucide activity line
+    const s24 = (r * 2) / 24;
+    return `<g transform="translate(${(cx - r).toFixed(2)}, ${(cy - r).toFixed(2)}) scale(${s24.toFixed(3)})"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" fill="none" stroke="${color}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></g>`;
+  }
+  if (s === "waiting" || s === "permission") {
+    // Bell icon matching Orca's question/permission notification
+    const s24 = (r * 2) / 24;
+    return `<g transform="translate(${(cx - r).toFixed(2)}, ${(cy - r).toFixed(2)}) scale(${s24.toFixed(3)})"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9 M10.3 21a1.94 1.94 0 0 0 3.4 0" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></g>`;
+  }
   if (s === "unverifiable") return ring(`stroke-dasharray="3.4 2.6" stroke-linecap="round"`);
   if (s === "working") return ring(`stroke-dasharray="7 4" stroke-linecap="round"`);
-  if (s === "waiting") {
-    return ring("", `<text x="${cx}" y="${cy + 3.3}" text-anchor="middle" fill="${color}" font-family="sans-serif" font-size="9" font-weight="800">?</text>`);
-  }
   if (s === "error" || s === "blocked" || s === "failed") {
     return ring("", `<text x="${cx}" y="${cy + 3.3}" text-anchor="middle" fill="${color}" font-family="sans-serif" font-size="9" font-weight="800">!</text>`);
   }
@@ -208,9 +227,85 @@ export function renderBgIcon(b: Button): string {
   return "";
 }
 
+export function pageButtonSvg(
+  bOrPage: number | { page: number; pageCount: number; hasAlertOnOtherPage?: boolean; otherState?: any; otherStatus?: any; otherColor?: any; otherUnread?: boolean },
+  pageCountOrTick: number = 1,
+  hasAlertOrNowMs: boolean | number = false,
+  tickOrDim: number | boolean = 0,
+): string {
+  let b: { page: number; pageCount: number; hasAlertOnOtherPage?: boolean; otherState?: any; otherStatus?: any; otherColor?: any; otherUnread?: boolean };
+  let tick = 0;
+  let nowMs = 0;
+  let dim = false;
+
+  if (typeof bOrPage === "number") {
+    b = {
+      page: bOrPage,
+      pageCount: pageCountOrTick,
+      hasAlertOnOtherPage: typeof hasAlertOrNowMs === "boolean" ? hasAlertOrNowMs : false,
+      otherColor: typeof hasAlertOrNowMs === "boolean" && hasAlertOrNowMs ? "amber" : undefined,
+      otherState: typeof hasAlertOrNowMs === "boolean" && hasAlertOrNowMs ? "waiting" : undefined,
+    };
+    tick = typeof tickOrDim === "number" ? tickOrDim : 0;
+  } else {
+    b = bOrPage;
+    tick = pageCountOrTick;
+    nowMs = typeof hasAlertOrNowMs === "number" ? hasAlertOrNowMs : 0;
+    dim = typeof tickOrDim === "boolean" ? tickOrDim : false;
+  }
+
+  const isLastPage = b.page >= b.pageCount - 1;
+  const curr = b.page + 1;
+  const actionText = isLastPage ? "PREV ❮" : "NEXT ❯";
+
+  const barColor = b.otherColor ? (HEX[b.otherColor] ?? HEX.white) : "#3f3f46";
+  const stIcon = (b.otherStatus || b.otherState) ? stateIcon(b.otherStatus || b.otherState, 130, 9) : "";
+
+  // Pulse animation for attention-needed states on other pages (amber/red/unread-done)
+  const attn = needsAttention(b as any, false);
+  let glow = "";
+  if (attn && b.otherColor) {
+    const urgent = b.otherColor === "violet" || b.otherColor === "amber" || b.otherColor === "red";
+    const period = urgent ? 640 : 1300; // ms/cycle
+    const p = 0.5 - 0.5 * Math.cos((2 * Math.PI * (nowMs % period)) / period); // 0->1->0
+    const op = (urgent ? 0.4 : 0.28) * p;
+    glow = `<rect width="144" height="144" rx="18" fill="${barColor}" opacity="${op.toFixed(2)}"/>`;
+  }
+
+  const g0 = dim ? '<g opacity="0.32">' : "";
+  const g1 = dim ? "</g>" : "";
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">
+  <defs>
+    <clipPath id="r"><rect width="144" height="144" rx="18"/></clipPath>
+    <linearGradient id="pbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#242427"/>
+      <stop offset="100%" stop-color="#18181b"/>
+    </linearGradient>
+  </defs>
+  ${g0}<rect width="144" height="144" rx="18" fill="url(#pbg)" stroke="#3f3f46" stroke-width="1.5"/>
+  ${glow}
+  <rect width="144" height="18" fill="${barColor}" clip-path="url(#r)"/>
+  ${stIcon}
+
+  <!-- Header: PAGE -->
+  <text x="72" y="44" text-anchor="middle" fill="#a1a1aa" font-family="sans-serif" font-size="12" font-weight="700" letter-spacing="1.2">PAGE</text>
+
+  <!-- Center: Current / Total (e.g. 1 / 2) -->
+  <text x="72" y="78" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="28" font-weight="800">${curr} <tspan fill="#71717a" font-size="20" font-weight="600">/ ${b.pageCount}</tspan></text>
+
+  <!-- Bottom: Action pill (NEXT ❯ / ❮ PREV) -->
+  <rect x="22" y="100" width="100" height="28" rx="14" fill="#3f3f46" fill-opacity="0.6" stroke="#52525b" stroke-width="1"/>
+  <text x="72" y="119" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="13" font-weight="700" letter-spacing="0.5">${actionText}</text>${g1}
+</svg>`;
+}
+
 export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = false): string {
   if (b.empty) {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144"><rect width="144" height="144" rx="18" fill="#141416"/><circle cx="72" cy="72" r="7" fill="#3a3a3e"/></svg>`;
+  }
+  if ("isPageButton" in b && b.isPageButton) {
+    return pageButtonSvg(b, tick, nowMs, dim);
   }
   const color = HEX[b.color] ?? HEX.white;
 
@@ -244,17 +339,16 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
       .join("");
   }
 
-  // Top state bar: [state glyph] [divider]; the agent badge lives in the
+  // Top state bar: status glyph on the right side; the agent badge lives in the
   // bottom-left corner (50% larger than the old top-bar badge).
-  const stIcon = stateIcon(b.state, 14);
-  const divider = stIcon ? `<rect x="23" y="2.5" width="2" height="11" rx="1" fill="#ffffff" opacity="0.35"/>` : "";
+  const stIcon = stateIcon((b as any).status || b.state, 130, 9);
   const badge = agentBadge(b.agentType, { boxX: 5, boxY: 112, boxSize: 27 });
 
   // Pulse animation for attention-needed keys
   const attn = needsAttention(b, isTarget);
   let glow = "";
   if (attn) {
-    const urgent = b.color === "amber" || b.color === "red";
+    const urgent = b.color === "violet" || b.color === "amber" || b.color === "red";
     const period = urgent ? 640 : 1300; // ms/cycle
     const p = 0.5 - 0.5 * Math.cos((2 * Math.PI * (nowMs % period)) / period); // 0->1->0
     const op = (urgent ? 0.4 : 0.28) * p;
@@ -274,7 +368,7 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
   ${renderBgIcon(b)}
   ${glow}
   <rect width="144" height="18" fill="${color}" clip-path="url(#r)"/>
-  ${projSvg}${subSvg}${titleSvg}${stIcon}${divider}${badge}${g1}${cornerTag}
+  ${projSvg}${subSvg}${titleSvg}${stIcon}${badge}${g1}${cornerTag}
 </svg>`;
 }
 
@@ -468,7 +562,7 @@ export function dialImage(
   let glow = "";
   if (attention?.attention && !disabled) {
     const gcol = stateColor || HEX.white;
-    const urgent = gcol === HEX.amber || gcol === HEX.red;
+    const urgent = gcol === HEX.violet || gcol === HEX.amber || gcol === HEX.red;
     const period = urgent ? 640 : 1300; // ms/cycle
     const now = attention.nowMs ?? 0;
     const p = 0.5 - 0.5 * Math.cos((2 * Math.PI * (now % period)) / period); // 0->1->0

@@ -56376,14 +56376,44 @@ function prefetchRepoIcons(repos) {
 
 // src/deck.ts
 var AGENT_STATUS_STALE_AFTER_MS = 30 * 60 * 1e3;
+var DEFAULT_TERMINAL_AGENT_GRACE_MS = 15e3;
+function stabilizeTerminalAgents(terminals, cache, now = Date.now(), graceMs = DEFAULT_TERMINAL_AGENT_GRACE_MS) {
+  const result = [];
+  const liveHandles = /* @__PURE__ */ new Set();
+  for (const t of terminals ?? []) {
+    liveHandles.add(t.handle);
+    const copy = { ...t };
+    if (copy.agentIdentity) {
+      cache.set(copy.handle, { agentIdentity: copy.agentIdentity, lastSeenAt: now });
+    } else {
+      const cached2 = cache.get(copy.handle);
+      if (cached2 && now - cached2.lastSeenAt < graceMs) {
+        copy.agentIdentity = cached2.agentIdentity;
+      } else if (cached2) {
+        cache.delete(copy.handle);
+      }
+    }
+    result.push(copy);
+  }
+  for (const h of Array.from(cache.keys())) {
+    if (!liveHandles.has(h)) {
+      cache.delete(h);
+    }
+  }
+  return result;
+}
 var STATE_COLOR = {
-  working: "blue",
-  waiting: "amber",
-  blocked: "amber",
-  unverifiable: "amber",
-  done: "green",
+  working: "orange",
+  monitoring: "orange",
+  waiting: "violet",
+  permission: "violet",
+  blocked: "violet",
+  interrupted: "red",
   error: "red",
-  idle: "white"
+  failed: "red",
+  done: "green",
+  idle: "white",
+  unverifiable: "violet"
 };
 function projectOf(path5, repo) {
   if (repo) return repo;
@@ -56411,26 +56441,37 @@ function activityBucket(timestamp, bucketMs = DEFAULT_ACTIVITY_BUCKET_MS) {
   if (typeof timestamp !== "number" || !Number.isFinite(timestamp) || timestamp <= 0) return 0;
   return Math.floor(timestamp / Math.max(1, bucketMs));
 }
-function sortSessionsByProject(sessions, projectOf2, recencyOf, handleOf, opts = {}) {
+function statePriority(state) {
+  switch (state) {
+    case "waiting":
+    case "permission":
+    case "blocked":
+    case "interrupted":
+    case "error":
+    case "failed":
+      return 0;
+    // Alerts & questions up top (demands user action/input)
+    case "working":
+    case "monitoring":
+      return 10;
+    // Active working states
+    case "done":
+    case "idle":
+    case "unverifiable":
+    default:
+      return 20;
+  }
+}
+function sortSessions(sessions, stateOf, recencyOf, handleOf, opts = {}) {
   const bucketMs = opts.bucketMs ?? DEFAULT_ACTIVITY_BUCKET_MS;
   const entries = sessions.map((s) => ({
     s,
-    project: projectOf2(s) ?? "",
+    priority: statePriority(stateOf(s)),
     bucket: activityBucket(recencyOf(s), bucketMs),
     handle: handleOf(s)
   }));
-  const groupBucket = /* @__PURE__ */ new Map();
-  for (const e of entries) {
-    const prev = groupBucket.get(e.project) ?? 0;
-    if (e.bucket > prev) groupBucket.set(e.project, e.bucket);
-  }
   entries.sort((a, b) => {
-    if (a.project !== b.project) {
-      const ra = groupBucket.get(a.project) ?? 0;
-      const rb = groupBucket.get(b.project) ?? 0;
-      if (ra !== rb) return rb - ra;
-      return a.project.localeCompare(b.project);
-    }
+    if (a.priority !== b.priority) return a.priority - b.priority;
     if (a.bucket !== b.bucket) return b.bucket - a.bucket;
     return a.handle.localeCompare(b.handle);
   });
@@ -56447,17 +56488,43 @@ function nextWorktreeName(repo, existingNames) {
   }
   return `${prefix}${maxN + 1}`;
 }
-function needsAttention(b, isTarget) {
+function needsAttention(b, isTarget = false) {
   if (b.empty) return false;
-  if (isTarget && b.color === "green") return false;
-  if (b.state === "done" && b.unread === false) return false;
+  if ("isPageButton" in b && b.isPageButton) {
+    if (!b.otherColor || b.otherColor === "white" || b.otherColor === "orange" || b.otherColor === "blue") return false;
+    if (b.otherColor === "green") return Boolean(b.otherUnread);
+    return b.otherColor === "violet" || b.otherColor === "amber" || b.otherColor === "red";
+  }
+  if (isTarget) return false;
+  if (b.state === "done") return Boolean(b.unread);
   if (b.state === "unverifiable") return false;
-  return b.color === "amber" || b.color === "green" || b.color === "red";
+  if (b.state === "interrupted") return true;
+  if (b.color === "green") return Boolean(b.unread);
+  return b.color === "violet" || b.color === "amber" || b.color === "red";
+}
+function representativeOtherState(otherItems) {
+  if (!otherItems.length) return {};
+  if (otherItems.some((e) => e.item.state === "error" || e.item.state === "failed" || e.item.state === "interrupted")) {
+    const s = otherItems.find((e) => e.item.state === "interrupted")?.item.state ?? "error";
+    return { otherState: s, otherColor: "red" };
+  }
+  if (otherItems.some((e) => e.item.state === "waiting" || e.item.state === "permission" || e.item.state === "blocked")) {
+    return { otherState: "waiting", otherColor: "violet" };
+  }
+  if (otherItems.some((e) => e.item.state === "done" && Boolean(e.unread))) {
+    return { otherState: "done", otherColor: "green", otherUnread: true };
+  }
+  if (otherItems.some((e) => e.item.state === "working" || e.item.state === "monitoring")) {
+    return { otherState: "working", otherColor: "orange" };
+  }
+  if (otherItems.some((e) => e.item.state === "done")) {
+    return { otherState: "done", otherColor: "green", otherUnread: false };
+  }
+  return { otherState: "idle", otherColor: "white" };
 }
 var EMPTY = { empty: true };
 function buildDeck(input, opts = {}) {
-  const page = opts.page ?? 0;
-  const perPage = opts.perPage ?? 8;
+  const perPage = Math.max(1, opts.perPage ?? 8);
   const now = opts.now ?? Date.now();
   const getHook = (pane) => {
     if (!input.hookEventsByPane) return void 0;
@@ -56467,17 +56534,28 @@ function buildDeck(input, opts = {}) {
     return raw;
   };
   const stateByPane = /* @__PURE__ */ new Map();
+  const statusByPane = /* @__PURE__ */ new Map();
+  const workingModeByPane = /* @__PURE__ */ new Map();
+  const interruptedByPane = /* @__PURE__ */ new Map();
   const agentByPane = /* @__PURE__ */ new Map();
   const timeByPane = /* @__PURE__ */ new Map();
   const metaByWt = /* @__PURE__ */ new Map();
   for (const wt of input.worktrees ?? []) {
     for (const a of wt.agents ?? []) {
       let st = a.state;
+      if (a.interrupted === true || a.status === "interrupted" || st === "interrupted") {
+        st = "interrupted";
+      } else if (st === "working" && a.workingMode === "monitoring") {
+        st = "monitoring";
+      }
       const observedAt = a.evidenceObservedAt ?? a.updatedAt ?? a.stateStartedAt;
-      if (st && st !== "done" && st !== "idle" && (st === "working" || st === "waiting" || st === "blocked") && observedAt && now - observedAt > AGENT_STATUS_STALE_AFTER_MS) {
+      if (st && st !== "done" && st !== "idle" && st !== "interrupted" && (st === "working" || st === "waiting" || st === "blocked" || st === "monitoring") && observedAt && now - observedAt > AGENT_STATUS_STALE_AFTER_MS) {
         st = "unverifiable";
       }
       stateByPane.set(a.paneKey, st);
+      if (a.status) statusByPane.set(a.paneKey, a.status);
+      if (a.workingMode) workingModeByPane.set(a.paneKey, a.workingMode);
+      if (a.interrupted !== void 0) interruptedByPane.set(a.paneKey, a.interrupted);
       if (!agentByPane.has(a.paneKey)) agentByPane.set(a.paneKey, a.agentType ?? "");
       timeByPane.set(a.paneKey, sessionRecency(timeByPane.get(a.paneKey), observedAt));
     }
@@ -56507,10 +56585,16 @@ function buildDeck(input, opts = {}) {
     const hookEvent = hook?.hookEventName;
     const tabTitle = getTabTitle(t.tabId) || t.title || void 0;
     let state;
+    let status = statusByPane.get(pane) || hook?.status;
+    let workingMode = workingModeByPane.get(pane) || hook?.workingMode;
+    let interrupted = interruptedByPane.get(pane) ?? hook?.interrupted;
     if (hasWt) {
       state = stateByPane.get(pane) || "idle";
-      if (state !== "unverifiable" && state !== "done") {
-        if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
+      if (state !== "unverifiable" && state !== "done" && state !== "interrupted") {
+        if (hook?.interrupted) {
+          state = "interrupted";
+          interrupted = true;
+        } else if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
           const hookSaysWaiting = hook.state === "waiting" || hook.state === "blocked";
           const pauseOnTool = agent === "agy" || agent === "antigravity";
           if (hookSaysWaiting || !hook.state && (hookEvent === "Notification" || pauseOnTool)) {
@@ -56521,9 +56605,12 @@ function buildDeck(input, opts = {}) {
         }
       }
     } else {
-      if (hook?.state) {
+      if (hook?.interrupted) {
+        state = "interrupted";
+        interrupted = true;
+      } else if (hook?.state) {
         let st = hook.state;
-        if (st !== "done" && st !== "idle" && (st === "working" || st === "waiting" || st === "blocked") && hook.receivedAt && now - hook.receivedAt > AGENT_STATUS_STALE_AFTER_MS) {
+        if (st !== "done" && st !== "idle" && st !== "interrupted" && (st === "working" || st === "waiting" || st === "blocked") && hook.receivedAt && now - hook.receivedAt > AGENT_STATUS_STALE_AFTER_MS) {
           st = "unverifiable";
         }
         state = st;
@@ -56537,20 +56624,26 @@ function buildDeck(input, opts = {}) {
         state = "idle";
       }
     }
+    const meta = t.worktreeId ? metaByWt.get(t.worktreeId) : void 0;
+    const unread = meta?.unread;
     return {
       t,
       pane,
       hasWt,
       agent,
       state,
+      status,
+      workingMode,
+      interrupted,
       agentType: agent,
       tabTitle,
+      unread,
       recency: sessionRecency(t.lastOutputAt, timeByPane.get(pane), hook?.receivedAt)
     };
   }).filter((x) => x !== null);
-  const sessions = sortSessionsByProject(
+  const sessions = sortSessions(
     sessionsRaw,
-    (s) => projectOf(s.t.worktreePath, s.t.worktreeId ? metaByWt.get(s.t.worktreeId)?.repo : void 0),
+    (s) => s.state,
     (s) => s.recency,
     (s) => s.t.handle,
     { bucketMs: opts.activityBucketMs }
@@ -56574,12 +56667,41 @@ function buildDeck(input, opts = {}) {
     return { item, project, branch, dupIndex, unread: meta?.unread };
   });
   const total = enriched.length;
-  const pageCount = Math.max(1, Math.ceil(total / perPage));
-  const start = page * perPage;
-  const pageItems = enriched.slice(start, start + perPage);
+  const pagingIndex = opts.pagingSlotIndex;
+  const hasPagingKey = pagingIndex !== void 0 && pagingIndex >= 0 && pagingIndex < perPage;
+  const needsPaging = hasPagingKey && total > perPage;
+  const sessionCapacityPerPage = Math.max(1, needsPaging ? perPage - 1 : perPage);
+  const pageCount = Math.max(1, Math.ceil(total / sessionCapacityPerPage));
+  const page = Math.min(Math.max(0, opts.page ?? 0), pageCount - 1);
+  const start = page * sessionCapacityPerPage;
+  const pageItems = enriched.slice(start, start + sessionCapacityPerPage);
+  let hasAlertOnOtherPage = false;
+  let otherInfo = {};
+  if (needsPaging) {
+    const otherItems = [...enriched.slice(0, start), ...enriched.slice(start + sessionCapacityPerPage)];
+    otherInfo = representativeOtherState(otherItems);
+    hasAlertOnOtherPage = Boolean(
+      otherInfo.otherColor === "red" || otherInfo.otherColor === "violet" || otherInfo.otherColor === "amber" || otherInfo.otherColor === "green" && otherInfo.otherUnread
+    );
+  }
   const slots = [];
+  let itemIdx = 0;
   for (let i = 0; i < perPage; i++) {
-    const e = pageItems[i];
+    if (needsPaging && i === pagingIndex) {
+      slots.push({
+        empty: false,
+        isPageButton: true,
+        page,
+        pageCount,
+        hasAlertOnOtherPage,
+        otherState: otherInfo.otherState,
+        otherStatus: otherInfo.otherStatus,
+        otherColor: otherInfo.otherColor,
+        otherUnread: otherInfo.otherUnread
+      });
+      continue;
+    }
+    const e = pageItems[itemIdx++];
     if (!e) {
       slots.push(EMPTY);
       continue;
@@ -56590,10 +56712,14 @@ function buildDeck(input, opts = {}) {
     const shownTitle = agentFor(e.item.agentType).cleanTitle(e.item.tabTitle || e.item.t.title || "");
     slots.push({
       empty: false,
+      isPageButton: false,
       handle: e.item.t.handle,
       label: shownTitle,
       tabTitle: shownTitle || void 0,
       state: e.item.state,
+      status: e.item.status,
+      workingMode: e.item.workingMode,
+      interrupted: e.item.interrupted,
       color: colorFor(e.item.state),
       worktreePath: e.item.t.worktreePath,
       worktreeId: e.item.t.worktreeId,
@@ -56707,6 +56833,8 @@ function resolveActiveTerminal(worktrees, terminals, visualLayouts, currentTarge
 
 // src/render.ts
 var HEX = {
+  orange: "#fb923c",
+  violet: "#a855f7",
   blue: "#3b82f6",
   amber: "#f59e0b",
   green: "#22c55e",
@@ -56825,18 +56953,26 @@ function wrapWords(s, maxCharsPerLine = 15, maxLines = 2) {
   }
   return lines;
 }
-function stateIcon(state, cx = 12, cy = 8, r = 5.5, color = "#ffffff") {
+function stateIcon(state, cx = 130, cy = 9, r = 5.5, color = "#ffffff") {
   const s = (state || "").toLowerCase();
   const ring = (extra = "", inner = "") => `<g><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="2"${extra ? " " + extra : ""}/>${inner}</g>`;
   if (s === "done") {
     const k = r / 7;
     return `<g transform="translate(${(cx - 8 * k).toFixed(2)}, ${(cy - 8 * k).toFixed(2)}) scale(${k.toFixed(3)})"><circle cx="8" cy="8" r="7" fill="none" stroke="${color}" stroke-width="2.3"/><path d="M4.8 8.2 L7.2 10.4 L11.2 5.8" fill="none" stroke="${color}" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></g>`;
   }
+  if (s === "interrupted") {
+    return `<circle cx="${cx}" cy="${cy}" r="${(r * 0.85).toFixed(2)}" fill="${color}"/>`;
+  }
+  if (s === "monitoring") {
+    const s24 = r * 2 / 24;
+    return `<g transform="translate(${(cx - r).toFixed(2)}, ${(cy - r).toFixed(2)}) scale(${s24.toFixed(3)})"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" fill="none" stroke="${color}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></g>`;
+  }
+  if (s === "waiting" || s === "permission") {
+    const s24 = r * 2 / 24;
+    return `<g transform="translate(${(cx - r).toFixed(2)}, ${(cy - r).toFixed(2)}) scale(${s24.toFixed(3)})"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9 M10.3 21a1.94 1.94 0 0 0 3.4 0" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></g>`;
+  }
   if (s === "unverifiable") return ring(`stroke-dasharray="3.4 2.6" stroke-linecap="round"`);
   if (s === "working") return ring(`stroke-dasharray="7 4" stroke-linecap="round"`);
-  if (s === "waiting") {
-    return ring("", `<text x="${cx}" y="${cy + 3.3}" text-anchor="middle" fill="${color}" font-family="sans-serif" font-size="9" font-weight="800">?</text>`);
-  }
   if (s === "error" || s === "blocked" || s === "failed") {
     return ring("", `<text x="${cx}" y="${cy + 3.3}" text-anchor="middle" fill="${color}" font-family="sans-serif" font-size="9" font-weight="800">!</text>`);
   }
@@ -56861,9 +56997,72 @@ function renderBgIcon(b) {
   }
   return "";
 }
+function pageButtonSvg(bOrPage, pageCountOrTick = 1, hasAlertOrNowMs = false, tickOrDim = 0) {
+  let b;
+  let tick2 = 0;
+  let nowMs = 0;
+  let dim = false;
+  if (typeof bOrPage === "number") {
+    b = {
+      page: bOrPage,
+      pageCount: pageCountOrTick,
+      hasAlertOnOtherPage: typeof hasAlertOrNowMs === "boolean" ? hasAlertOrNowMs : false,
+      otherColor: typeof hasAlertOrNowMs === "boolean" && hasAlertOrNowMs ? "amber" : void 0,
+      otherState: typeof hasAlertOrNowMs === "boolean" && hasAlertOrNowMs ? "waiting" : void 0
+    };
+    tick2 = typeof tickOrDim === "number" ? tickOrDim : 0;
+  } else {
+    b = bOrPage;
+    tick2 = pageCountOrTick;
+    nowMs = typeof hasAlertOrNowMs === "number" ? hasAlertOrNowMs : 0;
+    dim = typeof tickOrDim === "boolean" ? tickOrDim : false;
+  }
+  const isLastPage = b.page >= b.pageCount - 1;
+  const curr = b.page + 1;
+  const actionText = isLastPage ? "PREV \u276E" : "NEXT \u276F";
+  const barColor = b.otherColor ? HEX[b.otherColor] ?? HEX.white : "#3f3f46";
+  const stIcon = b.otherStatus || b.otherState ? stateIcon(b.otherStatus || b.otherState, 130, 9) : "";
+  const attn = needsAttention(b, false);
+  let glow = "";
+  if (attn && b.otherColor) {
+    const urgent = b.otherColor === "violet" || b.otherColor === "amber" || b.otherColor === "red";
+    const period = urgent ? 640 : 1300;
+    const p = 0.5 - 0.5 * Math.cos(2 * Math.PI * (nowMs % period) / period);
+    const op = (urgent ? 0.4 : 0.28) * p;
+    glow = `<rect width="144" height="144" rx="18" fill="${barColor}" opacity="${op.toFixed(2)}"/>`;
+  }
+  const g0 = dim ? '<g opacity="0.32">' : "";
+  const g1 = dim ? "</g>" : "";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">
+  <defs>
+    <clipPath id="r"><rect width="144" height="144" rx="18"/></clipPath>
+    <linearGradient id="pbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#242427"/>
+      <stop offset="100%" stop-color="#18181b"/>
+    </linearGradient>
+  </defs>
+  ${g0}<rect width="144" height="144" rx="18" fill="url(#pbg)" stroke="#3f3f46" stroke-width="1.5"/>
+  ${glow}
+  <rect width="144" height="18" fill="${barColor}" clip-path="url(#r)"/>
+  ${stIcon}
+
+  <!-- Header: PAGE -->
+  <text x="72" y="44" text-anchor="middle" fill="#a1a1aa" font-family="sans-serif" font-size="12" font-weight="700" letter-spacing="1.2">PAGE</text>
+
+  <!-- Center: Current / Total (e.g. 1 / 2) -->
+  <text x="72" y="78" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="28" font-weight="800">${curr} <tspan fill="#71717a" font-size="20" font-weight="600">/ ${b.pageCount}</tspan></text>
+
+  <!-- Bottom: Action pill (NEXT \u276F / \u276E PREV) -->
+  <rect x="22" y="100" width="100" height="28" rx="14" fill="#3f3f46" fill-opacity="0.6" stroke="#52525b" stroke-width="1"/>
+  <text x="72" y="119" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="13" font-weight="700" letter-spacing="0.5">${actionText}</text>${g1}
+</svg>`;
+}
 function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   if (b.empty) {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144"><rect width="144" height="144" rx="18" fill="#141416"/><circle cx="72" cy="72" r="7" fill="#3a3a3e"/></svg>`;
+  }
+  if ("isPageButton" in b && b.isPageButton) {
+    return pageButtonSvg(b, tick2, nowMs, dim);
   }
   const color = HEX[b.color] ?? HEX.white;
   const proj = b.repo || (b.worktreePath ? b.worktreePath.split("/").filter(Boolean).pop() : "") || "?";
@@ -56883,13 +57082,12 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
     const startY = sub ? 96 : 86;
     titleSvg = titleLines.map((line, idx) => `<text x="72" y="${startY + idx * 18}" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="16" font-weight="500">${esc2(line)}</text>`).join("");
   }
-  const stIcon = stateIcon(b.state, 14);
-  const divider = stIcon ? `<rect x="23" y="2.5" width="2" height="11" rx="1" fill="#ffffff" opacity="0.35"/>` : "";
+  const stIcon = stateIcon(b.status || b.state, 130, 9);
   const badge = agentBadge(b.agentType, { boxX: 5, boxY: 112, boxSize: 27 });
   const attn = needsAttention(b, isTarget);
   let glow = "";
   if (attn) {
-    const urgent = b.color === "amber" || b.color === "red";
+    const urgent = b.color === "violet" || b.color === "amber" || b.color === "red";
     const period = urgent ? 640 : 1300;
     const p = 0.5 - 0.5 * Math.cos(2 * Math.PI * (nowMs % period) / period);
     const op = (urgent ? 0.4 : 0.28) * p;
@@ -56904,7 +57102,7 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   ${renderBgIcon(b)}
   ${glow}
   <rect width="144" height="18" fill="${color}" clip-path="url(#r)"/>
-  ${projSvg}${subSvg}${titleSvg}${stIcon}${divider}${badge}${g1}${cornerTag}
+  ${projSvg}${subSvg}${titleSvg}${stIcon}${badge}${g1}${cornerTag}
 </svg>`;
 }
 function keyImage(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
@@ -57010,7 +57208,7 @@ function dialImage(role, label, value, tick2 = 0, disabled = false, badge, sub, 
   let glow = "";
   if (attention?.attention && !disabled) {
     const gcol = stateColor || HEX.white;
-    const urgent = gcol === HEX.amber || gcol === HEX.red;
+    const urgent = gcol === HEX.violet || gcol === HEX.amber || gcol === HEX.red;
     const period = urgent ? 640 : 1300;
     const now = attention.nowMs ?? 0;
     const p = 0.5 - 0.5 * Math.cos(2 * Math.PI * (now % period) / period);
@@ -57273,6 +57471,7 @@ var modesByHandle = /* @__PURE__ */ new Map();
 var effortsByHandle = /* @__PURE__ */ new Map();
 var allHandles = [];
 var sessionByHandle = /* @__PURE__ */ new Map();
+var terminalAgentCache = /* @__PURE__ */ new Map();
 var recording = false;
 var talkState = "hold";
 var recPoll = null;
@@ -57599,7 +57798,30 @@ var slotViews = /* @__PURE__ */ new Map();
 var dialViews = /* @__PURE__ */ new Map();
 var lastImg = /* @__PURE__ */ new Map();
 var lastDialImg = /* @__PURE__ */ new Map();
-var slotIndex = (c) => c ? c.row * 4 + c.column : 0;
+function getSortedSlotEntries() {
+  return Array.from(slotViews.entries()).sort(([, a], [, b]) => {
+    const cA = a.coordinates;
+    const cB = b.coordinates;
+    if (!cA && !cB) return 0;
+    if (!cA) return 1;
+    if (!cB) return -1;
+    if (cA.row !== cB.row) return cA.row - cB.row;
+    return cA.column - cB.column;
+  });
+}
+function getSortedSlotIds() {
+  return getSortedSlotEntries().map(([id]) => id);
+}
+function getActiveSlotCount() {
+  return slotViews.size || 8;
+}
+function getPagingSlotIndex() {
+  const entries = getSortedSlotEntries();
+  if (entries.length === 0) return void 0;
+  const explicitIdx = entries.findIndex(([, v]) => v.settings?.isPagingKey);
+  if (explicitIdx >= 0) return explicitIdx;
+  return entries.length - 1;
+}
 function ensureTarget() {
   if (!targetHandle || !allHandles.includes(targetHandle)) {
     if (targetHandle !== allHandles[0]) {
@@ -57632,6 +57854,7 @@ function dialFeedback(role) {
   if (role === "target") {
     const st = tb ? {
       state: tb.state,
+      status: tb.status,
       color: tb.color,
       attention: needsAttention(tb, true),
       nowMs: Date.now()
@@ -57647,8 +57870,10 @@ function renderAll() {
 function renderKeys() {
   const now = Date.now();
   const boardAttn = anyAttention();
-  for (const [id, { action: a, coordinates }] of slotViews) {
-    const b = deck.slots[slotIndex(coordinates)] ?? { empty: true };
+  const entries = getSortedSlotEntries();
+  for (let i = 0; i < entries.length; i++) {
+    const [id, { action: a }] = entries[i];
+    const b = deck.slots[i] ?? { empty: true };
     const isTarget = !b.empty && b.handle === targetHandle;
     const dim = boardAttn && !b.empty && !needsAttention(b, isTarget);
     const img = keyImage(b, tick, isTarget, now, dim);
@@ -57668,8 +57893,9 @@ function renderDials() {
   }
 }
 function anyAttention() {
-  for (const { coordinates } of slotViews.values()) {
-    const b = deck.slots[slotIndex(coordinates)];
+  const entries = getSortedSlotEntries();
+  for (let i = 0; i < entries.length; i++) {
+    const b = deck.slots[i];
     if (b && !b.empty && needsAttention(b, b.handle === targetHandle)) return true;
   }
   return false;
@@ -57692,6 +57918,9 @@ function getHookEvents() {
               hookEventName: entry.hookEventName,
               agentType: entry.source || entry.payload?.agentType,
               state: entry.payload?.state,
+              status: entry.payload?.status,
+              workingMode: entry.payload?.workingMode,
+              interrupted: entry.payload?.interrupted ?? entry.interrupted,
               receivedAt: entry.receivedAt
             });
           }
@@ -57766,19 +57995,22 @@ async function poll() {
     const hookEvents = getHookEvents();
     const visualLayouts = tl.result?.visualLayouts;
     const now = Date.now();
+    const activeSlots = getActiveSlotCount();
+    const pagingSlotIndex = getPagingSlotIndex();
+    const terminals = stabilizeTerminalAgents(tl.result?.terminals ?? [], terminalAgentCache, now);
     deck = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-      { page: currentPage, perPage: 8, now, activityBucketMs: ORDER_BUCKET_MS }
+      { terminals, worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
+      { page: currentPage, perPage: activeSlots, now, activityBucketMs: ORDER_BUCKET_MS, pagingSlotIndex }
     );
     if (currentPage >= deck.pageCount) {
       currentPage = Math.max(0, deck.pageCount - 1);
       deck = buildDeck(
-        { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-        { page: currentPage, perPage: 8, now, activityBucketMs: ORDER_BUCKET_MS }
+        { terminals, worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
+        { page: currentPage, perPage: activeSlots, now, activityBucketMs: ORDER_BUCKET_MS, pagingSlotIndex }
       );
     }
     const full = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
+      { terminals, worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
       { page: 0, perPage: 9999, now, activityBucketMs: ORDER_BUCKET_MS }
     );
     allHandles = [];
@@ -57816,7 +58048,7 @@ async function poll() {
     }
     const activeHandle = resolveActiveTerminal(
       wp.result?.worktrees ?? [],
-      tl.result?.terminals ?? [],
+      terminals,
       tl.result?.visualLayouts,
       targetHandle
     );
@@ -57916,16 +58148,34 @@ function pollDebounced(delay = 50) {
 }
 var SlotAction = class extends SingletonAction {
   onWillAppear(ev) {
-    slotViews.set(ev.action.id, { action: ev.action, coordinates: ev.payload?.coordinates });
+    slotViews.set(ev.action.id, {
+      action: ev.action,
+      coordinates: ev.payload?.coordinates,
+      settings: ev.payload?.settings
+    });
     renderAll();
     pollDebounced(100);
+  }
+  onDidReceiveSettings(ev) {
+    const v = slotViews.get(ev.action.id);
+    if (v) {
+      v.settings = ev.payload?.settings;
+    }
+    pollDebounced(10);
   }
   onWillDisappear(ev) {
     slotViews.delete(ev.action.id);
     lastImg.delete(ev.action.id);
   }
   async onKeyDown(ev) {
-    const b = deck.slots[slotIndex(ev.payload?.coordinates)];
+    const sortedIds = getSortedSlotIds();
+    const idx = sortedIds.indexOf(ev.action.id);
+    const b = idx >= 0 ? deck.slots[idx] : void 0;
+    if (b && "isPageButton" in b && b.isPageButton) {
+      currentPage = (currentPage + 1) % deck.pageCount;
+      pollDebounced(10);
+      return;
+    }
     if (b && !b.empty) {
       const frontApp = await getFrontmostApp();
       const isOrcaFront = isOrca(frontApp);
@@ -58189,9 +58439,10 @@ setInterval(() => {
 }, 160);
 poll();
 function anyMarquee() {
-  for (const { coordinates } of slotViews.values()) {
-    const b = deck.slots[slotIndex(coordinates)];
-    if (b && !b.empty) {
+  const entries = getSortedSlotEntries();
+  for (let i = 0; i < entries.length; i++) {
+    const b = deck.slots[i];
+    if (b && !b.empty && !("isPageButton" in b && b.isPageButton)) {
       const proj = b.repo || (b.worktreePath ? String(b.worktreePath).split("/").filter(Boolean).pop() : "") || "";
       if (proj.length > 9) return true;
     }

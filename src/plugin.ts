@@ -7,7 +7,17 @@ import { writeFileSync, readFileSync, existsSync, unlinkSync, watch } from "node
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
-import { buildDeck, needsAttention, resolveActiveTerminal, nextWorktreeName, DEFAULT_ACTIVITY_BUCKET_MS, type Deck, type OrcaRepo } from "./deck";
+import {
+  buildDeck,
+  needsAttention,
+  resolveActiveTerminal,
+  nextWorktreeName,
+  stabilizeTerminalAgents,
+  DEFAULT_ACTIVITY_BUCKET_MS,
+  type Deck,
+  type OrcaRepo,
+  type CachedTerminalAgent,
+} from "./deck";
 import { keyImage, dialImage } from "./render";
 import { prefetchRepoIcons } from "./icons";
 import {
@@ -257,6 +267,7 @@ const modesByHandle = new Map<string, string[]>(); // session -> discovered mode
 const effortsByHandle = new Map<string, string[]>(); // session -> discovered effort list
 let allHandles: string[] = []; // All session handles (sidebar total, independent of 8-slot page)
 const sessionByHandle = new Map<string, any>(); // handle -> button metadata
+const terminalAgentCache = new Map<string, CachedTerminalAgent>(); // handle -> stabilized agentIdentity across polls
 
 // Push-to-talk state — uses Apple Speech STT helper (.app)
 let recording = false;
@@ -599,13 +610,43 @@ async function refreshEfforts(): Promise<void> {
   }
 }
 
+type SlotSettings = {
+  isPagingKey?: boolean;
+};
+
 type Coords = { column: number; row: number };
-const slotViews = new Map<string, { action: any; coordinates?: Coords }>();
+const slotViews = new Map<string, { action: any; coordinates?: Coords; settings?: SlotSettings }>();
 const dialViews = new Map<string, { action: any; role: string }>();
 const lastImg = new Map<string, string>();
 const lastDialImg = new Map<string, string>();
 
-const slotIndex = (c?: Coords) => (c ? c.row * 4 + c.column : 0);
+function getSortedSlotEntries(): Array<[string, { action: any; coordinates?: Coords; settings?: SlotSettings }]> {
+  return Array.from(slotViews.entries()).sort(([, a], [, b]) => {
+    const cA = a.coordinates;
+    const cB = b.coordinates;
+    if (!cA && !cB) return 0;
+    if (!cA) return 1;
+    if (!cB) return -1;
+    if (cA.row !== cB.row) return cA.row - cB.row;
+    return cA.column - cB.column;
+  });
+}
+
+function getSortedSlotIds(): string[] {
+  return getSortedSlotEntries().map(([id]) => id);
+}
+
+function getActiveSlotCount(): number {
+  return slotViews.size || 8;
+}
+
+function getPagingSlotIndex(): number | undefined {
+  const entries = getSortedSlotEntries();
+  if (entries.length === 0) return undefined;
+  const explicitIdx = entries.findIndex(([, v]) => v.settings?.isPagingKey);
+  if (explicitIdx >= 0) return explicitIdx;
+  return entries.length - 1;
+}
 
 function ensureTarget(): string | undefined {
   if (!targetHandle || !allHandles.includes(targetHandle)) {
@@ -643,6 +684,7 @@ function dialFeedback(role: string): { full: string } {
     const st = tb
       ? {
           state: (tb as any).state,
+          status: (tb as any).status,
           color: (tb as any).color as string | undefined,
           attention: needsAttention(tb, true),
           nowMs: Date.now(),
@@ -662,8 +704,10 @@ function renderAll(): void {
 function renderKeys(): void {
   const now = Date.now();
   const boardAttn = anyAttention(); // If any key requires attention, dim non-attention keys to emphasize contrast
-  for (const [id, { action: a, coordinates }] of slotViews) {
-    const b = deck.slots[slotIndex(coordinates)] ?? { empty: true as const };
+  const entries = getSortedSlotEntries();
+  for (let i = 0; i < entries.length; i++) {
+    const [id, { action: a }] = entries[i];
+    const b = deck.slots[i] ?? { empty: true as const };
     const isTarget = !b.empty && (b as any).handle === targetHandle;
     const dim = boardAttn && !b.empty && !needsAttention(b, isTarget);
     const img = keyImage(b, tick, isTarget, now, dim);
@@ -686,8 +730,9 @@ function renderDials(): void {
 
 // Check if any visible key requires attention (pulse animation).
 function anyAttention(): boolean {
-  for (const { coordinates } of slotViews.values()) {
-    const b = deck.slots[slotIndex(coordinates)];
+  const entries = getSortedSlotEntries();
+  for (let i = 0; i < entries.length; i++) {
+    const b = deck.slots[i];
     if (b && !b.empty && needsAttention(b, (b as any).handle === targetHandle)) return true;
   }
   return false;
@@ -701,8 +746,8 @@ function targetAttention(): boolean {
 }
 
 // Read latest hook states from Orca agent-hooks (last-status.json)
-function getHookEvents(): Map<string, { hookEventName?: string; agentType?: string; state?: string; receivedAt?: number }> {
-  const map = new Map<string, { hookEventName?: string; agentType?: string; state?: string; receivedAt?: number }>();
+function getHookEvents(): Map<string, { hookEventName?: string; agentType?: string; state?: string; status?: string; workingMode?: string; interrupted?: boolean; receivedAt?: number }> {
+  const map = new Map<string, { hookEventName?: string; agentType?: string; state?: string; status?: string; workingMode?: string; interrupted?: boolean; receivedAt?: number }>();
   try {
     const filePath = join(homedir(), "Library/Application Support/orca/agent-hooks/last-status.json");
     if (existsSync(filePath)) {
@@ -715,6 +760,9 @@ function getHookEvents(): Map<string, { hookEventName?: string; agentType?: stri
               hookEventName: entry.hookEventName,
               agentType: entry.source || entry.payload?.agentType,
               state: entry.payload?.state,
+              status: entry.payload?.status,
+              workingMode: entry.payload?.workingMode,
+              interrupted: entry.payload?.interrupted ?? entry.interrupted,
               receivedAt: entry.receivedAt,
             });
           }
@@ -792,20 +840,23 @@ async function poll(): Promise<void> {
     const visualLayouts = tl.result?.visualLayouts;
     // One shared timestamp so the 8-key page and the full session list always agree on ordering buckets.
     const now = Date.now();
+    const activeSlots = getActiveSlotCount();
+    const pagingSlotIndex = getPagingSlotIndex();
+    const terminals = stabilizeTerminalAgents(tl.result?.terminals ?? [], terminalAgentCache, now);
     deck = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-      { page: currentPage, perPage: 8, now, activityBucketMs: ORDER_BUCKET_MS },
+      { terminals, worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
+      { page: currentPage, perPage: activeSlots, now, activityBucketMs: ORDER_BUCKET_MS, pagingSlotIndex },
     );
     if (currentPage >= deck.pageCount) {
       currentPage = Math.max(0, deck.pageCount - 1);
       deck = buildDeck(
-        { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-        { page: currentPage, perPage: 8, now, activityBucketMs: ORDER_BUCKET_MS },
+        { terminals, worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
+        { page: currentPage, perPage: activeSlots, now, activityBucketMs: ORDER_BUCKET_MS, pagingSlotIndex },
       );
     }
     // Full session list (sidebar total) — target dial can cycle past 8 keys
     const full = buildDeck(
-      { terminals: tl.result?.terminals ?? [], worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
+      { terminals, worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
       { page: 0, perPage: 9999, now, activityBucketMs: ORDER_BUCKET_MS },
     );
     allHandles = [];
@@ -845,7 +896,7 @@ async function poll(): Promise<void> {
     // Automatically set currently focused session as target
     const activeHandle = resolveActiveTerminal(
       wp.result?.worktrees ?? [],
-      tl.result?.terminals ?? [],
+      terminals,
       tl.result?.visualLayouts,
       targetHandle,
     );
@@ -950,18 +1001,36 @@ function pollDebounced(delay = 50): void {
 }
 
 @action({ UUID: "com.byjw.deep.slot" })
-class SlotAction extends SingletonAction {
+class SlotAction extends SingletonAction<SlotSettings> {
   override onWillAppear(ev: any): void {
-    slotViews.set(ev.action.id, { action: ev.action, coordinates: ev.payload?.coordinates });
+    slotViews.set(ev.action.id, {
+      action: ev.action,
+      coordinates: ev.payload?.coordinates,
+      settings: ev.payload?.settings,
+    });
     renderAll();
     pollDebounced(100);
+  }
+  override onDidReceiveSettings(ev: any): void {
+    const v = slotViews.get(ev.action.id);
+    if (v) {
+      v.settings = ev.payload?.settings;
+    }
+    pollDebounced(10);
   }
   override onWillDisappear(ev: any): void {
     slotViews.delete(ev.action.id);
     lastImg.delete(ev.action.id);
   }
   override async onKeyDown(ev: any): Promise<void> {
-    const b: any = deck.slots[slotIndex(ev.payload?.coordinates)];
+    const sortedIds = getSortedSlotIds();
+    const idx = sortedIds.indexOf(ev.action.id);
+    const b: any = idx >= 0 ? deck.slots[idx] : undefined;
+    if (b && "isPageButton" in b && b.isPageButton) {
+      currentPage = (currentPage + 1) % deck.pageCount;
+      pollDebounced(10);
+      return;
+    }
     if (b && !b.empty) {
       const frontApp = await getFrontmostApp();
       const isOrcaFront = isOrca(frontApp);
@@ -1219,9 +1288,10 @@ poll();
 
 // Check if any visible session key has long titles requiring marquee animation
 function anyMarquee(): boolean {
-  for (const { coordinates } of slotViews.values()) {
-    const b = deck.slots[slotIndex(coordinates)];
-    if (b && !b.empty) {
+  const entries = getSortedSlotEntries();
+  for (let i = 0; i < entries.length; i++) {
+    const b = deck.slots[i];
+    if (b && !b.empty && !("isPageButton" in b && b.isPageButton)) {
       const proj = (b as any).repo || ((b as any).worktreePath ? String((b as any).worktreePath).split("/").filter(Boolean).pop() : "") || "";
       if (proj.length > 9) return true;
     }

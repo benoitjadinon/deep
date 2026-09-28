@@ -8,7 +8,7 @@ function orca(args) {
   return JSON.parse(out);
 }
 
-const DOT = { blue: "🔵", amber: "🟡", green: "🟢", red: "🔴", white: "⚪" };
+const DOT = { orange: "🟠", violet: "🟣", blue: "🔵", amber: "🟡", green: "🟢", red: "🔴", white: "⚪" };
 const clip = (s, n) => {
   const t = (s ?? "").replace(/^[\s⠀-⣿✽✳✻⏺※*•…]+/u, "").trim();
   return t.length > n ? t.slice(0, n - 1) + "…" : t.padEnd(n);
@@ -22,7 +22,7 @@ const deck = buildDeck({ terminals, worktrees, repos }, { page, perPage: 8 });
 
 const cell = (b) => {
   if (b.empty) return `⚪ ${"·".padEnd(14)}`;
-  const dot = b.state === "unverifiable" ? "🟠" : (DOT[b.color] ?? "⚪");
+  const dot = b.state === "unverifiable" ? "🟣" : (DOT[b.color] ?? "⚪");
   return `${dot} ${clip(b.label, 14)}`;
 };
 console.log(`\n  AgentDeck — page ${deck.page + 1}/${deck.pageCount} · Sessions: ${deck.total}\n`);
@@ -30,7 +30,7 @@ for (let r = 0; r < 2; r++) {
   const row = deck.slots.slice(r * 4, r * 4 + 4).map(cell);
   console.log("  " + row.map((c) => `[ ${c} ]`).join(" "));
 }
-console.log("\n  🔵working 🟡waiting 🟠no recent update 🟢done 🔴error ⚪idle/empty\n");
+console.log("\n  🟠working 🟣waiting 🟢done 🔴error ⚪idle/empty\n");
 // Reference for tap mapping: which handle each button switches/sends to
 deck.slots.forEach((b, i) => {
   if (!b.empty) console.log(`  S${i + 1} → orca terminal switch --terminal ${b.handle}`);

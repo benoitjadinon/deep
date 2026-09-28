@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Session Slot Settings</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 12px;
+      color: #d8d8d8;
+      background-color: #2d2d2d;
+      margin: 0;
+      padding: 14px;
+      user-select: none;
+    }
+    .sdpi-wrapper {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .sdpi-heading {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #9e9e9e;
+      border-bottom: 1px solid #3d3d3d;
+      padding-bottom: 6px;
+      margin-bottom: 4px;
+    }
+    .sdpi-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      color: #f4f4f5;
+    }
+    .checkbox-label input[type="checkbox"] {
+      cursor: pointer;
+      width: 16px;
+      height: 16px;
+      accent-color: #3b82f6;
+    }
+    .sdpi-desc {
+      font-size: 11px;
+      line-height: 1.4;
+      color: #a1a1aa;
+      margin-left: 24px;
+    }
+  </style>
+</head>
+<body>
+  <div class="sdpi-wrapper">
+    <div class="sdpi-heading">Navigation & Layout</div>
+    <div class="sdpi-item">
+      <label class="checkbox-label">
+        <input type="checkbox" id="isPagingKey" />
+        <span>Page switcher key</span>
+      </label>
+    </div>
+    <div class="sdpi-desc">
+      When enabled, this slot becomes a <strong>Next / Prev Page</strong> button whenever there are more sessions than fit on the screen.
+    </div>
+  </div>
+
+  <script>
+    let websocket = null;
+    let uuid = null;
+    let actionInfo = {};
+
+    function connectElgatoStreamDeckSocket(inPort, inPropertyInspectorUUID, inRegisterEvent, inInfo, inActionInfo) {
+      uuid = inPropertyInspectorUUID;
+      try {
+        actionInfo = JSON.parse(inActionInfo || "{}");
+      } catch (e) {
+        actionInfo = {};
+      }
+      const settings = actionInfo.payload?.settings || {};
+      const checkbox = document.getElementById("isPagingKey");
+
+      checkbox.checked = Boolean(settings.isPagingKey);
+
+      checkbox.addEventListener("change", () => {
+        const newSettings = { ...settings, isPagingKey: checkbox.checked };
+        setSettings(newSettings);
+      });
+
+      websocket = new WebSocket("ws://127.0.0.1:" + inPort);
+      websocket.onopen = () => {
+        websocket.send(JSON.stringify({
+          event: inRegisterEvent,
+          uuid: inPropertyInspectorUUID
+        }));
+        websocket.send(JSON.stringify({
+          event: "getSettings",
+          context: uuid
+        }));
+      };
+
+      websocket.onmessage = (evt) => {
+        try {
+          const data = JSON.parse(evt.data);
+          if (data.event === "didReceiveSettings") {
+            const s = data.payload?.settings || {};
+            checkbox.checked = Boolean(s.isPagingKey);
+          }
+        } catch {}
+      };
+    }
+
+    function setSettings(settings) {
+      if (websocket && websocket.readyState === WebSocket.OPEN) {
+        websocket.send(JSON.stringify({
+          event: "setSettings",
+          context: uuid,
+          payload: settings
+        }));
+      }
+    }
+  </script>
+</body>
+</html>

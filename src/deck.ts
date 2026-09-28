@@ -5,11 +5,71 @@
 import { agentFor } from "./agents.ts";
 import { resolveRepoBgIcon, type ResolvedBgIcon } from "./icons.ts";
 
-export type AgentState = "working" | "waiting" | "done" | "error" | "unverifiable" | "idle" | string | undefined;
-export type Color = "blue" | "amber" | "green" | "red" | "white";
+export type AgentState =
+  | "working"
+  | "monitoring"
+  | "waiting"
+  | "permission"
+  | "blocked"
+  | "interrupted"
+  | "done"
+  | "error"
+  | "failed"
+  | "unverifiable"
+  | "idle"
+  | string
+  | undefined;
+export type Color = "orange" | "violet" | "green" | "red" | "white" | "blue" | "amber";
 
 /** Inactivity decay duration matching Orca (30 minutes) */
 export const AGENT_STATUS_STALE_AFTER_MS = 30 * 60 * 1000;
+
+/** Grace period (ms) to keep terminal agent identity when Orca momentarily fails to report it during process scans (15 seconds) */
+export const DEFAULT_TERMINAL_AGENT_GRACE_MS = 15_000;
+
+export interface CachedTerminalAgent {
+  agentIdentity: string;
+  lastSeenAt: number;
+}
+
+/**
+ * Stabilize terminal agentIdentity across poll cycles to prevent UI flapping/blinking
+ * when Orca's process scan intermittently reports undefined.
+ */
+export function stabilizeTerminalAgents(
+  terminals: OrcaTerminal[],
+  cache: Map<string, CachedTerminalAgent>,
+  now: number = Date.now(),
+  graceMs: number = DEFAULT_TERMINAL_AGENT_GRACE_MS,
+): OrcaTerminal[] {
+  const result: OrcaTerminal[] = [];
+  const liveHandles = new Set<string>();
+
+  for (const t of terminals ?? []) {
+    liveHandles.add(t.handle);
+    const copy = { ...t };
+    if (copy.agentIdentity) {
+      cache.set(copy.handle, { agentIdentity: copy.agentIdentity, lastSeenAt: now });
+    } else {
+      const cached = cache.get(copy.handle);
+      if (cached && now - cached.lastSeenAt < graceMs) {
+        copy.agentIdentity = cached.agentIdentity;
+      } else if (cached) {
+        cache.delete(copy.handle);
+      }
+    }
+    result.push(copy);
+  }
+
+  // Clean up closed terminal handles immediately
+  for (const h of Array.from(cache.keys())) {
+    if (!liveHandles.has(h)) {
+      cache.delete(h);
+    }
+  }
+
+  return result;
+}
 
 /** Fields used from `orca terminal list --json` -> `result.terminals[]` */
 export interface OrcaTerminal {
@@ -31,9 +91,13 @@ export interface OrcaWorktree {
   branch?: string;
   displayName?: string;
   unread?: boolean; // true if user hasn't viewed latest output yet (automatically set to false when viewed in Orca)
+  status?: string;
   agents?: Array<{
     paneKey: string;
     state?: AgentState;
+    status?: string;
+    workingMode?: string;
+    interrupted?: boolean;
     agentType?: string;
     updatedAt?: number;
     stateStartedAt?: number;
@@ -64,6 +128,9 @@ export interface HookInfo {
   hookEventName?: string;
   agentType?: string;
   state?: string;
+  status?: string;
+  workingMode?: string;
+  interrupted?: boolean;
   receivedAt?: number;
 }
 
@@ -83,16 +150,33 @@ export interface DeckOptions {
   /** Activity bucket size (ms) used for ordering. Sessions/groups active in the same bucket keep their
    * relative order instead of re-sorting on every output line. Default 60_000. */
   activityBucketMs?: number;
+  /** Slot index (0-7) designated as the page switcher key when total sessions exceed perPage. */
+  pagingSlotIndex?: number;
 }
 
 export type Button =
-  | { empty: true }
+  | { empty: true; isPageButton?: false }
+  | {
+      empty?: false;
+      isPageButton: true;
+      page: number;
+      pageCount: number;
+      hasAlertOnOtherPage?: boolean;
+      otherState?: AgentState;
+      otherStatus?: string;
+      otherColor?: Color;
+      otherUnread?: boolean;
+    }
   | {
       empty: false;
+      isPageButton?: false;
       handle: string;
       label: string;
       tabTitle?: string; // Orca tab title (for 2-line summary rendering)
       state: AgentState;
+      status?: string;
+      workingMode?: string;
+      interrupted?: boolean;
       color: Color;
       worktreePath?: string;
       worktreeId?: string; // `<repoId>::<path>` — used to extract repoId when spawning a new worktree in the same repo from an empty slot
@@ -118,13 +202,17 @@ export interface Deck {
 }
 
 const STATE_COLOR: Record<string, Color> = {
-  working: "blue",
-  waiting: "amber",
-  blocked: "amber",
-  unverifiable: "amber",
-  done: "green",
+  working: "orange",
+  monitoring: "orange",
+  waiting: "violet",
+  permission: "violet",
+  blocked: "violet",
+  interrupted: "red",
   error: "red",
+  failed: "red",
+  done: "green",
   idle: "white",
+  unverifiable: "violet",
 };
 
 /**
@@ -174,13 +262,65 @@ export function activityBucket(
   return Math.floor(timestamp / Math.max(1, bucketMs));
 }
 
+/** State sorting priority rank: lower number = placed higher/earlier on the deck */
+export function statePriority(state: AgentState): number {
+  switch (state) {
+    case "waiting":
+    case "permission":
+    case "blocked":
+    case "interrupted":
+    case "error":
+    case "failed":
+      return 0; // Alerts & questions up top (demands user action/input)
+    case "working":
+    case "monitoring":
+      return 10; // Active working states
+    case "done":
+    case "idle":
+    case "unverifiable":
+    default:
+      return 20; // Completed & inactive states (ordered by most recent activity)
+  }
+}
+
 /**
- * Deck ordering: group sessions by project so a project's agents sit next to each other,
- * order the groups by most recent activity (freshest bucket first), then most recent session first
- * inside a group; the handle is the deterministic tiebreak so positions stay steady while activity
- * is comparable (muscle memory for slots that never move). Activity is compared in coarse buckets
- * (see `activityBucket`) so several concurrently working projects do not re-sort the deck constantly.
- * Unknown projects (empty key) group together and sort last when they have no timestamps.
+ * Deck ordering: sort sessions without project clustering by:
+ * 1. Alerts & questions up top (waiting, blocked, error, interrupted).
+ * 2. Active states (working, monitoring).
+ * 3. Completed & inactive states (done, idle, unverifiable).
+ *
+ * Inside each tier, sessions are ordered by most recent activity (freshest bucket first),
+ * with the terminal handle as deterministic tiebreak.
+ * Activity is compared in coarse buckets (see `activityBucket`) so concurrently active sessions
+ * do not re-sort the deck constantly on every streaming line.
+ * Unread attention pulse does NOT alter slot positions, preventing jarring reshuffles on click.
+ */
+export function sortSessions<T>(
+  sessions: T[],
+  stateOf: (s: T) => AgentState,
+  recencyOf: (s: T) => number,
+  handleOf: (s: T) => string,
+  opts: { bucketMs?: number } = {},
+): T[] {
+  const bucketMs = opts.bucketMs ?? DEFAULT_ACTIVITY_BUCKET_MS;
+  const entries = sessions.map((s) => ({
+    s,
+    priority: statePriority(stateOf(s)),
+    bucket: activityBucket(recencyOf(s), bucketMs),
+    handle: handleOf(s),
+  }));
+
+  entries.sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    if (a.bucket !== b.bucket) return b.bucket - a.bucket; // most recently active session first
+    return a.handle.localeCompare(b.handle);
+  });
+
+  return entries.map((e) => e.s);
+}
+
+/**
+ * Legacy project-grouped deck ordering.
  */
 export function sortSessionsByProject<T>(
   sessions: T[],
@@ -235,16 +375,61 @@ export function nextWorktreeName(repo: string, existingNames: string[]): string 
 
 /**
  * Check whether a session requires attention (animation/pulse) — draws eye when Orca signals done or awaiting reply.
- * Targets: waiting (amber), unread done (green), error (red). Working (blue), idle (white), stale (unverifiable) stay quiet.
- * Even if currently focused (target), waiting (amber) and error (red) maintain pulse since they require action.
- * Unread done (green) on the active target does not pulse because the user is already viewing it.
+ * Non-target sessions: waiting (amber/violet), unread done (green), error/interrupted (red) pulse to alert the user.
+ * When focused/viewing the session (isTarget), pulsing animation stops so it does not distract the user while focused.
+ * The session maintains its state color and glyph (e.g. red for interrupted) as long as it remains in that state.
  */
-export function needsAttention(b: Button, isTarget: boolean): boolean {
+export function needsAttention(b: Button, isTarget: boolean = false): boolean {
   if (b.empty) return false;
-  if (isTarget && b.color === "green") return false;
-  if (b.state === "done" && b.unread === false) return false;
+  if ("isPageButton" in b && b.isPageButton) {
+    if (!b.otherColor || b.otherColor === "white" || b.otherColor === "orange" || b.otherColor === "blue") return false;
+    if (b.otherColor === "green") return Boolean(b.otherUnread);
+    return b.otherColor === "violet" || b.otherColor === "amber" || b.otherColor === "red";
+  }
+  if (isTarget) return false;
+  if (b.state === "done") return Boolean(b.unread);
   if (b.state === "unverifiable") return false;
-  return b.color === "amber" || b.color === "green" || b.color === "red";
+  if (b.state === "interrupted") return true;
+  if (b.color === "green") return Boolean(b.unread);
+  return b.color === "violet" || b.color === "amber" || b.color === "red";
+}
+
+/**
+ * Extract the highest priority representative state and color from sessions on other pages:
+ * 1. error / interrupted / failed (red)
+ * 2. waiting / permission / blocked (violet)
+ * 3. done (green, unread)
+ * 4. working / monitoring (orange)
+ * 5. done (green, read)
+ * 6. idle / unverifiable (white)
+ */
+export function representativeOtherState(
+  otherItems: Array<{ item: { state: AgentState; status?: string }; unread?: boolean }>,
+): {
+  otherState?: AgentState;
+  otherStatus?: string;
+  otherColor?: Color;
+  otherUnread?: boolean;
+} {
+  if (!otherItems.length) return {};
+
+  if (otherItems.some((e) => e.item.state === "error" || e.item.state === "failed" || e.item.state === "interrupted")) {
+    const s = otherItems.find((e) => e.item.state === "interrupted")?.item.state ?? "error";
+    return { otherState: s, otherColor: "red" };
+  }
+  if (otherItems.some((e) => e.item.state === "waiting" || e.item.state === "permission" || e.item.state === "blocked")) {
+    return { otherState: "waiting", otherColor: "violet" };
+  }
+  if (otherItems.some((e) => e.item.state === "done" && Boolean(e.unread))) {
+    return { otherState: "done", otherColor: "green", otherUnread: true };
+  }
+  if (otherItems.some((e) => e.item.state === "working" || e.item.state === "monitoring")) {
+    return { otherState: "working", otherColor: "orange" };
+  }
+  if (otherItems.some((e) => e.item.state === "done")) {
+    return { otherState: "done", otherColor: "green", otherUnread: false };
+  }
+  return { otherState: "idle", otherColor: "white" };
 }
 
 const EMPTY: Button = { empty: true };
@@ -260,8 +445,7 @@ const EMPTY: Button = { empty: true };
  * - Paginate by perPage (default 8), padding empty slots with `{ empty: true }`.
  */
 export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
-  const page = opts.page ?? 0;
-  const perPage = opts.perPage ?? 8;
+  const perPage = Math.max(1, opts.perPage ?? 8);
   const now = opts.now ?? Date.now();
 
   const getHook = (pane: string): HookInfo | undefined => {
@@ -277,24 +461,36 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
 
   // paneKey -> state map + fallback agent type + worktreeId -> {repo, branch} metadata
   const stateByPane = new Map<string, AgentState>();
+  const statusByPane = new Map<string, string>();
+  const workingModeByPane = new Map<string, string>();
+  const interruptedByPane = new Map<string, boolean>();
   const agentByPane = new Map<string, string>();
   const timeByPane = new Map<string, number>(); // latest agent evidence timestamp per pane (for ordering)
   const metaByWt = new Map<string, { repo?: string; branch?: string; unread?: boolean }>();
   for (const wt of input.worktrees ?? []) {
     for (const a of wt.agents ?? []) {
-      let st = a.state;
+      let st: AgentState = a.state;
+      if (a.interrupted === true || a.status === "interrupted" || st === "interrupted") {
+        st = "interrupted";
+      } else if (st === "working" && a.workingMode === "monitoring") {
+        st = "monitoring";
+      }
       const observedAt = a.evidenceObservedAt ?? a.updatedAt ?? a.stateStartedAt;
       if (
         st &&
         st !== "done" &&
         st !== "idle" &&
-        (st === "working" || st === "waiting" || st === "blocked") &&
+        st !== "interrupted" &&
+        (st === "working" || st === "waiting" || st === "blocked" || st === "monitoring") &&
         observedAt &&
         now - observedAt > AGENT_STATUS_STALE_AFTER_MS
       ) {
         st = "unverifiable";
       }
       stateByPane.set(a.paneKey, st);
+      if (a.status) statusByPane.set(a.paneKey, a.status);
+      if (a.workingMode) workingModeByPane.set(a.paneKey, a.workingMode);
+      if (a.interrupted !== undefined) interruptedByPane.set(a.paneKey, a.interrupted);
       // If multiple agents on same paneKey, keep first as fallback (normally 0-1)
       if (!agentByPane.has(a.paneKey)) agentByPane.set(a.paneKey, a.agentType ?? "");
       timeByPane.set(a.paneKey, sessionRecency(timeByPane.get(a.paneKey), observedAt));
@@ -337,11 +533,18 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       const tabTitle = getTabTitle(t.tabId) || t.title || undefined;
 
       let state: AgentState;
+      let status = statusByPane.get(pane) || hook?.status;
+      let workingMode = workingModeByPane.get(pane) || hook?.workingMode;
+      let interrupted = interruptedByPane.get(pane) ?? hook?.interrupted;
+
       if (hasWt) {
         state = stateByPane.get(pane) || "idle";
-        // Does not overwrite unverifiable (stale) or done states with old hook remnants
-        if (state !== "unverifiable" && state !== "done") {
-          if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
+        // Does not overwrite unverifiable (stale), interrupted, or done states with old hook remnants
+        if (state !== "unverifiable" && state !== "done" && state !== "interrupted") {
+          if (hook?.interrupted) {
+            state = "interrupted";
+            interrupted = true;
+          } else if (hookEvent === "PreToolUse" || hookEvent === "Notification") {
             // PreToolUse fires on *every* tool call — including auto-approved ones that never
             // ask the user anything (Claude runs Bash/MCP freely once permissions allow it).
             // So escalate to waiting (amber) only when:
@@ -361,11 +564,15 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
         }
       } else {
         // Detected via terminal agentIdentity before worktree ps reports
-        if (hook?.state) {
+        if (hook?.interrupted) {
+          state = "interrupted";
+          interrupted = true;
+        } else if (hook?.state) {
           let st = hook.state;
           if (
             st !== "done" &&
             st !== "idle" &&
+            st !== "interrupted" &&
             (st === "working" || st === "waiting" || st === "blocked") &&
             hook.receivedAt &&
             now - hook.receivedAt > AGENT_STATUS_STALE_AFTER_MS
@@ -384,23 +591,30 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
         }
       }
 
+      const meta = t.worktreeId ? metaByWt.get(t.worktreeId) : undefined;
+      const unread = meta?.unread;
+
       return {
         t,
         pane,
         hasWt,
         agent,
         state,
+        status,
+        workingMode,
+        interrupted,
         agentType: agent,
         tabTitle,
+        unread,
         recency: sessionRecency(t.lastOutputAt, timeByPane.get(pane), hook?.receivedAt),
       };
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
 
-  // Group by project; groups sorted by most recent activity bucket, most recent session first inside a group.
-  const sessions = sortSessionsByProject(
+  // Sort sessions: alerts & questions first (waiting, blocked, error, interrupted) -> active (working, monitoring) -> completed & inactive (done, idle, unverifiable); most recent activity first inside each tier.
+  const sessions = sortSessions(
     sessionsRaw,
-    (s) => projectOf(s.t.worktreePath, s.t.worktreeId ? metaByWt.get(s.t.worktreeId)?.repo : undefined),
+    (s) => s.state,
     (s) => s.recency,
     (s) => s.t.handle,
     { bucketMs: opts.activityBucketMs },
@@ -429,13 +643,49 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   });
 
   const total = enriched.length;
-  const pageCount = Math.max(1, Math.ceil(total / perPage));
-  const start = page * perPage;
-  const pageItems = enriched.slice(start, start + perPage);
+  const pagingIndex = opts.pagingSlotIndex;
+  const hasPagingKey = pagingIndex !== undefined && pagingIndex >= 0 && pagingIndex < perPage;
+  const needsPaging = hasPagingKey && total > perPage;
+
+  const sessionCapacityPerPage = Math.max(1, needsPaging ? perPage - 1 : perPage);
+  const pageCount = Math.max(1, Math.ceil(total / sessionCapacityPerPage));
+  const page = Math.min(Math.max(0, opts.page ?? 0), pageCount - 1);
+  const start = page * sessionCapacityPerPage;
+  const pageItems = enriched.slice(start, start + sessionCapacityPerPage);
+
+  // Calculate representative state of sessions on other pages (error > waiting > unread done > working > read done > idle)
+  let hasAlertOnOtherPage = false;
+  let otherInfo: { otherState?: AgentState; otherStatus?: string; otherColor?: Color; otherUnread?: boolean } = {};
+  if (needsPaging) {
+    const otherItems = [...enriched.slice(0, start), ...enriched.slice(start + sessionCapacityPerPage)];
+    otherInfo = representativeOtherState(otherItems);
+    hasAlertOnOtherPage = Boolean(
+      otherInfo.otherColor === "red" ||
+      otherInfo.otherColor === "violet" ||
+      otherInfo.otherColor === "amber" ||
+      (otherInfo.otherColor === "green" && otherInfo.otherUnread),
+    );
+  }
 
   const slots: Button[] = [];
+  let itemIdx = 0;
   for (let i = 0; i < perPage; i++) {
-    const e = pageItems[i];
+    if (needsPaging && i === pagingIndex) {
+      slots.push({
+        empty: false,
+        isPageButton: true,
+        page,
+        pageCount,
+        hasAlertOnOtherPage,
+        otherState: otherInfo.otherState,
+        otherStatus: otherInfo.otherStatus,
+        otherColor: otherInfo.otherColor,
+        otherUnread: otherInfo.otherUnread,
+      });
+      continue;
+    }
+
+    const e = pageItems[itemIdx++];
     if (!e) {
       slots.push(EMPTY);
       continue;
@@ -452,10 +702,14 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
 
     slots.push({
       empty: false,
+      isPageButton: false,
       handle: e.item.t.handle,
       label: shownTitle,
       tabTitle: shownTitle || undefined,
       state: e.item.state,
+      status: e.item.status,
+      workingMode: e.item.workingMode,
+      interrupted: e.item.interrupted,
       color: colorFor(e.item.state),
       worktreePath: e.item.t.worktreePath,
       worktreeId: e.item.t.worktreeId,

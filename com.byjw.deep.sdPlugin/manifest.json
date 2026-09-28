@@ -25,6 +25,7 @@
       "UUID": "com.byjw.deep.slot",
       "Icon": "imgs/actions/slot/icon",
       "Tooltip": "Display session state · Tap to focus corresponding Orca terminal",
+      "PropertyInspectorPath": "ui/slot.html",
       "Controllers": [
         "Keypad"
       ],
