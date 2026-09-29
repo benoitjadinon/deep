@@ -39,7 +39,7 @@ npx streamdeck link com.byjw.deep.sdPlugin
 ### Keys (session board)
 | Element | Meaning |
 |---|---|
-| **Top color ribbon** | 🔵 working · 🟡 waiting (input needed) · 🟢 done · 🔴 error · ⚪ idle |
+| **Top color ribbon** | 🟠 working · 🟣 waiting (input needed) · 🟢 done · 🔴 error · ⚪ idle |
 | **Center white text** | Project name (extracted from the path, e.g. `AcmeApp`) |
 | **Bottom** | Branch. The session you're currently viewing is highlighted with a coral chip |
 | **Tap** | Focus that session (`orca terminal switch`) / If already focused on that session, toggle back to previous app (OS super-tab) |
@@ -54,9 +54,11 @@ npx streamdeck link com.byjw.deep.sdPlugin
 > Effort options are **per agent and per selected model** (e.g. DeepSeek has no `medium` — it shows `Default(low/high/max)` in opencode and only its real levels in pi). See [`docs/effort-handling.md`](docs/effort-handling.md) for how each agent's effort/thinking list is resolved.
 | **Mode** | choose plan↔build↔… | apply mode to the current session |
 | **Talk** | — | push to start recording → speak → push again to stop and send (toggle) |
-| **Target session selection** | walk all sessions (moves focus) | jump to that session |
+| **Target session selection** | walk all sessions (moves focus) · colored left rail shows that session's state, white glyph = `?`/`!`/checkmark/ring; blinks on alerts | jump to that session |
 
 > Dials act on the **session you're currently viewing (focused)**. The coral chip marks the target.
+>
+> The **Target dial renders its session button-style**: the left accent rail is state-colored (orange working · violet waiting · green done · red error · white idle) with the same white state glyph as a key, and the whole dial **pulses exactly like a needs-attention key** (waiting, error, and unread-done blink; urgent violet/amber/red blink fast) — even when that session sits past the 8 visible keys. Tap/push cycles and jumps the same as before.
 
 ## 🎤 Talk (voice input) setup — first time only
 Talk uses **macOS on-device speech recognition**. You need:
@@ -70,7 +72,7 @@ If something's wrong, the **Talk dial shows the cause**: `Enable Dictation` / `E
 
 ## Limitations
 - **Mac + Orca only**. Other terminals/OSes unsupported.
-- **Keys are 8 slots (1 page)**. With more than 8 sessions, the 9th+ aren't on the keys but remain reachable via the **target dial**. Slots are **grouped by project** (a project's agents sit together) and ordered by most recent activity: freshest project group first, freshest session first inside a group, handle as tiebreak. Activity is bucketed (60s) so multiple concurrently working projects don't re-sort the keys constantly — override with `AGENTDECK_ORDER_BUCKET_MS` (milliseconds).
+- **Keys are 8 slots (1 page)**. With more than 8 sessions, the 9th+ aren't on the keys but remain reachable via the **target dial**. Slots are **ordered by state priority**: alerts & questions up top (waiting · blocked · error · interrupted), then active (working / monitoring), then completed & inactive (done · idle · unverifiable), with the most recently active session first inside each tier (handle as tiebreak). Activity is bucketed (60s) so concurrently working sessions don't re-sort the keys constantly — override with `AGENTDECK_ORDER_BUCKET_MS` (milliseconds).
 - Dial signals are **gated per running agent**: only supported agents (Claude, OpenCode, Codex, AGY, Hermes, Pi) get a working model/effort/mode dial, and model lists are **loaded live** from respective agent configurations and tools. Unsupported/unknown agents get the dial blocked (`-`), so no wrong command is ever sent.
 
 ## Development

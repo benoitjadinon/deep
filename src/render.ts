@@ -557,7 +557,7 @@ export function dialImage(
     const stIcon = disabled ? "" : stateIcon(attention.state, 9, 50, 4.5, "#ffffff");
     statusBar = `<rect width="18" height="100" fill="${barColor}" clip-path="url(#dr)"/>${stIcon}`;
   }
-  // Attention pulse overlay — same phase/opacity rules as keySvg (urgent amber/red blink fast,
+  // Attention pulse overlay — same phase/opacity rules as keySvg (urgent violet/amber/red blink fast,
   // calmer pulse for unread-done green), so the dial blinks exactly like a needs-attention button.
   let glow = "";
   if (attention?.attention && !disabled) {

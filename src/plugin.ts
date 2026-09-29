@@ -679,14 +679,16 @@ function dialFeedback(role: string): { full: string } {
   if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported, badge) };
   if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
   if (role === "target") {
-    // Button-style state rendering: the target session drives the status bar color, glyph and the
-    // attention pulse (treated like an already-focused key — waiting/error still pulse, unread-done doesn't).
+    // Button-style state rendering: the target session drives the status bar color and glyph.
+    // The dial pulses on alerts like an unattended key, even for the focused target — the
+    // target session is what the board is watching (and it may sit past the 8 visible keys),
+    // so waiting/error/unread-done trigger the same blink as a needs-attention key.
     const st = tb
       ? {
           state: (tb as any).state,
           status: (tb as any).status,
           color: (tb as any).color as string | undefined,
-          attention: needsAttention(tb, true),
+          attention: needsAttention(tb, false),
           nowMs: Date.now(),
         }
       : undefined;
@@ -739,10 +741,11 @@ function anyAttention(): boolean {
 }
 
 // Check if the target session (dial 4) itself requires attention — blinks even when it sits past
-// the 8 visible keys. Treated as an already-focused session (waiting/error pulse, unread-done doesn't).
+// the 8 visible keys. Uses the unattended-key rule (waiting/error/unread-done pulse) so the dial
+// alerts the same way a needs-attention button would.
 function targetAttention(): boolean {
   const tb = targetHandle ? sessionByHandle.get(targetHandle) : undefined;
-  return Boolean(tb) && needsAttention(tb, true);
+  return Boolean(tb) && needsAttention(tb, false);
 }
 
 // Read latest hook states from Orca agent-hooks (last-status.json)

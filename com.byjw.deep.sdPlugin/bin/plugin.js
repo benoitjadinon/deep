@@ -57856,7 +57856,7 @@ function dialFeedback(role) {
       state: tb.state,
       status: tb.status,
       color: tb.color,
-      attention: needsAttention(tb, true),
+      attention: needsAttention(tb, false),
       nowMs: Date.now()
     } : void 0;
     return { full: dialImage("target", "TARGET", v, tick, false, badge, branch, void 0, st) };
@@ -57902,7 +57902,7 @@ function anyAttention() {
 }
 function targetAttention() {
   const tb = targetHandle ? sessionByHandle.get(targetHandle) : void 0;
-  return Boolean(tb) && needsAttention(tb, true);
+  return Boolean(tb) && needsAttention(tb, false);
 }
 function getHookEvents() {
   const map2 = /* @__PURE__ */ new Map();
