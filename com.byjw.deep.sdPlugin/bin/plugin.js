@@ -54377,13 +54377,92 @@ var plugin_default = streamDeck;
 // src/plugin.ts
 var import_node_child_process = require("node:child_process");
 var import_node_fs6 = require("node:fs");
-var import_node_path8 = require("node:path");
+var import_node_path9 = require("node:path");
 var import_node_os3 = require("node:os");
 var import_node_util = require("node:util");
+var import_node_child_process2 = require("node:child_process");
+
+// src/linux.ts
+var import_node_path6 = require("node:path");
+var IS_LINUX = process.platform === "linux";
+var ORCA_CLASSES = ["orca"];
+var DECK_HOST_CLASSES = ["opendeck", "streamdeck"];
+function orcaDataDir(platform, home, env = {}) {
+  if (platform === "darwin") return (0, import_node_path6.join)(home, "Library", "Application Support", "orca");
+  const xdg = env.XDG_CONFIG_HOME?.trim();
+  return (0, import_node_path6.join)(xdg || (0, import_node_path6.join)(home, ".config"), "orca");
+}
+function linuxExtraPath(home) {
+  return [
+    (0, import_node_path6.join)(home, ".local", "bin"),
+    (0, import_node_path6.join)(home, ".opencode", "bin"),
+    (0, import_node_path6.join)(home, ".cargo", "bin"),
+    (0, import_node_path6.join)(home, "Tools", "bin"),
+    (0, import_node_path6.join)(home, ".config", "orca", "linux-orca-cli-shim")
+  ];
+}
+function withExtraPath(current, extra) {
+  const parts = (current ?? "").split(":").filter(Boolean);
+  for (const p of [...extra].reverse()) if (!parts.includes(p)) parts.unshift(p);
+  return parts.join(":");
+}
+function parseHyprClients(json2) {
+  try {
+    const raw = JSON.parse(json2);
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((c) => c && typeof c.address === "string").map((c) => ({
+      address: c.address,
+      class: String(c.class ?? ""),
+      title: String(c.title ?? ""),
+      pid: typeof c.pid === "number" ? c.pid : void 0,
+      focusHistoryID: typeof c.focusHistoryID === "number" ? c.focusHistoryID : Number.MAX_SAFE_INTEGER,
+      mapped: c.mapped,
+      hidden: c.hidden
+    }));
+  } catch {
+    return [];
+  }
+}
+var matchesAny = (cls, classes) => classes.includes(cls.toLowerCase());
+function isOrcaClass(cls) {
+  return !!cls && matchesAny(cls, ORCA_CLASSES);
+}
+function isDeckHostClass(cls) {
+  return !!cls && matchesAny(cls, DECK_HOST_CLASSES);
+}
+function previousWindow(clients) {
+  return clients.filter((c) => c.mapped !== false && !isOrcaClass(c.class) && !isDeckHostClass(c.class)).sort((a, b) => a.focusHistoryID - b.focusHistoryID)[0];
+}
+function orcaWindow(clients) {
+  return clients.filter((c) => isOrcaClass(c.class)).sort((a, b) => a.focusHistoryID - b.focusHistoryID)[0];
+}
+function hyprFocusDispatches(address) {
+  return [
+    ["dispatch", `hl.dsp.focus({ window = 'address:${address}' })`],
+    ["dispatch", "focuswindow", `address:${address}`]
+  ];
+}
+var WHISPER_BIN_CANDIDATES = ["/usr/bin/whisper-cli", "/usr/local/bin/whisper-cli"];
+function whisperModelPath(home, env = {}) {
+  return env.AGENTDECK_WHISPER_MODEL?.trim() || (0, import_node_path6.join)(home, ".local", "share", "agentdeck", "whisper", "ggml-base.bin");
+}
+function whisperLanguage(locale) {
+  const m = (locale ?? "").trim().match(/^([a-zA-Z]{2,3})(?:[-_.@]|$)/);
+  return m ? m[1].toLowerCase() : "auto";
+}
+function whisperArgs(model, wav, language, threads) {
+  return ["-m", model, "-f", wav, "-l", language, "-t", String(threads), "-nt", "-np"];
+}
+function cleanTranscript(stdout) {
+  return stdout.replace(/\[[^\]]*\]|\([^)]*\)/g, " ").split(/\r?\n/).map((l) => l.trim()).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+}
+function pwRecordArgs(wav) {
+  return ["--rate", "16000", "--channels", "1", "--format", "s16", wav];
+}
 
 // src/agents.ts
 var import_node_fs4 = require("node:fs");
-var import_node_path6 = require("node:path");
+var import_node_path7 = require("node:path");
 var import_node_os = require("node:os");
 function formatQuotaDisplay(window, secondary, suffix) {
   if (!window || window.usedPercent === void 0 || !Number.isFinite(window.usedPercent)) {
@@ -54404,9 +54483,9 @@ function formatQuotaDisplay(window, secondary, suffix) {
 }
 var AGY_QUOTA_PATHS = [
   "/tmp/agentdeck-agy-quota.json",
-  (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "quota.json"),
-  (0, import_node_path6.join)((0, import_node_os.homedir)(), ".pi", "agent", "antigravity-bridge", "quota.json"),
-  (0, import_node_path6.join)((0, import_node_os.homedir)(), ".pi", "agent", "antigravity-quota.json")
+  (0, import_node_path7.join)((0, import_node_os.homedir)(), ".gemini", "quota.json"),
+  (0, import_node_path7.join)((0, import_node_os.homedir)(), ".pi", "agent", "antigravity-bridge", "quota.json"),
+  (0, import_node_path7.join)((0, import_node_os.homedir)(), ".pi", "agent", "antigravity-quota.json")
 ];
 function parseQuotaFileContent(content) {
   if (!content || !content.trim()) return void 0;
@@ -54469,7 +54548,7 @@ function parseQuotaFileContent(content) {
   }
   return void 0;
 }
-var AGY_BRAIN_DIR = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "brain");
+var AGY_BRAIN_DIR = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "brain");
 function calculateAgyTranscriptQuota(brainDir = AGY_BRAIN_DIR, now = Date.now(), sessionWindowMs = 5 * 3600 * 1e3, weeklyWindowMs = 7 * 24 * 3600 * 1e3, sessionRequestLimit = 50, weeklyRequestLimit = 500) {
   try {
     if (!(0, import_node_fs4.existsSync)(brainDir)) return void 0;
@@ -54479,7 +54558,7 @@ function calculateAgyTranscriptQuota(brainDir = AGY_BRAIN_DIR, now = Date.now(),
     const weeklyTimestamps = [];
     const convDirs = (0, import_node_fs4.readdirSync)(brainDir);
     for (const dir of convDirs) {
-      const transcriptPath = (0, import_node_path6.join)(brainDir, dir, ".system_generated", "logs", "transcript.jsonl");
+      const transcriptPath = (0, import_node_path7.join)(brainDir, dir, ".system_generated", "logs", "transcript.jsonl");
       if (!(0, import_node_fs4.existsSync)(transcriptPath)) continue;
       try {
         const stat = (0, import_node_fs4.statSync)(transcriptPath);
@@ -54729,9 +54808,9 @@ var openCodeModelPicker = (value, name) => [
   // model list dialog
   { text: modelFilterText(value, name), enter: false }
 ];
-var CLAUDE_SETTINGS = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".claude", "settings.json");
-var CLAUDE_MODEL_CATALOG_DIR = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".claude", "cache", "model-catalog");
-var CLAUDE_PROJECTS_DIR = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".claude", "projects");
+var CLAUDE_SETTINGS = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".claude", "settings.json");
+var CLAUDE_MODEL_CATALOG_DIR = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".claude", "cache", "model-catalog");
+var CLAUDE_PROJECTS_DIR = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".claude", "projects");
 var CLAUDE_DEFAULT_MODELS = [
   "claude-opus-5",
   "claude-sonnet-5",
@@ -54867,7 +54946,7 @@ function readClaudeModelsCache() {
       const seen = /* @__PURE__ */ new Set();
       for (const file2 of files) {
         try {
-          const content = (0, import_node_fs4.readFileSync)((0, import_node_path6.join)(CLAUDE_MODEL_CATALOG_DIR, file2), "utf8");
+          const content = (0, import_node_fs4.readFileSync)((0, import_node_path7.join)(CLAUDE_MODEL_CATALOG_DIR, file2), "utf8");
           const { models } = parseClaudeModelCatalog(content);
           for (const m of models) {
             if (!seen.has(m)) {
@@ -54891,7 +54970,7 @@ function readClaudeModelEffortsCache(modelId) {
       const files = (0, import_node_fs4.readdirSync)(CLAUDE_MODEL_CATALOG_DIR).filter((f) => f.endsWith(".json"));
       for (const file2 of files) {
         try {
-          const content = (0, import_node_fs4.readFileSync)((0, import_node_path6.join)(CLAUDE_MODEL_CATALOG_DIR, file2), "utf8");
+          const content = (0, import_node_fs4.readFileSync)((0, import_node_path7.join)(CLAUDE_MODEL_CATALOG_DIR, file2), "utf8");
           const { effortsByModel } = parseClaudeModelCatalog(content);
           if (effortsByModel[modelId]?.length) {
             return effortsByModel[modelId];
@@ -54948,11 +55027,11 @@ function readClaudeState(ctx) {
     try {
       const normalizedPath = ctx.worktreePath.replace(/\/+$/, "");
       const projName = normalizedPath.replace(/\//g, "-");
-      const projDir = (0, import_node_path6.join)(CLAUDE_PROJECTS_DIR, projName);
+      const projDir = (0, import_node_path7.join)(CLAUDE_PROJECTS_DIR, projName);
       if ((0, import_node_fs4.existsSync)(projDir)) {
         const jsonlFiles = (0, import_node_fs4.readdirSync)(projDir).filter((f) => f.endsWith(".jsonl") && !f.includes("subagents")).map((f) => ({
-          path: (0, import_node_path6.join)(projDir, f),
-          mtime: (0, import_node_fs4.statSync)((0, import_node_path6.join)(projDir, f)).mtimeMs
+          path: (0, import_node_path7.join)(projDir, f),
+          mtime: (0, import_node_fs4.statSync)((0, import_node_path7.join)(projDir, f)).mtimeMs
         })).sort((a, b) => b.mtime - a.mtime);
         for (const item of jsonlFiles.slice(0, 3)) {
           try {
@@ -55012,8 +55091,8 @@ function readClaudeState(ctx) {
   }
   const settingsPaths = [];
   if (ctx?.worktreePath) {
-    settingsPaths.push((0, import_node_path6.join)(ctx.worktreePath, ".claude", "settings.json"));
-    settingsPaths.push((0, import_node_path6.join)(ctx.worktreePath, ".claude.json"));
+    settingsPaths.push((0, import_node_path7.join)(ctx.worktreePath, ".claude", "settings.json"));
+    settingsPaths.push((0, import_node_path7.join)(ctx.worktreePath, ".claude.json"));
   }
   settingsPaths.push(CLAUDE_SETTINGS);
   for (const p of settingsPaths) {
@@ -55087,8 +55166,8 @@ var ClaudeAgent = class extends AbstractAgent {
     return getProviderQuotaDisplay("claude", rateLimits);
   }
 };
-var CODEX_CONFIG = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".codex", "config.toml");
-var CODEX_MODELS_CACHE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".codex", "models_cache.json");
+var CODEX_CONFIG = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".codex", "config.toml");
+var CODEX_MODELS_CACHE = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".codex", "models_cache.json");
 var CODEX_DEFAULT_MODELS = [
   "gpt-5.6-luna",
   "gpt-5.6-terra",
@@ -55121,7 +55200,7 @@ function parseCodexModelsCache(jsonText) {
 function readCodexState(ctx) {
   try {
     if (ctx?.worktreePath) {
-      const localCfg = (0, import_node_path6.join)(ctx.worktreePath, ".codex", "config.toml");
+      const localCfg = (0, import_node_path7.join)(ctx.worktreePath, ".codex", "config.toml");
       if ((0, import_node_fs4.existsSync)(localCfg)) {
         const cfg = parseCodexConfig((0, import_node_fs4.readFileSync)(localCfg, "utf8"));
         return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
@@ -55184,12 +55263,12 @@ var CodexAgent = class extends AbstractAgent {
     return getProviderQuotaDisplay("codex", rateLimits);
   }
 };
-var OPENCODE_STATE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "model.json");
-var OPENCODE_TUI = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "tui");
+var OPENCODE_STATE = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "model.json");
+var OPENCODE_TUI = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".local", "state", "opencode", "tui");
 function readOpenCodeState(ctx) {
   try {
     if (ctx?.worktreePath) {
-      const localState = (0, import_node_path6.join)(ctx.worktreePath, ".opencode", "model.json");
+      const localState = (0, import_node_path7.join)(ctx.worktreePath, ".opencode", "model.json");
       if ((0, import_node_fs4.existsSync)(localState)) {
         return parseOpenCodeState((0, import_node_fs4.readFileSync)(localState, "utf8"));
       }
@@ -55202,7 +55281,7 @@ function readOpenCodeState(ctx) {
 function readTuiAgent(ctx) {
   try {
     if (ctx?.worktreePath) {
-      const localTui = (0, import_node_path6.join)(ctx.worktreePath, ".opencode", "tui");
+      const localTui = (0, import_node_path7.join)(ctx.worktreePath, ".opencode", "tui");
       if ((0, import_node_fs4.existsSync)(localTui)) {
         return parseTuiAgent((0, import_node_fs4.readFileSync)(localTui, "utf8"));
       }
@@ -55293,7 +55372,7 @@ var OpenCodeAgent = class extends AbstractAgent {
     return getProviderQuotaDisplay("opencode-go", rateLimits);
   }
 };
-var AGY_SETTINGS = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "settings.json");
+var AGY_SETTINGS = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "settings.json");
 function extractEffortFromModel(modelName) {
   if (!modelName) return void 0;
   const s = modelName.trim().toLowerCase();
@@ -55388,7 +55467,7 @@ function parseAgyModels(stdout) {
   }
   return out;
 }
-var AGY_LOG_DIR = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "log");
+var AGY_LOG_DIR = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".gemini", "antigravity-cli", "log");
 function parseAgyLogWorkspace(headerText) {
   if (!headerText) return [];
   const dirs = [];
@@ -55474,7 +55553,7 @@ function parseAgyLogMode(text) {
 function readAgyLiveState(ctx) {
   try {
     if (!(0, import_node_fs4.existsSync)(AGY_LOG_DIR)) return {};
-    const allFiles = (0, import_node_fs4.readdirSync)(AGY_LOG_DIR).filter((f) => f.startsWith("cli-") && f.endsWith(".log")).map((f) => ({ path: (0, import_node_path6.join)(AGY_LOG_DIR, f), mtime: (0, import_node_fs4.statSync)((0, import_node_path6.join)(AGY_LOG_DIR, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
+    const allFiles = (0, import_node_fs4.readdirSync)(AGY_LOG_DIR).filter((f) => f.startsWith("cli-") && f.endsWith(".log")).map((f) => ({ path: (0, import_node_path7.join)(AGY_LOG_DIR, f), mtime: (0, import_node_fs4.statSync)((0, import_node_path7.join)(AGY_LOG_DIR, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
     const targetPath = ctx?.worktreePath;
     let candidateFiles = [];
     if (targetPath) {
@@ -55647,8 +55726,8 @@ var AgyAgent = class extends AbstractAgent {
     return getProviderQuotaDisplay("antigravity", rateLimits);
   }
 };
-var HERMES_CONFIG = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".hermes", "config.yaml");
-var HERMES_MODELS_CACHE = (0, import_node_path6.join)((0, import_node_os.homedir)(), ".hermes", "provider_models_cache.json");
+var HERMES_CONFIG = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".hermes", "config.yaml");
+var HERMES_MODELS_CACHE = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".hermes", "provider_models_cache.json");
 function parseHermesConfig(yamlText) {
   let model;
   let effort;
@@ -55695,7 +55774,7 @@ function parseHermesModelsCache(jsonText) {
 function readHermesState(ctx) {
   try {
     if (ctx?.worktreePath) {
-      const localCfg = (0, import_node_path6.join)(ctx.worktreePath, ".hermes", "config.yaml");
+      const localCfg = (0, import_node_path7.join)(ctx.worktreePath, ".hermes", "config.yaml");
       if ((0, import_node_fs4.existsSync)(localCfg)) {
         const cfg = parseHermesConfig((0, import_node_fs4.readFileSync)(localCfg, "utf8"));
         return { model: cfg.model, effort: cfg.effort };
@@ -55766,15 +55845,15 @@ var HermesAgent = class extends AbstractAgent {
     return void 0;
   }
 };
-var PI_AGENT_DIR = process.env.PI_CODING_AGENT_DIR?.trim() || (0, import_node_path6.join)((0, import_node_os.homedir)(), ".pi", "agent");
-var PI_SETTINGS = (0, import_node_path6.join)(PI_AGENT_DIR, "settings.json");
-var PI_MODELS_STORE = (0, import_node_path6.join)(PI_AGENT_DIR, "models-store.json");
+var PI_AGENT_DIR = process.env.PI_CODING_AGENT_DIR?.trim() || (0, import_node_path7.join)((0, import_node_os.homedir)(), ".pi", "agent");
+var PI_SETTINGS = (0, import_node_path7.join)(PI_AGENT_DIR, "settings.json");
+var PI_MODELS_STORE = (0, import_node_path7.join)(PI_AGENT_DIR, "models-store.json");
 function firstExistingPath(candidates, fallback) {
   for (const p of candidates) if ((0, import_node_fs4.existsSync)(p)) return p;
   return fallback;
 }
 var PI_CMD = firstExistingPath(
-  [(0, import_node_path6.join)((0, import_node_os.homedir)(), ".local", "bin", "pi"), "/opt/homebrew/bin/pi", "/usr/local/bin/pi"],
+  [(0, import_node_path7.join)((0, import_node_os.homedir)(), ".local", "bin", "pi"), "/opt/homebrew/bin/pi", "/usr/local/bin/pi"],
   "pi"
 );
 var PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -55786,7 +55865,7 @@ var PI_DEFAULT_MODELS = [
   "openrouter/~anthropic/claude-sonnet-latest"
 ];
 function piSessionsRoot() {
-  const resolve2 = (p) => p.startsWith("~") ? (0, import_node_path6.join)((0, import_node_os.homedir)(), p.slice(1)) : p.startsWith("/") ? p : (0, import_node_path6.join)(PI_AGENT_DIR, p);
+  const resolve2 = (p) => p.startsWith("~") ? (0, import_node_path7.join)((0, import_node_os.homedir)(), p.slice(1)) : p.startsWith("/") ? p : (0, import_node_path7.join)(PI_AGENT_DIR, p);
   const env = process.env.PI_CODING_AGENT_SESSION_DIR?.trim();
   if (env) return resolve2(env);
   try {
@@ -55794,12 +55873,12 @@ function piSessionsRoot() {
     if (typeof cfg?.sessionDir === "string" && cfg.sessionDir.trim()) return resolve2(cfg.sessionDir.trim());
   } catch {
   }
-  return (0, import_node_path6.join)(PI_AGENT_DIR, "sessions");
+  return (0, import_node_path7.join)(PI_AGENT_DIR, "sessions");
 }
 function piSessionDir(worktreePath) {
-  const resolved = (0, import_node_path6.resolve)(worktreePath);
+  const resolved = (0, import_node_path7.resolve)(worktreePath);
   const safePath = `--${resolved.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-  return (0, import_node_path6.join)(piSessionsRoot(), safePath);
+  return (0, import_node_path7.join)(piSessionsRoot(), safePath);
 }
 function parsePiSessionTail(text) {
   let model;
@@ -55959,7 +56038,7 @@ function readPiState(ctx) {
     try {
       const dir = piSessionDir(ctx.worktreePath);
       if ((0, import_node_fs4.existsSync)(dir)) {
-        const files = (0, import_node_fs4.readdirSync)(dir).filter((f) => f.endsWith(".jsonl")).map((f) => ({ path: (0, import_node_path6.join)(dir, f), mtime: (0, import_node_fs4.statSync)((0, import_node_path6.join)(dir, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
+        const files = (0, import_node_fs4.readdirSync)(dir).filter((f) => f.endsWith(".jsonl")).map((f) => ({ path: (0, import_node_path7.join)(dir, f), mtime: (0, import_node_fs4.statSync)((0, import_node_path7.join)(dir, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
         const recent = [];
         for (const item of files.slice(0, 3)) {
           const parsed = readPiSessionState(item.path);
@@ -55976,7 +56055,7 @@ function readPiState(ctx) {
     }
   }
   const cfgPaths = [PI_SETTINGS];
-  if (ctx?.worktreePath) cfgPaths.push((0, import_node_path6.join)(ctx.worktreePath, ".pi", "settings.json"));
+  if (ctx?.worktreePath) cfgPaths.push((0, import_node_path7.join)(ctx.worktreePath, ".pi", "settings.json"));
   let cfgModel;
   let cfgEffort;
   for (const p of cfgPaths) {
@@ -56242,11 +56321,11 @@ function parseTuiAgent(text) {
 // src/icons.ts
 var lucide = __toESM(require_lucide_static(), 1);
 var import_node_fs5 = require("node:fs");
-var import_node_path7 = require("node:path");
+var import_node_path8 = require("node:path");
 var import_node_os2 = require("node:os");
 var memCache = /* @__PURE__ */ new Map();
 var inflightFetches = /* @__PURE__ */ new Map();
-var CACHE_DIR = (0, import_node_path7.join)((0, import_node_os2.tmpdir)(), "agentdeck-icons");
+var CACHE_DIR = (0, import_node_path8.join)((0, import_node_os2.tmpdir)(), "agentdeck-icons");
 function ensureCacheDir() {
   try {
     if (!(0, import_node_fs5.existsSync)(CACHE_DIR)) (0, import_node_fs5.mkdirSync)(CACHE_DIR, { recursive: true });
@@ -56276,14 +56355,14 @@ function resolveLucideSvg(name) {
 }
 function resolveLocalIconUri(repoPath, relPath) {
   if (!relPath) return void 0;
-  const fullPath = (0, import_node_path7.isAbsolute)(relPath) ? relPath : repoPath ? (0, import_node_path7.join)(repoPath, relPath) : void 0;
+  const fullPath = (0, import_node_path8.isAbsolute)(relPath) ? relPath : repoPath ? (0, import_node_path8.join)(repoPath, relPath) : void 0;
   if (!fullPath) return void 0;
   const key = `local:${fullPath}`;
   if (memCache.has(key)) return memCache.get(key)?.uri;
   try {
     if ((0, import_node_fs5.existsSync)(fullPath)) {
       const buf = (0, import_node_fs5.readFileSync)(fullPath);
-      const ext = (0, import_node_path7.extname)(fullPath).toLowerCase();
+      const ext = (0, import_node_path8.extname)(fullPath).toLowerCase();
       const mime = MIME_MAP[ext] || "image/png";
       const uri = `data:${mime};base64,${buf.toString("base64")}`;
       memCache.set(key, { uri });
@@ -56308,7 +56387,7 @@ async function fetchRemoteIconUri(url2) {
     return inflightFetches.get(url2);
   }
   ensureCacheDir();
-  const diskPath = (0, import_node_path7.join)(CACHE_DIR, `${hashStr(url2)}.dat`);
+  const diskPath = (0, import_node_path8.join)(CACHE_DIR, `${hashStr(url2)}.dat`);
   if ((0, import_node_fs5.existsSync)(diskPath)) {
     try {
       const uri = (0, import_node_fs5.readFileSync)(diskPath, "utf8");
@@ -57277,6 +57356,8 @@ function splitSlash(value, perLine) {
 
 // src/plugin.ts
 var execFileP = (0, import_node_util.promisify)(import_node_child_process.execFile);
+if (IS_LINUX) process.env.PATH = withExtraPath(process.env.PATH, linuxExtraPath((0, import_node_os3.homedir)()));
+var ORCA_DATA_DIR = orcaDataDir(process.platform, (0, import_node_os3.homedir)(), process.env);
 function firstExisting(candidates, fallback) {
   for (const p of candidates) if ((0, import_node_fs6.existsSync)(p)) return p;
   return fallback;
@@ -57285,26 +57366,30 @@ var ORCA = firstExisting([
   "/usr/local/bin/orca",
   "/opt/homebrew/bin/orca",
   // Linux AppImage install: Orca drops its CLI shim here instead of on PATH
-  (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".config/orca/linux-orca-cli-shim/orca")
+  (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".config/orca/linux-orca-cli-shim/orca")
 ], "orca");
 var OPENCODE_CMD = firstExisting([
+  (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".opencode", "bin", "opencode"),
   "/opt/homebrew/bin/opencode",
   "/usr/local/bin/opencode",
   "/opt/local/bin/opencode"
 ], "opencode");
-var STT_APP = (0, import_node_path8.join)(__dirname, "SttHelper.app");
+var STT_APP = (0, import_node_path9.join)(__dirname, "SttHelper.app");
 var STT_TXT = "/tmp/agentdeck-stt.txt";
 var STT_PID = "/tmp/agentdeck-stt.pid";
 var STT_PARTIAL = "/tmp/agentdeck-stt.partial";
 var STT_STATUS = "/tmp/agentdeck-stt.status";
-var OPENCODE_STATE2 = (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".local", "state", "opencode", "model.json");
-var OPENCODE_TUI2 = (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".local", "state", "opencode", "tui");
+var OPENCODE_STATE2 = (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".local", "state", "opencode", "model.json");
+var OPENCODE_TUI2 = (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".local", "state", "opencode", "tui");
 var TALK_HINT = {
   MIC_DENIED: "Enable Mic Perm",
   SPEECH_DENIED: "Enable Speech Rec",
   DICTATION_OFF: "Enable Dictation",
   NO_RECOGNIZER: "No STT Locale",
-  MIC_ERR: "Mic Error"
+  MIC_ERR: "Mic Error",
+  NO_WHISPER: "Install whisper-cpp",
+  NO_MODEL: "No whisper model",
+  STT_FAILED: "STT Failed"
 };
 var talkHint = (code) => TALK_HINT[code] ?? "STT Error";
 var EXEC = { maxBuffer: 64 * 1024 * 1024 };
@@ -57319,17 +57404,47 @@ async function orcaRun(args) {
 var lastNonOrcaApp = null;
 function isOrca(app) {
   if (!app) return false;
+  if (IS_LINUX) return isOrcaClass(app.bundleId);
   if (app.bundleId === "com.stablyai.orca") return true;
   if (app.name === "Orca") return true;
   return false;
 }
 function isStreamDeck(app) {
   if (!app) return false;
+  if (IS_LINUX) return isDeckHostClass(app.bundleId);
   if (app.bundleId === "com.elgato.StreamDeck") return true;
   if (app.name === "Stream Deck") return true;
   return false;
 }
+async function hyprClients() {
+  const { stdout } = await execFileP("hyprctl", ["clients", "-j"], EXEC);
+  return parseHyprClients(stdout);
+}
+var toAppInfo = (c) => ({
+  asn: c.address,
+  bundleId: c.class,
+  name: c.title
+});
+async function hyprFocus(address) {
+  for (const args of hyprFocusDispatches(address)) {
+    try {
+      const { stdout } = await execFileP("hyprctl", args, EXEC);
+      if (!/error/i.test(stdout)) return true;
+    } catch {
+    }
+  }
+  return false;
+}
 async function getFrontmostApp() {
+  if (IS_LINUX) {
+    try {
+      const { stdout } = await execFileP("hyprctl", ["activewindow", "-j"], EXEC);
+      const w = JSON.parse(stdout);
+      return w?.address ? toAppInfo(w) : null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const { stdout: frontAsn } = await execFileP("/usr/bin/lsappinfo", ["front"], EXEC);
     const asn = frontAsn.trim();
@@ -57354,6 +57469,14 @@ async function getFrontmostApp() {
   }
 }
 async function getPreviousAppFromSystem() {
+  if (IS_LINUX) {
+    try {
+      const prev = previousWindow(await hyprClients());
+      return prev ? toAppInfo(prev) : null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const { stdout: meta } = await execFileP("/usr/bin/lsappinfo", ["metainfo"], EXEC);
     const m = meta.match(/bringForwardOrder\s*=\s*(.+)/);
@@ -57381,6 +57504,7 @@ async function getPreviousAppFromSystem() {
   return null;
 }
 async function activateApp(app) {
+  if (IS_LINUX) return app.asn ? hyprFocus(app.asn) : false;
   if (app.bundleId) {
     try {
       await execFileP("/usr/bin/open", ["-b", app.bundleId], EXEC);
@@ -57405,6 +57529,7 @@ async function activateApp(app) {
   return false;
 }
 async function hideOrca() {
+  if (IS_LINUX) return;
   try {
     await execFileP("/usr/bin/osascript", [
       "-l",
@@ -57436,6 +57561,12 @@ async function focusOrca() {
     const frontApp = await getFrontmostApp();
     if (!isOrca(frontApp) && frontApp && !isStreamDeck(frontApp)) {
       lastNonOrcaApp = frontApp;
+    }
+    if (IS_LINUX) {
+      const win = orcaWindow(await hyprClients());
+      if (win) await hyprFocus(win.address);
+      else plugin_default.logger.warn("focus orca: no Orca window found");
+      return;
     }
     await execFileP("/usr/bin/open", ["-b", "com.stablyai.orca"], EXEC);
   } catch (e) {
@@ -57477,6 +57608,58 @@ var effortsByHandle = /* @__PURE__ */ new Map();
 var allHandles = [];
 var sessionByHandle = /* @__PURE__ */ new Map();
 var terminalAgentCache = /* @__PURE__ */ new Map();
+var STT_WAV = "/tmp/agentdeck-stt.wav";
+var sttRecorder = null;
+var sttRecorderExit = null;
+function setSttStatus(code) {
+  try {
+    (0, import_node_fs6.writeFileSync)(STT_STATUS, code);
+  } catch {
+  }
+}
+function startLinuxCapture() {
+  const whisper = WHISPER_BIN_CANDIDATES.find((c) => (0, import_node_fs6.existsSync)(c));
+  if (!whisper) return setSttStatus("NO_WHISPER");
+  if (!(0, import_node_fs6.existsSync)(whisperModelPath((0, import_node_os3.homedir)(), process.env))) return setSttStatus("NO_MODEL");
+  const child = (0, import_node_child_process2.spawn)("pw-record", pwRecordArgs(STT_WAV), { stdio: "ignore" });
+  sttRecorder = child;
+  sttRecorderExit = new Promise((resolve2) => {
+    child.on("exit", () => resolve2());
+    child.on("error", () => {
+      setSttStatus("MIC_ERR");
+      resolve2();
+    });
+  });
+  if (child.pid) (0, import_node_fs6.writeFileSync)(STT_PID, String(child.pid));
+}
+async function stopLinuxCaptureAndTranscribe() {
+  const rec = sttRecorder;
+  sttRecorder = null;
+  if (!rec) return;
+  rec.kill("SIGINT");
+  await Promise.race([sttRecorderExit, new Promise((r) => setTimeout(r, 2e3))]);
+  sttRecorderExit = null;
+  const whisper = WHISPER_BIN_CANDIDATES.find((c) => (0, import_node_fs6.existsSync)(c));
+  if (!whisper || !(0, import_node_fs6.existsSync)(STT_WAV)) return setSttStatus("MIC_ERR");
+  const locale = process.env.STT_LOCALE ?? ((0, import_node_fs6.existsSync)("/tmp/agentdeck-stt.locale") ? (0, import_node_fs6.readFileSync)("/tmp/agentdeck-stt.locale", "utf8") : "");
+  try {
+    const { stdout } = await execFileP(
+      whisper,
+      whisperArgs(whisperModelPath((0, import_node_os3.homedir)(), process.env), STT_WAV, whisperLanguage(locale), 4),
+      { ...EXEC, timeout: 6e4 }
+    );
+    const txt = cleanTranscript(stdout);
+    if (txt) (0, import_node_fs6.writeFileSync)(STT_TXT, txt);
+  } catch (e) {
+    plugin_default.logger.error(`whisper: ${e}`);
+    setSttStatus("STT_FAILED");
+  } finally {
+    try {
+      (0, import_node_fs6.unlinkSync)(STT_WAV);
+    } catch {
+    }
+  }
+}
 var recording = false;
 var talkState = "hold";
 var recPoll = null;
@@ -57490,7 +57673,8 @@ async function startRecording() {
       (0, import_node_fs6.unlinkSync)(f);
     } catch {
     }
-    await execFileP("/usr/bin/open", [STT_APP]);
+    if (IS_LINUX) startLinuxCapture();
+    else await execFileP("/usr/bin/open", [STT_APP]);
     recPoll = setInterval(() => {
       try {
         if ((0, import_node_fs6.existsSync)(STT_STATUS)) {
@@ -57526,10 +57710,14 @@ async function stopAndSend(target) {
   talkState = "processing";
   renderAll();
   try {
-    const pid = (0, import_node_fs6.existsSync)(STT_PID) ? (0, import_node_fs6.readFileSync)(STT_PID, "utf8").trim() : "";
-    if (pid) try {
-      await execFileP("/bin/kill", ["-INT", pid]);
-    } catch {
+    if (IS_LINUX) {
+      await stopLinuxCaptureAndTranscribe();
+    } else {
+      const pid = (0, import_node_fs6.existsSync)(STT_PID) ? (0, import_node_fs6.readFileSync)(STT_PID, "utf8").trim() : "";
+      if (pid) try {
+        await execFileP("/bin/kill", ["-INT", pid]);
+      } catch {
+      }
     }
     let txt = "";
     for (let i = 0; i < 15; i++) {
@@ -57912,7 +58100,7 @@ function targetAttention() {
 function getHookEvents() {
   const map2 = /* @__PURE__ */ new Map();
   try {
-    const filePath = (0, import_node_path8.join)((0, import_node_os3.homedir)(), "Library/Application Support/orca/agent-hooks/last-status.json");
+    const filePath = (0, import_node_path9.join)(ORCA_DATA_DIR, "agent-hooks", "last-status.json");
     if ((0, import_node_fs6.existsSync)(filePath)) {
       const content = (0, import_node_fs6.readFileSync)(filePath, "utf-8");
       const data = JSON.parse(content);
@@ -58400,15 +58588,15 @@ setInterval(() => {
 }, 1e3);
 function setupFileWatchers() {
   const dirsToWatch = [
-    (0, import_node_path8.join)((0, import_node_os3.homedir)(), "Library/Application Support/orca/agent-hooks"),
-    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".local/state/opencode"),
-    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".claude"),
-    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".claude/cache/model-catalog"),
-    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".claude/projects"),
-    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".codex"),
-    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".gemini/antigravity-cli"),
-    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".pi/agent"),
-    (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".pi/agent/sessions")
+    (0, import_node_path9.join)(ORCA_DATA_DIR, "agent-hooks"),
+    (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".local/state/opencode"),
+    (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".claude"),
+    (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".claude/cache/model-catalog"),
+    (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".claude/projects"),
+    (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".codex"),
+    (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".gemini/antigravity-cli"),
+    (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".pi/agent"),
+    (0, import_node_path9.join)((0, import_node_os3.homedir)(), ".pi/agent/sessions")
   ];
   for (const dir of dirsToWatch) {
     try {

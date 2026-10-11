@@ -7,6 +7,25 @@ import { writeFileSync, readFileSync, existsSync, unlinkSync, watch } from "node
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
+import { spawn, type ChildProcess } from "node:child_process";
+import {
+  IS_LINUX,
+  orcaDataDir,
+  linuxExtraPath,
+  withExtraPath,
+  parseHyprClients,
+  isOrcaClass,
+  isDeckHostClass,
+  previousWindow,
+  orcaWindow,
+  hyprFocusDispatches,
+  WHISPER_BIN_CANDIDATES,
+  whisperModelPath,
+  whisperLanguage,
+  whisperArgs,
+  cleanTranscript,
+  pwRecordArgs,
+} from "./linux";
 import {
   buildDeck,
   needsAttention,
@@ -47,6 +66,9 @@ import {
 } from "./agents";
 
 const execFileP = promisify(execFile);
+// Plugin processes started by the OpenDeck Flatpak get a minimal host PATH; add the usual user bin dirs
+if (IS_LINUX) process.env.PATH = withExtraPath(process.env.PATH, linuxExtraPath(homedir()));
+const ORCA_DATA_DIR = orcaDataDir(process.platform, homedir(), process.env);
 // Search common paths across different machines (eliminating hardcoded paths)
 function firstExisting(candidates: string[], fallback: string): string {
   for (const p of candidates) if (existsSync(p)) return p;
@@ -60,6 +82,7 @@ const ORCA = firstExisting([
 ], "orca");
 // Full path to opencode — avoids injection of unsupported --permissions arguments from Orca's opencode launcher
 const OPENCODE_CMD = firstExisting([
+  join(homedir(), ".opencode", "bin", "opencode"),
   "/opt/homebrew/bin/opencode",
   "/usr/local/bin/opencode",
   "/opt/local/bin/opencode",
@@ -81,6 +104,9 @@ const TALK_HINT: Record<string, string> = {
   DICTATION_OFF: "Enable Dictation",
   NO_RECOGNIZER: "No STT Locale",
   MIC_ERR: "Mic Error",
+  NO_WHISPER: "Install whisper-cpp",
+  NO_MODEL: "No whisper model",
+  STT_FAILED: "STT Failed",
 };
 const talkHint = (code: string) => TALK_HINT[code] ?? "STT Error";
 const EXEC = { maxBuffer: 64 * 1024 * 1024 } as const;
@@ -109,6 +135,7 @@ let lastNonOrcaApp: AppInfo | null = null;
 
 function isOrca(app: AppInfo | null): boolean {
   if (!app) return false;
+  if (IS_LINUX) return isOrcaClass(app.bundleId);
   if (app.bundleId === "com.stablyai.orca") return true;
   if (app.name === "Orca") return true;
   return false;
@@ -116,12 +143,44 @@ function isOrca(app: AppInfo | null): boolean {
 
 function isStreamDeck(app: AppInfo | null): boolean {
   if (!app) return false;
+  if (IS_LINUX) return isDeckHostClass(app.bundleId);
   if (app.bundleId === "com.elgato.StreamDeck") return true;
   if (app.name === "Stream Deck") return true;
   return false;
 }
 
+// ---- Linux (Hyprland): bundleId = window class, asn = window address, name = title ----
+async function hyprClients() {
+  const { stdout } = await execFileP("hyprctl", ["clients", "-j"], EXEC);
+  return parseHyprClients(stdout);
+}
+
+const toAppInfo = (c: { address: string; class: string; title: string }): AppInfo => ({
+  asn: c.address,
+  bundleId: c.class,
+  name: c.title,
+});
+
+async function hyprFocus(address: string): Promise<boolean> {
+  for (const args of hyprFocusDispatches(address)) {
+    try {
+      const { stdout } = await execFileP("hyprctl", args, EXEC);
+      if (!/error/i.test(stdout)) return true;
+    } catch {}
+  }
+  return false;
+}
+
 async function getFrontmostApp(): Promise<AppInfo | null> {
+  if (IS_LINUX) {
+    try {
+      const { stdout } = await execFileP("hyprctl", ["activewindow", "-j"], EXEC);
+      const w = JSON.parse(stdout);
+      return w?.address ? toAppInfo(w) : null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const { stdout: frontAsn } = await execFileP("/usr/bin/lsappinfo", ["front"], EXEC);
     const asn = frontAsn.trim();
@@ -145,6 +204,14 @@ async function getFrontmostApp(): Promise<AppInfo | null> {
 }
 
 async function getPreviousAppFromSystem(): Promise<AppInfo | null> {
+  if (IS_LINUX) {
+    try {
+      const prev = previousWindow(await hyprClients());
+      return prev ? toAppInfo(prev) : null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const { stdout: meta } = await execFileP("/usr/bin/lsappinfo", ["metainfo"], EXEC);
     const m = meta.match(/bringForwardOrder\s*=\s*(.+)/);
@@ -170,6 +237,7 @@ async function getPreviousAppFromSystem(): Promise<AppInfo | null> {
 }
 
 async function activateApp(app: AppInfo): Promise<boolean> {
+  if (IS_LINUX) return app.asn ? hyprFocus(app.asn) : false;
   if (app.bundleId) {
     try {
       await execFileP("/usr/bin/open", ["-b", app.bundleId], EXEC);
@@ -192,6 +260,8 @@ async function activateApp(app: AppInfo): Promise<boolean> {
 }
 
 async function hideOrca(): Promise<void> {
+  // No app-level hide on Linux; switchToPreviousApp already refocused the previous window
+  if (IS_LINUX) return;
   try {
     await execFileP("/usr/bin/osascript", [
       "-l", "JavaScript",
@@ -224,6 +294,12 @@ async function focusOrca(): Promise<void> {
     const frontApp = await getFrontmostApp();
     if (!isOrca(frontApp) && frontApp && !isStreamDeck(frontApp)) {
       lastNonOrcaApp = frontApp;
+    }
+    if (IS_LINUX) {
+      const win = orcaWindow(await hyprClients());
+      if (win) await hyprFocus(win.address);
+      else streamDeck.logger.warn("focus orca: no Orca window found");
+      return;
     }
     await execFileP("/usr/bin/open", ["-b", "com.stablyai.orca"], EXEC);
   } catch (e) {
@@ -275,6 +351,54 @@ const sessionByHandle = new Map<string, any>(); // handle -> button metadata
 const terminalAgentCache = new Map<string, CachedTerminalAgent>(); // handle -> stabilized agentIdentity across polls
 
 // Push-to-talk state — uses Apple Speech STT helper (.app)
+// Linux STT: pw-record -> wav -> whisper-cli (offline). Same /tmp status files as the macOS helper.
+const STT_WAV = "/tmp/agentdeck-stt.wav";
+let sttRecorder: ChildProcess | null = null;
+let sttRecorderExit: Promise<void> | null = null;
+
+function setSttStatus(code: string): void {
+  try { writeFileSync(STT_STATUS, code); } catch {}
+}
+
+function startLinuxCapture(): void {
+  const whisper = WHISPER_BIN_CANDIDATES.find((c) => existsSync(c));
+  if (!whisper) return setSttStatus("NO_WHISPER");
+  if (!existsSync(whisperModelPath(homedir(), process.env))) return setSttStatus("NO_MODEL");
+  const child = spawn("pw-record", pwRecordArgs(STT_WAV), { stdio: "ignore" });
+  sttRecorder = child;
+  sttRecorderExit = new Promise<void>((resolve) => {
+    child.on("exit", () => resolve());
+    child.on("error", () => { setSttStatus("MIC_ERR"); resolve(); });
+  });
+  if (child.pid) writeFileSync(STT_PID, String(child.pid));
+}
+
+async function stopLinuxCaptureAndTranscribe(): Promise<void> {
+  const rec = sttRecorder;
+  sttRecorder = null;
+  if (!rec) return;
+  rec.kill("SIGINT"); // lets pw-record finalize the wav header
+  await Promise.race([sttRecorderExit, new Promise((r) => setTimeout(r, 2000))]);
+  sttRecorderExit = null;
+  const whisper = WHISPER_BIN_CANDIDATES.find((c) => existsSync(c));
+  if (!whisper || !existsSync(STT_WAV)) return setSttStatus("MIC_ERR");
+  const locale = process.env.STT_LOCALE ?? (existsSync("/tmp/agentdeck-stt.locale") ? readFileSync("/tmp/agentdeck-stt.locale", "utf8") : "");
+  try {
+    const { stdout } = await execFileP(
+      whisper,
+      whisperArgs(whisperModelPath(homedir(), process.env), STT_WAV, whisperLanguage(locale), 4),
+      { ...EXEC, timeout: 60_000 },
+    );
+    const txt = cleanTranscript(stdout);
+    if (txt) writeFileSync(STT_TXT, txt);
+  } catch (e) {
+    streamDeck.logger.error(`whisper: ${e}`);
+    setSttStatus("STT_FAILED");
+  } finally {
+    try { unlinkSync(STT_WAV); } catch {}
+  }
+}
+
 let recording = false;
 let talkState = "hold"; // hold | ● REC | <live text> | mic err | STT err
 let recPoll: ReturnType<typeof setInterval> | null = null;
@@ -287,7 +411,8 @@ async function startRecording(): Promise<void> {
   try {
     for (const f of [STT_TXT, STT_PID, STT_PARTIAL, STT_STATUS]) if (existsSync(f)) try { unlinkSync(f); } catch {}
     // Launch helper via open (starts live recognition with bundle permissions)
-    await execFileP("/usr/bin/open", [STT_APP]);
+    if (IS_LINUX) startLinuxCapture();
+    else await execFileP("/usr/bin/open", [STT_APP]);
     // Show partial transcription in real-time on dial
     recPoll = setInterval(() => {
       try {
@@ -319,8 +444,12 @@ async function stopAndSend(target?: string): Promise<void> {
   renderAll();
   try {
     // Send SIGINT to helper PID to finalize recognition
-    const pid = existsSync(STT_PID) ? readFileSync(STT_PID, "utf8").trim() : "";
-    if (pid) try { await execFileP("/bin/kill", ["-INT", pid]); } catch {}
+    if (IS_LINUX) {
+      await stopLinuxCaptureAndTranscribe();
+    } else {
+      const pid = existsSync(STT_PID) ? readFileSync(STT_PID, "utf8").trim() : "";
+      if (pid) try { await execFileP("/bin/kill", ["-INT", pid]); } catch {}
+    }
     // Wait for output file to populate (up to ~3s)
     let txt = "";
     for (let i = 0; i < 15; i++) {
@@ -757,7 +886,7 @@ function targetAttention(): boolean {
 function getHookEvents(): Map<string, { hookEventName?: string; agentType?: string; state?: string; status?: string; workingMode?: string; interrupted?: boolean; receivedAt?: number }> {
   const map = new Map<string, { hookEventName?: string; agentType?: string; state?: string; status?: string; workingMode?: string; interrupted?: boolean; receivedAt?: number }>();
   try {
-    const filePath = join(homedir(), "Library/Application Support/orca/agent-hooks/last-status.json");
+    const filePath = join(ORCA_DATA_DIR, "agent-hooks", "last-status.json");
     if (existsSync(filePath)) {
       const content = readFileSync(filePath, "utf-8");
       const data = JSON.parse(content);
@@ -1246,7 +1375,7 @@ setInterval(() => {
 // File watchers for Orca hooks and agent state files (<50ms fast reactive update)
 function setupFileWatchers(): void {
   const dirsToWatch = [
-    join(homedir(), "Library/Application Support/orca/agent-hooks"),
+    join(ORCA_DATA_DIR, "agent-hooks"),
     join(homedir(), ".local/state/opencode"),
     join(homedir(), ".claude"),
     join(homedir(), ".claude/cache/model-catalog"),

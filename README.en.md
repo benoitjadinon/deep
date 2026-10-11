@@ -9,11 +9,35 @@ When running several agents in parallel, instead of hopping between windows, you
 ## Requirements
 | | |
 |---|---|
-| **macOS** | Required (STT, permissions, and audio are macOS-only) |
+| **macOS or Linux** | macOS uses the Apple Speech helper; Linux (Hyprland) see [Linux](#linux-hyprland--opendeck) |
 | **[Orca](https://orca.computer)** | Required — session listing, state, switching, and sending all go through the `orca` CLI |
 | **Node.js** | Required — runs under the system node (auto-detected via homebrew/local/nvm) |
 | **Stream Deck +** | 8 keys + 4 dials (dial features are +-only) |
 | Agent | Claude Code recommended. The session board and Talk work with any Orca agent; the **model/effort dials** need agents that accept `/model` and `/effort` (e.g. Claude) |
+
+## Linux (Hyprland + OpenDeck)
+Works on Linux with [OpenDeck](https://github.com/nekename/OpenDeck) (Flatpak or native) instead of the Elgato app.
+
+| macOS piece | Linux replacement |
+|---|---|
+| `lsappinfo` / `open -b` (focus Orca, toggle back to the previous app) | `hyprctl` (Hyprland, Lua or classic dispatch syntax); needs to be reachable from the plugin process |
+| Orca data in `~/Library/Application Support/orca` | `~/.config/orca` (`$XDG_CONFIG_HOME/orca`) |
+| Apple Speech helper (Talk) | `pw-record` (PipeWire) + [`whisper-cli`](https://github.com/ggml-org/whisper.cpp), fully offline |
+| `orca` CLI on PATH | Orca AppImage shim in `~/.config/orca/linux-orca-cli-shim/orca` is found automatically |
+
+```bash
+sudo pacman -S whisper-cpp                      # Arch; provides /usr/bin/whisper-cli
+mkdir -p ~/.local/share/agentdeck/whisper
+curl -L -o ~/.local/share/agentdeck/whisper/ggml-base.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+npm install && npm run build
+ln -s "$PWD/com.byjw.deep.sdPlugin" <opendeck-config>/plugins/com.byjw.deep.sdPlugin
+# Flatpak: <opendeck-config> = ~/.var/app/me.amankhanna.opendeck/config/opendeck, and grant the sandbox read access:
+flatpak override --user --filesystem="$PWD":ro me.amankhanna.opendeck
+npm run restart                                 # restarts OpenDeck and the plugin
+```
+- OpenDeck starts the plugin with the host's `node` (Node 20+). Talk's language follows `STT_LOCALE` (e.g. `fr-FR`) and defaults to auto-detect; use `AGENTDECK_WHISPER_MODEL` for another model file (e.g. `ggml-small.bin`).
+- Talk dial hints on Linux: `Install whisper-cpp`, `No whisper model`, `Mic Error`, `STT Failed`.
 
 ## Download · Install (users)
 1. Download the latest `com.byjw.deep.streamDeckPlugin` from [Releases](https://github.com/Jungwoon/deep/releases)
