@@ -8,7 +8,19 @@ APP="OpenDeck"
 PROC="opendeck"
 
 if [ "$(uname -s)" = "Linux" ]; then
-  # Linux: OpenDeck runs as a Flatpak; the plugin itself runs on the host via flatpak-spawn.
+  # Linux: native OpenDeck build (e.g. ~/.local/bin/opendeck) if present, otherwise the Flatpak
+  # (where the plugin itself runs on the host via flatpak-spawn).
+  if command -v opendeck >/dev/null 2>&1; then
+    echo "==> Stopping $APP (native)..."
+    pkill -x opendeck || true
+    # Host-side plugin processes can outlive the app; OpenDeck respawns them.
+    pkill -f "^node bin/plugin\\.js .*-pluginUUID com\\.byjw\\.deep\\." || true
+    sleep 1
+    echo "==> Relaunching $APP..."
+    setsid opendeck >/dev/null 2>&1 < /dev/null &
+    echo "==> Done. Give it a moment to rescan plugins."
+    exit 0
+  fi
   FLATPAK_ID="me.amankhanna.opendeck"
   echo "==> Stopping $APP ($FLATPAK_ID)..."
   flatpak kill "$FLATPAK_ID" >/dev/null 2>&1 || true
