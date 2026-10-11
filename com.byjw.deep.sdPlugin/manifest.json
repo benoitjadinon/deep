@@ -9,6 +9,7 @@
   "CategoryIcon": "imgs/plugin/category",
   "Icon": "imgs/plugin/marketplace",
   "CodePath": "bin/launch.sh",
+  "CodePathLin": "bin/plugin.js",
   "SDKVersion": 2,
   "Software": {
     "MinimumVersion": "7.0"
@@ -17,6 +18,10 @@
     {
       "Platform": "mac",
       "MinimumVersion": "10.15"
+    },
+    {
+      "Platform": "linux",
+      "MinimumVersion": "6.0"
     }
   ],
   "Actions": [

@@ -57281,7 +57281,12 @@ function firstExisting(candidates, fallback) {
   for (const p of candidates) if ((0, import_node_fs6.existsSync)(p)) return p;
   return fallback;
 }
-var ORCA = firstExisting(["/usr/local/bin/orca", "/opt/homebrew/bin/orca"], "orca");
+var ORCA = firstExisting([
+  "/usr/local/bin/orca",
+  "/opt/homebrew/bin/orca",
+  // Linux AppImage install: Orca drops its CLI shim here instead of on PATH
+  (0, import_node_path8.join)((0, import_node_os3.homedir)(), ".config/orca/linux-orca-cli-shim/orca")
+], "orca");
 var OPENCODE_CMD = firstExisting([
   "/opt/homebrew/bin/opencode",
   "/usr/local/bin/opencode",

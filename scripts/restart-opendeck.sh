@@ -7,6 +7,21 @@ set -euo pipefail
 APP="OpenDeck"
 PROC="opendeck"
 
+if [ "$(uname -s)" = "Linux" ]; then
+  # Linux: OpenDeck runs as a Flatpak; the plugin itself runs on the host via flatpak-spawn.
+  FLATPAK_ID="me.amankhanna.opendeck"
+  echo "==> Stopping $APP ($FLATPAK_ID)..."
+  flatpak kill "$FLATPAK_ID" >/dev/null 2>&1 || true
+  # Host-side plugin processes survive the sandbox kill; OpenDeck starts them as
+  # `node bin/plugin.js ... -pluginUUID com.byjw.deep.sdPlugin`.
+  pkill -f "^node bin/plugin\.js .*-pluginUUID com\.byjw\.deep\." || true
+  sleep 1
+  echo "==> Relaunching $APP..."
+  setsid flatpak run "$FLATPAK_ID" >/dev/null 2>&1 < /dev/null &
+  echo "==> Done. Give it a moment to rescan plugins."
+  exit 0
+fi
+
 echo "==> Quitting $APP (osascript graceful quit)..."
 osascript -e "tell application \"$APP\" to quit" >/dev/null 2>&1 || true
 

@@ -52,7 +52,12 @@ function firstExisting(candidates: string[], fallback: string): string {
   for (const p of candidates) if (existsSync(p)) return p;
   return fallback;
 }
-const ORCA = firstExisting(["/usr/local/bin/orca", "/opt/homebrew/bin/orca"], "orca");
+const ORCA = firstExisting([
+  "/usr/local/bin/orca",
+  "/opt/homebrew/bin/orca",
+  // Linux AppImage install: Orca drops its CLI shim here instead of on PATH
+  join(homedir(), ".config/orca/linux-orca-cli-shim/orca"),
+], "orca");
 // Full path to opencode — avoids injection of unsupported --permissions arguments from Orca's opencode launcher
 const OPENCODE_CMD = firstExisting([
   "/opt/homebrew/bin/opencode",
