@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createConnection } from "node:net";
+import { randomUUID } from "node:crypto";
 import {
   IS_LINUX,
   orcaDataDir,
@@ -313,13 +315,34 @@ async function focusOrca(): Promise<void> {
 
 // Timestamp of manual navigation (dial rotate / key tap) — prevents poll auto-tracking from overwriting manual selection immediately
 let lastNav = 0;
+// Interaction hold: when a session slot is tapped, freeze all currently visible slot positions
+// for 30s so interacting with or replying to an agent never moves any tile under the user's fingers.
+let pinnedSlots = new Map<string, number>(); // handle -> slot index
+let pinnedUntil = 0;
+const PINNED_SLOT_HOLD_MS = 30_000;
+function getActivePinnedSlots(): Map<string, number> | undefined {
+  if (Date.now() < pinnedUntil && pinnedSlots.size > 0) {
+    return pinnedSlots;
+  }
+  pinnedSlots.clear();
+  return undefined;
+}
+function freezeCurrentSlots(): void {
+  pinnedSlots.clear();
+  pinnedUntil = Date.now() + PINNED_SLOT_HOLD_MS;
+  deck.slots.forEach((s, idx) => {
+    if (!s.empty && !("isPageButton" in s && s.isPageButton)) {
+      pinnedSlots.set((s as any).handle, idx);
+    }
+  });
+}
 // Debounce rapid target dial rotation (180ms)
 let targetSwitchTimer: ReturnType<typeof setTimeout> | null = null;
 function switchTargetSoon(handle: string): void {
   if (targetSwitchTimer) clearTimeout(targetSwitchTimer);
   targetSwitchTimer = setTimeout(() => {
     targetSwitchTimer = null;
-    orcaRun(["terminal", "switch", ...envArgsFor(handle), "--terminal", handle]).then(() => {
+    switchTerminal(handle).then(() => {
       pollDebounced(50);
     }).catch(() => {});
   }, 180);
@@ -358,6 +381,114 @@ const sessionByHandle = new Map<string, any>(); // handle -> button metadata
 const environmentByHandle = new Map<string, string | undefined>();
 function envArgsFor(handle?: string): string[] {
   return environmentArgs(handle ? environmentByHandle.get(handle) : undefined);
+}
+
+/**
+ * Direct RPC to the local Orca desktop runtime to reveal a terminal pane in the UI.
+ * Used for paired remote sessions because Orca CLI's `terminal switch` commands the remote
+ * server and skips local desktop reveal when the remote server returns navigated=true.
+ */
+async function orcaRevealTerminal(params: {
+  worktreeId: string;
+  tabId: string;
+  leafId?: string | null;
+  executionHostId?: string | null;
+}): Promise<boolean> {
+  const metaPath = join(ORCA_DATA_DIR, "orca-runtime.json");
+  if (!existsSync(metaPath)) return false;
+  let meta: any;
+  try {
+    meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+  } catch {
+    return false;
+  }
+  const unixTransport = Array.isArray(meta?.transports)
+    ? meta.transports.find((t: any) => t.kind === "unix")
+    : meta?.transport?.kind === "unix"
+      ? meta.transport
+      : null;
+  const endpoint = unixTransport?.endpoint;
+  if (!endpoint) return false;
+
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const socket = createConnection(endpoint);
+    const reqId = randomUUID();
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(false);
+    }, 2000);
+
+    socket.on("error", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(false);
+    });
+
+    socket.on("connect", () => {
+      socket.write(
+        JSON.stringify({
+          id: reqId,
+          authToken: meta.authToken,
+          method: "terminal.reveal",
+          params,
+        }) + "\n",
+      );
+    });
+
+    socket.on("data", (data) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.end();
+      try {
+        const res = JSON.parse(data.toString());
+        resolve(res?.ok === true && res?.result?.reveal?.navigated === true);
+      } catch {
+        resolve(false);
+      }
+    });
+  });
+}
+
+/**
+ * Switch terminal in Orca. If the terminal is on a paired remote runtime (e.g. Mac mini),
+ * `terminal switch` only navigates the server; we additionally reveal the pane on the local desktop.
+ */
+async function switchTerminal(handle: string): Promise<void> {
+  const b = sessionByHandle.get(handle);
+  const switchArgs = ["terminal", "switch", ...envArgsFor(handle), "--terminal", handle];
+  streamDeck.logger.info(`switching terminal: ${switchArgs.join(" ")}`);
+  await orcaRun(switchArgs);
+
+  let worktreeId = b?.worktreeId;
+  let tabId = b?.tabId;
+  let leafId = b?.leafId;
+  const envId = b?.environmentId;
+
+  if (envId && (!worktreeId || !tabId)) {
+    try {
+      const show = await orcaJson(["terminal", "show", ...envArgsFor(handle), "--terminal", handle]);
+      if (show?.result?.terminal) {
+        worktreeId = show.result.terminal.worktreeId;
+        tabId = show.result.terminal.tabId;
+        leafId = show.result.terminal.leafId;
+      }
+    } catch {}
+  }
+
+  if (envId && worktreeId && tabId) {
+    const revealed = await orcaRevealTerminal({
+      worktreeId,
+      tabId,
+      leafId,
+      executionHostId: `runtime:${envId}`,
+    }).catch(() => false);
+    streamDeck.logger.info(`revealed remote terminal on desktop: ${revealed}`);
+  }
 }
 const terminalAgentCache = new Map<string, CachedTerminalAgent>(); // handle -> stabilized agentIdentity across polls
 
@@ -1097,12 +1228,14 @@ async function poll(): Promise<void> {
       visualLayouts,
       hookEventsByPane: hookEvents,
     };
+    const activePinned = getActivePinnedSlots();
     deck = buildDeck(deckInput, {
       page: currentPage,
       perPage: activeSlots,
       now,
       activityBucketMs: ORDER_BUCKET_MS,
       pagingSlotIndex,
+      pinnedSlots: activePinned,
     });
     if (currentPage >= deck.pageCount) {
       currentPage = Math.max(0, deck.pageCount - 1);
@@ -1112,6 +1245,7 @@ async function poll(): Promise<void> {
         now,
         activityBucketMs: ORDER_BUCKET_MS,
         pagingSlotIndex,
+        pinnedSlots: activePinned,
       });
     }
     // Full session list (sidebar total) — target dial can cycle past 8 keys
@@ -1155,6 +1289,8 @@ async function poll(): Promise<void> {
     // Automatically set currently focused session as target. Only the local runtime can report
     // what this desktop is focused on — a remote runtime's `isActive` would fight the user's
     // manual selection (and every remote deck session would look "active" at once).
+    // If the user actively selected a remote session, do not clobber it with local active session.
+    const isTargetRemote = targetHandle ? (environmentByHandle.get(targetHandle) ?? null) !== null : false;
     const activeHandle = resolveActiveTerminal(
       localWorktrees,
       localTerminals,
@@ -1164,7 +1300,7 @@ async function poll(): Promise<void> {
     if (activeHandle && sessionByHandle.has(activeHandle)) {
       if (!targetHandle) {
         setTarget(activeHandle);
-      } else if (Date.now() - lastNav > 1800 && activeHandle !== targetHandle) {
+      } else if (!isTargetRemote && Date.now() - lastNav > 1800 && activeHandle !== targetHandle) {
         setTarget(activeHandle);
       }
     }
@@ -1313,8 +1449,9 @@ class SlotAction extends SingletonAction<SlotSettings> {
 
       setTarget(b.handle);
       lastNav = Date.now();
+      freezeCurrentSlots();
       try {
-        await orcaRun(["terminal", "switch", ...envArgsFor(b.handle), "--terminal", b.handle]);
+        await switchTerminal(b.handle);
         await focusOrca();
       } catch (e) {
         streamDeck.logger.error(`switch failed: ${e}`);
@@ -1432,7 +1569,7 @@ class DialBase extends SingletonAction {
       }
     } else if (this.role === "target" && t) {
       lastNav = Date.now();
-      await orcaRun(["terminal", "switch", ...envArgsFor(t), "--terminal", t]).catch(() => {});
+      await switchTerminal(t).catch(() => {});
       await focusOrca();
       pollDebounced(50);
     } else if (this.role === "talk") {

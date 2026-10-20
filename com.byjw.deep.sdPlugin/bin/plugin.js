@@ -54381,6 +54381,8 @@ var import_node_path9 = require("node:path");
 var import_node_os3 = require("node:os");
 var import_node_util = require("node:util");
 var import_node_child_process2 = require("node:child_process");
+var import_node_net = require("node:net");
+var import_node_crypto3 = require("node:crypto");
 
 // src/linux.ts
 var import_node_path6 = require("node:path");
@@ -56587,37 +56589,14 @@ function activityBucket(timestamp, bucketMs = DEFAULT_ACTIVITY_BUCKET_MS) {
   if (typeof timestamp !== "number" || !Number.isFinite(timestamp) || timestamp <= 0) return 0;
   return Math.floor(timestamp / Math.max(1, bucketMs));
 }
-function statePriority(state) {
-  switch (state) {
-    case "waiting":
-    case "permission":
-    case "blocked":
-    case "interrupted":
-    case "error":
-    case "failed":
-      return 0;
-    // Alerts & questions up top (demands user action/input)
-    case "working":
-    case "monitoring":
-      return 10;
-    // Active working states
-    case "done":
-    case "idle":
-    case "unverifiable":
-    default:
-      return 20;
-  }
-}
 function sortSessions(sessions, stateOf, recencyOf, handleOf, opts = {}) {
   const bucketMs = opts.bucketMs ?? DEFAULT_ACTIVITY_BUCKET_MS;
   const entries = sessions.map((s) => ({
     s,
-    priority: statePriority(stateOf(s)),
     bucket: activityBucket(recencyOf(s), bucketMs),
     handle: handleOf(s)
   }));
   entries.sort((a, b) => {
-    if (a.priority !== b.priority) return a.priority - b.priority;
     if (a.bucket !== b.bucket) return b.bucket - a.bucket;
     return a.handle.localeCompare(b.handle);
   });
@@ -56829,7 +56808,27 @@ function buildDeck(input, opts = {}) {
   const pageCount = Math.max(1, Math.ceil(total / sessionCapacityPerPage));
   const page = Math.min(Math.max(0, opts.page ?? 0), pageCount - 1);
   const start = page * sessionCapacityPerPage;
-  const pageItems = enriched.slice(start, start + sessionCapacityPerPage);
+  let pageItems = enriched.slice(start, start + sessionCapacityPerPage);
+  if (opts.pinnedSlots && page === 0) {
+    const pinned = opts.pinnedSlots;
+    const stabilized = [];
+    const usedItems = /* @__PURE__ */ new Set();
+    for (let i = 0; i < sessionCapacityPerPage; i++) {
+      const found = enriched.find((e) => pinned.get(e.item.t.handle) === i);
+      if (found) {
+        stabilized[i] = found;
+        usedItems.add(found);
+      }
+    }
+    const remaining = enriched.filter((e) => !usedItems.has(e));
+    let remIdx = 0;
+    for (let i = 0; i < sessionCapacityPerPage; i++) {
+      if (!stabilized[i] && remIdx < remaining.length) {
+        stabilized[i] = remaining[remIdx++];
+      }
+    }
+    pageItems = stabilized.filter(Boolean);
+  }
   let hasAlertOnOtherPage = false;
   let otherInfo = {};
   if (needsPaging) {
@@ -56869,6 +56868,8 @@ function buildDeck(input, opts = {}) {
       empty: false,
       isPageButton: false,
       handle: e.item.t.handle,
+      tabId: e.item.t.tabId,
+      leafId: e.item.t.leafId,
       label: shownTitle,
       tabTitle: shownTitle || void 0,
       state: e.item.state,
@@ -57669,12 +57670,31 @@ async function focusOrca() {
   }
 }
 var lastNav = 0;
+var pinnedSlots = /* @__PURE__ */ new Map();
+var pinnedUntil = 0;
+var PINNED_SLOT_HOLD_MS = 3e4;
+function getActivePinnedSlots() {
+  if (Date.now() < pinnedUntil && pinnedSlots.size > 0) {
+    return pinnedSlots;
+  }
+  pinnedSlots.clear();
+  return void 0;
+}
+function freezeCurrentSlots() {
+  pinnedSlots.clear();
+  pinnedUntil = Date.now() + PINNED_SLOT_HOLD_MS;
+  deck.slots.forEach((s, idx) => {
+    if (!s.empty && !("isPageButton" in s && s.isPageButton)) {
+      pinnedSlots.set(s.handle, idx);
+    }
+  });
+}
 var targetSwitchTimer = null;
 function switchTargetSoon(handle) {
   if (targetSwitchTimer) clearTimeout(targetSwitchTimer);
   targetSwitchTimer = setTimeout(() => {
     targetSwitchTimer = null;
-    orcaRun(["terminal", "switch", ...envArgsFor(handle), "--terminal", handle]).then(() => {
+    switchTerminal(handle).then(() => {
       pollDebounced(50);
     }).catch(() => {
     });
@@ -57705,6 +57725,88 @@ var sessionByHandle = /* @__PURE__ */ new Map();
 var environmentByHandle = /* @__PURE__ */ new Map();
 function envArgsFor(handle) {
   return environmentArgs(handle ? environmentByHandle.get(handle) : void 0);
+}
+async function orcaRevealTerminal(params) {
+  const metaPath = (0, import_node_path9.join)(ORCA_DATA_DIR, "orca-runtime.json");
+  if (!(0, import_node_fs6.existsSync)(metaPath)) return false;
+  let meta;
+  try {
+    meta = JSON.parse((0, import_node_fs6.readFileSync)(metaPath, "utf-8"));
+  } catch {
+    return false;
+  }
+  const unixTransport = Array.isArray(meta?.transports) ? meta.transports.find((t) => t.kind === "unix") : meta?.transport?.kind === "unix" ? meta.transport : null;
+  const endpoint = unixTransport?.endpoint;
+  if (!endpoint) return false;
+  return await new Promise((resolve2) => {
+    let settled = false;
+    const socket = (0, import_node_net.createConnection)(endpoint);
+    const reqId = (0, import_node_crypto3.randomUUID)();
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve2(false);
+    }, 2e3);
+    socket.on("error", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve2(false);
+    });
+    socket.on("connect", () => {
+      socket.write(
+        JSON.stringify({
+          id: reqId,
+          authToken: meta.authToken,
+          method: "terminal.reveal",
+          params
+        }) + "\n"
+      );
+    });
+    socket.on("data", (data) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.end();
+      try {
+        const res = JSON.parse(data.toString());
+        resolve2(res?.ok === true && res?.result?.reveal?.navigated === true);
+      } catch {
+        resolve2(false);
+      }
+    });
+  });
+}
+async function switchTerminal(handle) {
+  const b = sessionByHandle.get(handle);
+  const switchArgs = ["terminal", "switch", ...envArgsFor(handle), "--terminal", handle];
+  plugin_default.logger.info(`switching terminal: ${switchArgs.join(" ")}`);
+  await orcaRun(switchArgs);
+  let worktreeId = b?.worktreeId;
+  let tabId = b?.tabId;
+  let leafId = b?.leafId;
+  const envId = b?.environmentId;
+  if (envId && (!worktreeId || !tabId)) {
+    try {
+      const show = await orcaJson(["terminal", "show", ...envArgsFor(handle), "--terminal", handle]);
+      if (show?.result?.terminal) {
+        worktreeId = show.result.terminal.worktreeId;
+        tabId = show.result.terminal.tabId;
+        leafId = show.result.terminal.leafId;
+      }
+    } catch {
+    }
+  }
+  if (envId && worktreeId && tabId) {
+    const revealed = await orcaRevealTerminal({
+      worktreeId,
+      tabId,
+      leafId,
+      executionHostId: `runtime:${envId}`
+    }).catch(() => false);
+    plugin_default.logger.info(`revealed remote terminal on desktop: ${revealed}`);
+  }
 }
 var terminalAgentCache = /* @__PURE__ */ new Map();
 var STT_WAV = "/tmp/agentdeck-stt.wav";
@@ -58381,12 +58483,14 @@ async function poll() {
       visualLayouts,
       hookEventsByPane: hookEvents
     };
+    const activePinned = getActivePinnedSlots();
     deck = buildDeck(deckInput, {
       page: currentPage,
       perPage: activeSlots,
       now,
       activityBucketMs: ORDER_BUCKET_MS,
-      pagingSlotIndex
+      pagingSlotIndex,
+      pinnedSlots: activePinned
     });
     if (currentPage >= deck.pageCount) {
       currentPage = Math.max(0, deck.pageCount - 1);
@@ -58395,7 +58499,8 @@ async function poll() {
         perPage: activeSlots,
         now,
         activityBucketMs: ORDER_BUCKET_MS,
-        pagingSlotIndex
+        pagingSlotIndex,
+        pinnedSlots: activePinned
       });
     }
     const full = buildDeck(deckInput, { page: 0, perPage: 9999, now, activityBucketMs: ORDER_BUCKET_MS });
@@ -58434,6 +58539,7 @@ async function poll() {
         modeByHandle.delete(h);
       }
     }
+    const isTargetRemote = targetHandle ? (environmentByHandle.get(targetHandle) ?? null) !== null : false;
     const activeHandle = resolveActiveTerminal(
       localWorktrees,
       localTerminals,
@@ -58443,7 +58549,7 @@ async function poll() {
     if (activeHandle && sessionByHandle.has(activeHandle)) {
       if (!targetHandle) {
         setTarget(activeHandle);
-      } else if (Date.now() - lastNav > 1800 && activeHandle !== targetHandle) {
+      } else if (!isTargetRemote && Date.now() - lastNav > 1800 && activeHandle !== targetHandle) {
         setTarget(activeHandle);
       }
     }
@@ -58578,8 +58684,9 @@ var SlotAction = class extends SingletonAction {
       }
       setTarget(b.handle);
       lastNav = Date.now();
+      freezeCurrentSlots();
       try {
-        await orcaRun(["terminal", "switch", ...envArgsFor(b.handle), "--terminal", b.handle]);
+        await switchTerminal(b.handle);
         await focusOrca();
       } catch (e) {
         plugin_default.logger.error(`switch failed: ${e}`);
@@ -58694,7 +58801,7 @@ var DialBase = class extends SingletonAction {
       }
     } else if (this.role === "target" && t) {
       lastNav = Date.now();
-      await orcaRun(["terminal", "switch", ...envArgsFor(t), "--terminal", t]).catch(() => {
+      await switchTerminal(t).catch(() => {
       });
       await focusOrca();
       pollDebounced(50);

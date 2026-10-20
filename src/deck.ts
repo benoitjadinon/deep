@@ -177,6 +177,11 @@ export interface DeckOptions {
   activityBucketMs?: number;
   /** Slot index (0-7) designated as the page switcher key when total sessions exceed perPage. */
   pagingSlotIndex?: number;
+  /**
+   * Pinned slot mapping: maps handle -> slot index that must not change.
+   * Preserves exact tile positions across poll updates during user interaction hold.
+   */
+  pinnedSlots?: Map<string, number>;
 }
 
 export type Button =
@@ -196,6 +201,8 @@ export type Button =
       empty: false;
       isPageButton?: false;
       handle: string;
+      tabId?: string;
+      leafId?: string;
       label: string;
       tabTitle?: string; // Orca tab title (for 2-line summary rendering)
       state: AgentState;
@@ -339,13 +346,7 @@ export function statePriority(state: AgentState): number {
 }
 
 /**
- * Deck ordering: sort sessions without project clustering by:
- * 1. Alerts & questions up top (waiting, blocked, error, interrupted).
- * 2. Active states (working, monitoring).
- * 3. Completed & inactive states (done, idle, unverifiable).
- *
- * Inside each tier, sessions are ordered by most recent activity (freshest bucket first),
- * with the terminal handle as deterministic tiebreak.
+ * Deck ordering: sort sessions by most recent activity.
  * Activity is compared in coarse buckets (see `activityBucket`) so concurrently active sessions
  * do not re-sort the deck constantly on every streaming line.
  * Unread attention pulse does NOT alter slot positions, preventing jarring reshuffles on click.
@@ -360,13 +361,11 @@ export function sortSessions<T>(
   const bucketMs = opts.bucketMs ?? DEFAULT_ACTIVITY_BUCKET_MS;
   const entries = sessions.map((s) => ({
     s,
-    priority: statePriority(stateOf(s)),
     bucket: activityBucket(recencyOf(s), bucketMs),
     handle: handleOf(s),
   }));
 
   entries.sort((a, b) => {
-    if (a.priority !== b.priority) return a.priority - b.priority;
     if (a.bucket !== b.bucket) return b.bucket - a.bucket; // most recently active session first
     return a.handle.localeCompare(b.handle);
   });
@@ -675,7 +674,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
 
-  // Sort sessions: alerts & questions first (waiting, blocked, error, interrupted) -> active (working, monitoring) -> completed & inactive (done, idle, unverifiable); most recent activity first inside each tier.
+  // Sort sessions purely by activity recency bucket.
   const sessions = sortSessions(
     sessionsRaw,
     (s) => s.state,
@@ -715,7 +714,34 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   const pageCount = Math.max(1, Math.ceil(total / sessionCapacityPerPage));
   const page = Math.min(Math.max(0, opts.page ?? 0), pageCount - 1);
   const start = page * sessionCapacityPerPage;
-  const pageItems = enriched.slice(start, start + sessionCapacityPerPage);
+  let pageItems = enriched.slice(start, start + sessionCapacityPerPage);
+
+  // If pinned slot positions are provided (e.g. during interaction hold), stabilize pageItems
+  // so every session already on the board keeps its exact slot index.
+  if (opts.pinnedSlots && page === 0) {
+    const pinned = opts.pinnedSlots;
+    const stabilized: typeof pageItems = [];
+    const usedItems = new Set<any>();
+
+    // 1. Place items with assigned pinned slot indices
+    for (let i = 0; i < sessionCapacityPerPage; i++) {
+      const found = enriched.find((e) => pinned.get(e.item.t.handle) === i);
+      if (found) {
+        stabilized[i] = found;
+        usedItems.add(found);
+      }
+    }
+
+    // 2. Fill remaining unpinned positions with remaining items in recency order
+    const remaining = enriched.filter((e) => !usedItems.has(e));
+    let remIdx = 0;
+    for (let i = 0; i < sessionCapacityPerPage; i++) {
+      if (!stabilized[i] && remIdx < remaining.length) {
+        stabilized[i] = remaining[remIdx++];
+      }
+    }
+    pageItems = stabilized.filter(Boolean);
+  }
 
   // Calculate representative state of sessions on other pages (error > waiting > unread done > working > read done > idle)
   let hasAlertOnOtherPage = false;
@@ -771,6 +797,8 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       empty: false,
       isPageButton: false,
       handle: e.item.t.handle,
+      tabId: e.item.t.tabId,
+      leafId: e.item.t.leafId,
       label: shownTitle,
       tabTitle: shownTitle || undefined,
       state: e.item.state,

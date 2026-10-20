@@ -67,11 +67,11 @@ const worktrees = [
 ];
 
 describe("buildDeck — agent type threading + gating meta + tab title", () => {
-  it("slots contain matched agentType by paneKey (waiting/alert ordered first)", () => {
+  it("slots contain matched agentType by paneKey (ordered by recency)", () => {
     const slots = buildDeck({ terminals, worktrees }).slots as any[];
-    // term_B is waiting (question/alert) -> slot 0 (opencode); term_A is working -> slot 1 (claude)
-    expect(slots[0].agentType).toBe("opencode");
-    expect(slots[1].agentType).toBe("claude");
+    // term_A is more recent (1_790_000_000_000 vs 1_789_999_000_000) -> slot 0 (claude); term_B -> slot 1 (opencode)
+    expect(slots[0].agentType).toBe("claude");
+    expect(slots[1].agentType).toBe("opencode");
   });
 
   it("extracts tabTitle from visualLayouts and fills slot", () => {
@@ -92,9 +92,9 @@ describe("buildDeck — agent type threading + gating meta + tab title", () => {
     expect(titles.get("tab2")).toBe("Fix Auth Flow Bug");
 
     const slots = buildDeck({ terminals, worktrees, visualLayouts }).slots as any[];
-    // term_B (waiting) in slot 0, term_A (working) in slot 1
-    expect(slots[0].tabTitle).toBe("Fix Auth Flow Bug");
-    expect(slots[1].tabTitle).toBe("Design Feedback URL Browser");
+    // term_A (more recent) in slot 0, term_B in slot 1
+    expect(slots[0].tabTitle).toBe("Design Feedback URL Browser");
+    expect(slots[1].tabTitle).toBe("Fix Auth Flow Bug");
   });
 
   it("strips the Orca 'OC | ' prefix from opencode titles on the deck", () => {
@@ -308,13 +308,13 @@ describe("buildDeck — merges orca sources into 8-slot button model", () => {
     expect(deck.total).toBe(2);
   });
 
-  it("merges handle (terminal) and state (worktree) via paneKey (alerts ordered first)", () => {
+  it("merges handle (terminal) and state (worktree) via paneKey (ordered by recency)", () => {
     const deck = buildDeck({ terminals, worktrees });
     const a = deck.slots[0];
     expect(a.empty).toBe(false);
-    expect(a).toMatchObject({ handle: "term_B", state: "waiting", color: "violet", label: "policy terms work" });
+    expect(a).toMatchObject({ handle: "term_A", state: "working", color: "orange", label: "unparkxing post" });
     const b = deck.slots[1];
-    expect(b).toMatchObject({ handle: "term_A", state: "working", color: "orange", label: "unparkxing post" });
+    expect(b).toMatchObject({ handle: "term_B", state: "waiting", color: "violet", label: "policy terms work" });
   });
 
   it("attaches repo and branch via worktreeId", () => {
@@ -397,7 +397,7 @@ describe("buildDeck — merges orca sources into 8-slot button model", () => {
     expect(activityBucket(T + 10_000)).toBe(activityBucket(T + 40_000));
   });
 
-  it("orders by alert states (questions up top), then active (working), then completed & inactive (done, idle, unverifiable)", () => {
+  it("orders sessions by activity recency regardless of state tier", () => {
     // Fixture across multiple projects: AltReady, deep, sleep, notes
     const ts = [
       { handle: "term_done_unread", tabId: "d1", leafId: "l1", title: "deep done unread", worktreePath: "/x/deep", worktreeId: "wt_d1", lastOutputAt: T + 10 * MIN },
@@ -418,32 +418,29 @@ describe("buildDeck — merges orca sources into 8-slot button model", () => {
       { worktreeId: "wt_d2", unread: false, agents: [{ paneKey: "d2:l2", state: "done" }] },
     ];
     const slots = buildDeck({ terminals: ts, worktrees: wts }).slots.filter((s) => !s.empty) as any[];
-    // Expected order:
-    // 1. Alerts & questions (priority 0):
-    //    - term_error (T+4m)
-    //    - term_ask_question (T+2m)
-    // 2. Active (priority 10):
-    //    - term_working (T+5m)
-    //    - term_working_older (T+1m)
-    // 3. Completed & Inactive (priority 20, ordered by recency):
-    //    - term_done_unread (T+10m)
-    //    - term_done_reviewed (T+3m)
-    //    - term_idle (T)
+    // Pure recency order:
+    // T+10m: term_done_unread
+    // T+5m:  term_working
+    // T+4m:  term_error
+    // T+3m:  term_done_reviewed
+    // T+2m:  term_ask_question
+    // T+1m:  term_working_older
+    // T:     term_idle
     expect(slots.map((s) => s.handle)).toEqual([
-      "term_error",
-      "term_ask_question",
-      "term_working",
-      "term_working_older",
       "term_done_unread",
+      "term_working",
+      "term_error",
       "term_done_reviewed",
+      "term_ask_question",
+      "term_working_older",
       "term_idle",
     ]);
   });
 
   it("maintains identical slot position when an unread done session is reviewed (no reshuffle on click)", () => {
     const ts = [
-      { handle: "term_w", tabId: "w", leafId: "l", title: "working", worktreePath: "/x/a", worktreeId: "wt_w", lastOutputAt: T + 5 * MIN },
-      { handle: "term_d", tabId: "d", leafId: "l", title: "done", worktreePath: "/x/b", worktreeId: "wt_d", lastOutputAt: T + 10 * MIN },
+      { handle: "term_w", tabId: "w", leafId: "l", title: "working", worktreePath: "/x/a", worktreeId: "wt_w", lastOutputAt: T + 10 * MIN },
+      { handle: "term_d", tabId: "d", leafId: "l", title: "done", worktreePath: "/x/b", worktreeId: "wt_d", lastOutputAt: T + 5 * MIN },
       { handle: "term_i", tabId: "i", leafId: "l", title: "idle", worktreePath: "/x/c", worktreeId: "wt_i", lastOutputAt: T },
     ];
     // Before click: unread = true (blinking green)
@@ -593,7 +590,7 @@ describe("statePriority & sortSessions — priority rankings and un-grouped sess
     expect(statePriority("unknown" as any)).toBe(20);
   });
 
-  it("sortSessions: orders by priority rank first, then activity bucket recency, then handle", () => {
+  it("sortSessions: orders by activity bucket recency, then handle", () => {
     const items = [
       { id: "s1", state: "done" as const, recency: 10000 },
       { id: "s2", state: "waiting" as const, recency: 2000 },
@@ -603,11 +600,11 @@ describe("statePriority & sortSessions — priority rankings and un-grouped sess
       { id: "s6", state: "working" as const, recency: 9000 },
       { id: "s7", state: "done" as const, recency: 4000 },
     ];
-    // bucketMs = 1 to test direct recency within tiers
+    // bucketMs = 1 to test direct recency
     const sorted = sortSessions(items, (s) => s.state, (s) => s.recency, (s) => s.id, {
       bucketMs: 1,
     });
-    expect(sorted.map((s) => s.id)).toEqual(["s4", "s2", "s6", "s3", "s1", "s5", "s7"]);
+    expect(sorted.map((s) => s.id)).toEqual(["s1", "s6", "s5", "s3", "s7", "s4", "s2"]);
   });
 });
 
@@ -901,9 +898,9 @@ describe("stabilizeTerminalAgents — prevents UI flapping/blinking when Orca pr
 describe("buildDeck — Orca substates (interrupted, monitoring, permissions)", () => {
   it("detects interrupted: true on done agent and maps to state 'interrupted' with color red", () => {
     const ts = [
-      { handle: "term_int", tabId: "tab_int", leafId: "leaf_int", title: "Plan my orders panel", worktreePath: "/x/alt" },
-      { handle: "term_done", tabId: "tab_done", leafId: "leaf_done", title: "Finished task", worktreePath: "/x/alt" },
-      { handle: "term_work", tabId: "tab_work", leafId: "leaf_work", title: "Active work", worktreePath: "/x/alt" },
+      { handle: "term_int", tabId: "tab_int", leafId: "leaf_int", title: "Plan my orders panel", worktreePath: "/x/alt", lastOutputAt: 3000 },
+      { handle: "term_work", tabId: "tab_work", leafId: "leaf_work", title: "Active work", worktreePath: "/x/alt", lastOutputAt: 2000 },
+      { handle: "term_done", tabId: "tab_done", leafId: "leaf_done", title: "Finished task", worktreePath: "/x/alt", lastOutputAt: 1000 },
     ];
     const wts = [
       {
@@ -915,10 +912,10 @@ describe("buildDeck — Orca substates (interrupted, monitoring, permissions)", 
       },
     ];
 
-    const deck = buildDeck({ terminals: ts, worktrees: wts });
+    const deck = buildDeck({ terminals: ts, worktrees: wts }, { activityBucketMs: 1 });
     const slots = deck.slots as any[];
 
-    // Interrupted is alert tier (priority 0) -> slot 0 (red)
+    // term_int (recency 3000) -> slot 0 (red)
     expect(slots[0].handle).toBe("term_int");
     expect(slots[0].state).toBe("interrupted");
     expect(slots[0].interrupted).toBe(true);
@@ -926,12 +923,12 @@ describe("buildDeck — Orca substates (interrupted, monitoring, permissions)", 
     expect(needsAttention(slots[0], false)).toBe(true);
     expect(needsAttention(slots[0], true)).toBe(false); // Stops pulsing when focused on target
 
-    // Working is active tier (priority 10) -> slot 1 (orange)
+    // term_work (recency 2000) -> slot 1 (orange)
     expect(slots[1].handle).toBe("term_work");
     expect(slots[1].state).toBe("working");
     expect(slots[1].color).toBe("orange");
 
-    // Done is completed tier (priority 20) -> slot 2 (green)
+    // term_done (recency 1000) -> slot 2 (green)
     expect(slots[2].handle).toBe("term_done");
     expect(slots[2].state).toBe("done");
     expect(slots[2].interrupted).toBe(false);
@@ -1054,5 +1051,65 @@ describe("environmentArgs — routing commands to a paired remote runtime", () =
     expect(environmentArgs(undefined)).toEqual([]);
     expect(environmentArgs(null)).toEqual([]);
     expect(environmentArgs("")).toEqual([]);
+  });
+});
+
+describe("buildDeck — pinnedSlots interaction hold", () => {
+  const T = 1_700_000_000_000;
+  it("preserves exact slot indices when pinnedSlots is provided even if a session becomes more recent", () => {
+    const ts = [
+      { handle: "term_a", tabId: "t1", leafId: "l1", title: "a", worktreePath: "/x", lastOutputAt: T },
+      { handle: "term_b", tabId: "t2", leafId: "l2", title: "b", worktreePath: "/x", lastOutputAt: T + 1000 },
+    ];
+    const wts = ts.map((t) => ({ agents: [{ paneKey: `${t.tabId}:${t.leafId}`, state: "working" }] }));
+
+    // Unpinned: term_b (more recent) is at slot 0, term_a is at slot 1
+    const unpinned = buildDeck({ terminals: ts, worktrees: wts }, { now: T + 2000, activityBucketMs: 1 });
+    expect(unpinned.slots[0].handle).toBe("term_b");
+    expect(unpinned.slots[1].handle).toBe("term_a");
+
+    // Pinned slot map: freeze term_a at slot 0, term_b at slot 1
+    const pinnedMap = new Map([
+      ["term_a", 0],
+      ["term_b", 1],
+    ]);
+    const pinned = buildDeck(
+      { terminals: ts, worktrees: wts },
+      { now: T + 2000, activityBucketMs: 1, pinnedSlots: pinnedMap },
+    );
+    // Positions stay completely frozen in place
+    expect(pinned.slots[0].handle).toBe("term_a");
+    expect(pinned.slots[1].handle).toBe("term_b");
+  });
+});
+
+describe("buildDeck — tabId and leafId preservation", () => {
+  it("preserves tabId and leafId on button slots for terminal revelation", () => {
+    const ts = [
+      {
+        handle: "term_remote",
+        tabId: "tab_123",
+        leafId: "leaf_456",
+        title: "Remote Agent",
+        worktreePath: "/remote/path",
+        environment: "Mac mini",
+        environmentId: "env_789",
+      },
+    ];
+    const wts = [
+      {
+        environment: "Mac mini",
+        environmentId: "env_789",
+        agents: [{ paneKey: "tab_123:leaf_456", state: "working" as const }],
+      },
+    ];
+    const deck = buildDeck({ terminals: ts, worktrees: wts });
+    const slot = deck.slots[0] as any;
+    expect(slot.empty).toBe(false);
+    expect(slot.handle).toBe("term_remote");
+    expect(slot.tabId).toBe("tab_123");
+    expect(slot.leafId).toBe("leaf_456");
+    expect(slot.environment).toBe("Mac mini");
+    expect(slot.environmentId).toBe("env_789");
   });
 });
