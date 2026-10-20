@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { keySvg, agentBadge, stateIcon, keyImage, wrap, wrapWords, stripSpinner, marqueeWindow, dialImage, modeColor, pageButtonSvg } from "../src/render.js";
+import { keySvg, agentBadge, stateIcon, keyImage, wrap, wrapWords, stripSpinner, marqueeWindow, dialImage, modeColor, pageButtonSvg, fitText } from "../src/render.js";
 
 describe("stripSpinner / wrap / wrapWords", () => {
   it("strip leading spinner glyph while preserving text", () => {
@@ -81,11 +81,34 @@ describe("keySvg", () => {
     expect(svg).toContain('x="5" y="112" width="27" height="27"'); // agent badge bottom-left
   });
 
-  it("renders a 3rd summary line when the tab title is long", () => {
+  it("caps the summary at 2 lines (no 3rd line) and ellipsizes the overflow", () => {
     const svg = keySvg({ empty: false as const, handle: "t", tabTitle: "Fix the flaky integration tests and review the auth refactor", state: "working", color: "blue" as const, repo: "svd", branch: "main" });
-    expect(svg).toContain('y="96"');
-    expect(svg).toContain('y="114"');
-    expect(svg).toContain('y="132"');
+    expect(svg).toContain('y="90"');
+    expect(svg).toContain('y="107"');
+    expect(svg).not.toContain('y="124"');
+    expect(svg).toContain("…");
+  });
+
+  it("renders the host label along the bottom edge when the button carries one", () => {
+    const withHost = keySvg({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main", host: "Mac mini" });
+    expect(withHost).toContain('y="129"');
+    expect(withHost).toContain("MAC MINI");
+
+    const withoutHost = keySvg({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main" });
+    expect(withoutHost).not.toContain('fill="#7c7c85"');
+  });
+
+  it("truncates a long host label so it stays between the agent badge and the target dot", () => {
+    const svg = keySvg({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main", host: "a-very-long-remote-hostname" });
+    expect(svg).toContain("…");
+    expect(svg).not.toContain("a-very-long-remote-hostname");
+  });
+
+  it("fitText keeps short labels intact and truncates with an ellipsis", () => {
+    expect(fitText("ben-laptop13", 76 / 11)).toBe("ben-laptop13");
+    expect(fitText("Mac mini", 76 / 11)).toBe("Mac mini");
+    expect(fitText("a-very-long-remote-hostname", 76 / 11)).toMatch(/…$/);
+    expect(fitText("", 7)).toBe("");
   });
 
   it("renders page switcher key when isPageButton is true", () => {

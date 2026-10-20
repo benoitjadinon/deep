@@ -14,6 +14,8 @@ import {
   sortSessionsByProject,
   representativeOtherState,
   stabilizeTerminalAgents,
+  hostLabel,
+  environmentArgs,
 } from "../src/deck.js";
 
 describe("needsAttention — session attention check for animation triggers", () => {
@@ -957,3 +959,100 @@ describe("buildDeck — Orca substates (interrupted, monitoring, permissions)", 
 });
 
 
+
+describe("hostLabel — machine label shown in the tile footer", () => {
+  const hosts = [
+    { id: "local", kind: "local", name: "this machine", machineName: "ben-laptop13", platform: "linux" },
+    { id: "ssh-1", kind: "ssh", name: "Mac mini" },
+  ];
+
+  it("labels the local host by machine name and remote hosts by their configured name", () => {
+    expect(hostLabel("local", hosts)).toBe("ben-laptop13");
+    expect(hostLabel("ssh-1", hosts)).toBe("Mac mini");
+  });
+
+  it("falls back to platform, then to the raw id when the host list lacks the machine", () => {
+    expect(hostLabel("local", [{ id: "local", kind: "local", platform: "darwin" }])).toBe("darwin");
+    expect(hostLabel("local", [])).toBe("local");
+    expect(hostLabel("ssh-unknown", hosts)).toBe("ssh-unknown");
+  });
+
+  it("returns undefined when neither a host id nor a host list is known", () => {
+    expect(hostLabel(undefined, undefined)).toBeUndefined();
+    expect(hostLabel(undefined, [])).toBeUndefined();
+  });
+});
+
+describe("buildDeck — host threading onto slots", () => {
+  const hosts = [
+    { id: "local", kind: "local", machineName: "ben-laptop13", platform: "linux" },
+    { id: "ssh-1", kind: "ssh", name: "Mac mini" },
+  ];
+
+  it("attaches the resolved host label to each slot", () => {
+    const ts = [
+      { handle: "term_L", tabId: "t1", leafId: "l1", title: "local task", worktreePath: "/x/a", executionHostId: "local" },
+      { handle: "term_R", tabId: "t2", leafId: "l2", title: "remote task", worktreePath: "/x/b", executionHostId: "ssh-1" },
+    ];
+    const wts = [
+      { worktreeId: "wt1", hostId: "local", agents: [{ paneKey: "t1:l1", state: "working", agentType: "claude" }] },
+      { worktreeId: "wt2", hostId: "ssh-1", agents: [{ paneKey: "t2:l2", state: "working", agentType: "claude" }] },
+    ];
+    const slots = buildDeck({ terminals: ts, worktrees: wts, hosts }).slots as any[];
+    const byHandle = new Map(slots.filter((s) => !s.empty).map((s) => [s.handle, s]));
+    expect(byHandle.get("term_L")!.host).toBe("ben-laptop13");
+    expect(byHandle.get("term_R")!.host).toBe("Mac mini");
+    expect(byHandle.get("term_R")!.hostId).toBe("ssh-1");
+  });
+
+  it("falls back to the worktree hostId when the terminal does not report one", () => {
+    const ts = [{ handle: "term_A", tabId: "t1", leafId: "l1", title: "x", worktreePath: "/x/a", worktreeId: "wt1" }];
+    const wts = [{ worktreeId: "wt1", hostId: "ssh-1", agents: [{ paneKey: "t1:l1", state: "working", agentType: "claude" }] }];
+    const slots = buildDeck({ terminals: ts, worktrees: wts, hosts }).slots as any[];
+    expect(slots[0].host).toBe("Mac mini");
+  });
+});
+
+describe("buildDeck — paired remote environments", () => {
+  it("labels a remote session by its environment (a paired runtime reports its rows as hostId local)", () => {
+    const ts = [
+      {
+        handle: "term_remote", tabId: "t1", leafId: "l1", title: "remote task",
+        worktreePath: "/Users/ben/x", executionHostId: "local",
+        environment: "Mac mini", environmentId: "env-1",
+      },
+    ];
+    const wts = [
+      {
+        worktreeId: "wt1", hostId: "local", terminalPlatform: "darwin",
+        environment: "Mac mini", environmentId: "env-1",
+        agents: [{ paneKey: "t1:l1", state: "done", agentType: "claude" }],
+      },
+    ];
+    const hosts = [{ id: "local", kind: "local", machineName: "ben-laptop13", platform: "linux" }];
+    const slots = buildDeck({ terminals: ts, worktrees: wts, hosts }).slots as any[];
+    expect(slots[0].host).toBe("Mac mini");
+    expect(slots[0].environment).toBe("Mac mini");
+    expect(slots[0].environmentId).toBe("env-1");
+    // The raw Orca host id stays available for debugging even though it says "local".
+    expect(slots[0].hostId).toBe("local");
+  });
+
+  it("keeps local sessions on the host-list label and leaves environment unset", () => {
+    const ts = [{ handle: "term_local", tabId: "t2", leafId: "l2", title: "local", worktreePath: "/x/a", executionHostId: "local" }];
+    const wts = [{ worktreeId: "wt2", hostId: "local", agents: [{ paneKey: "t2:l2", state: "idle", agentType: "pi" }] }];
+    const hosts = [{ id: "local", kind: "local", machineName: "ben-laptop13", platform: "linux" }];
+    const slots = buildDeck({ terminals: ts, worktrees: wts, hosts }).slots as any[];
+    expect(slots[0].host).toBe("ben-laptop13");
+    expect(slots[0].environment).toBeUndefined();
+  });
+});
+
+describe("environmentArgs — routing commands to a paired remote runtime", () => {
+  it("scopes with --environment for remote sessions and stays empty for local ones", () => {
+    expect(environmentArgs("Mac mini")).toEqual(["--environment", "Mac mini"]);
+    expect(environmentArgs(undefined)).toEqual([]);
+    expect(environmentArgs(null)).toEqual([]);
+    expect(environmentArgs("")).toEqual([]);
+  });
+});

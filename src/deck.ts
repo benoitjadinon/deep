@@ -82,11 +82,23 @@ export interface OrcaTerminal {
   lastOutputAt?: number | null;
   /** Whether agent process is alive in terminal — detected immediately before worktree ps reports it. null/undefined = pure shell. */
   agentIdentity?: string | null;
+  /** Host running this terminal (`local` or an ssh/environment host id from `orca host list`). */
+  executionHostId?: string | null;
+  /** Paired Orca environment name when this terminal lives on a remote runtime (undefined = this machine). */
+  environment?: string;
+  /** Id of that paired environment (from `orca environment list`). */
+  environmentId?: string;
 }
 
 /** Fields used from `orca worktree ps --json` -> `result.worktrees[]` */
 export interface OrcaWorktree {
   worktreeId?: string;
+  /** Host running this worktree (`local` or an ssh/environment host id from `orca host list`). */
+  hostId?: string | null;
+  /** Paired Orca environment name when this worktree lives on a remote runtime (undefined = this machine). */
+  environment?: string;
+  /** Id of that paired environment (from `orca environment list`). */
+  environmentId?: string;
   repo?: string;
   branch?: string;
   displayName?: string;
@@ -124,6 +136,17 @@ export interface OrcaRepo {
   repoIcon?: OrcaRepoIcon | null;
 }
 
+/** Fields used from `orca host list --json` -> `result.hosts[]` */
+export interface OrcaHost {
+  id?: string;
+  /** `local` | `ssh` | `environment` */
+  kind?: string;
+  name?: string;
+  /** Hostname of the local machine (kind = local) */
+  machineName?: string;
+  platform?: string;
+}
+
 export interface HookInfo {
   hookEventName?: string;
   agentType?: string;
@@ -138,6 +161,8 @@ export interface DeckInput {
   terminals: OrcaTerminal[];
   worktrees: OrcaWorktree[];
   repos?: OrcaRepo[];
+  /** Hosts from `orca host list --json` — used to label where each session runs. */
+  hosts?: OrcaHost[];
   visualLayouts?: any[];
   tabTitles?: Map<string, string> | Record<string, string>;
   hookEventsByPane?: Map<string, string | HookInfo> | Record<string, string | HookInfo>;
@@ -187,6 +212,10 @@ export type Button =
       dupIndex?: number; // Sequence index within same repo/branch (0=first, >=1 shows -N suffix)
       unread?: boolean; // Indicates completed session not yet viewed
       agentType?: string; // Agent type reported by Orca (claude/codex/opencode/...) — used for dial gating
+      host?: string; // Short label of the machine running the session (laptop / Mac mini)
+      hostId?: string; // Raw Orca host id (`local` or an ssh/environment id)
+      environment?: string; // Paired Orca environment name (remote runtime) — also routes terminal send/switch
+      environmentId?: string; // Paired environment id, used to spawn worktrees on that runtime
       badgeColor?: string; // Orca project badge color (e.g. #ef4444)
       repoIcon?: OrcaRepoIcon | null; // Orca project original icon metadata
       bgIconUri?: string; // Image Data URI to draw in tile background (GitHub avatar, local icon.png)
@@ -214,6 +243,32 @@ const STATE_COLOR: Record<string, Color> = {
   idle: "white",
   unverifiable: "violet",
 };
+
+/**
+ * CLI args that scope an Orca command to a paired remote runtime. A session's terminal handle
+ * belongs to the runtime that issued it, so `terminal switch`/`send` must carry `--environment`
+ * or the command resolves against this machine. Local sessions need no flag.
+ */
+export function environmentArgs(environment?: string | null): string[] {
+  return environment ? ["--environment", environment] : [];
+}
+
+/**
+ * Short label for the machine running a session, from `orca host list`.
+ * - local host -> machine name (e.g. `ben-laptop13`), falling back to platform (`linux`)
+ * - ssh / environment host -> its configured name (e.g. `Mac mini`)
+ * Returns undefined when neither a host id nor a host list is available (nothing to draw).
+ */
+export function hostLabel(hostId?: string | null, hosts?: OrcaHost[]): string | undefined {
+  if (!hostId && !hosts?.length) return undefined;
+  const id = hostId || "local";
+  const host = (hosts ?? []).find((h) => h?.id === id);
+  if (!host) return id === "local" ? "local" : id;
+  if (host.kind === "local" || host.id === "local") {
+    return host.machineName || host.platform || host.name || "local";
+  }
+  return host.name || host.machineName || host.id || id;
+}
 
 /**
  * Extract human-readable project name for a worktree/session.
@@ -466,7 +521,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
   const interruptedByPane = new Map<string, boolean>();
   const agentByPane = new Map<string, string>();
   const timeByPane = new Map<string, number>(); // latest agent evidence timestamp per pane (for ordering)
-  const metaByWt = new Map<string, { repo?: string; branch?: string; unread?: boolean }>();
+  const metaByWt = new Map<string, { repo?: string; branch?: string; unread?: boolean; hostId?: string }>();
   for (const wt of input.worktrees ?? []) {
     for (const a of wt.agents ?? []) {
       let st: AgentState = a.state;
@@ -497,7 +552,12 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
     }
     if (wt.worktreeId) {
       const branch = wt.displayName || (wt.branch ?? "").replace(/^refs\/heads\//, "");
-      metaByWt.set(wt.worktreeId, { repo: wt.repo, branch: branch || undefined, unread: wt.unread });
+      metaByWt.set(wt.worktreeId, {
+        repo: wt.repo,
+        branch: branch || undefined,
+        unread: wt.unread,
+        hostId: wt.hostId || undefined,
+      });
     }
   }
 
@@ -606,6 +666,10 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
         agentType: agent,
         tabTitle,
         unread,
+        // Prefer the terminal's execution host; fall back to the worktree's host.
+        hostId: t.executionHostId || meta?.hostId,
+        environment: t.environment,
+        environmentId: t.environmentId,
         recency: sessionRecency(t.lastOutputAt, timeByPane.get(pane), hook?.receivedAt),
       };
     })
@@ -691,10 +755,13 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       continue;
     }
     const repoId = e.item.t.worktreeId ? e.item.t.worktreeId.split("::")[0] : undefined;
-    const repo =
-      (repoId ? repoById.get(repoId) : undefined) ||
-      (e.item.t.worktreePath ? repoByPath.get(e.item.t.worktreePath) : undefined) ||
-      (e.project ? repoByName.get(e.project.toLowerCase()) : undefined);
+    // Repo metadata (icon/badge color) is local-only: a remote runtime's repo ids and paths aren't in
+    // this machine's `orca repo list`, and the name fallback would attach a same-named local repo's icon.
+    const repo = e.item.t.environment
+      ? undefined
+      : (repoId ? repoById.get(repoId) : undefined) ||
+        (e.item.t.worktreePath ? repoByPath.get(e.item.t.worktreePath) : undefined) ||
+        (e.project ? repoByName.get(e.project.toLowerCase()) : undefined);
 
     const iconInfo = repo ? resolveRepoBgIcon(repo) : undefined;
     // Per-agent display normalization (e.g. opencode strips Orca's "OC | " prefix) — deck stays agent-agnostic.
@@ -720,6 +787,12 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
       dupIndex: e.dupIndex,
       unread: e.unread,
       agentType: e.item.agentType,
+      // A remote runtime reports its own worktrees as hostId `local`, so the environment name is the
+      // only truthful machine label there. Local sessions resolve through `orca host list`.
+      host: e.item.environment || hostLabel(e.item.hostId, input.hosts),
+      hostId: e.item.hostId,
+      environment: e.item.environment,
+      environmentId: e.item.environmentId,
       badgeColor: repo?.badgeColor,
       repoIcon: repo?.repoIcon,
       bgIconUri: iconInfo?.uri,

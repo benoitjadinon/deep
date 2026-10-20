@@ -4,7 +4,7 @@
 
 import { readFileSync, existsSync, readdirSync, statSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 
 export type ControlKind = "model" | "effort" | "mode";
 
@@ -20,6 +20,7 @@ export interface AgentContext {
   worktreeId?: string;
   handle?: string;
   preview?: string;
+  tabTitle?: string;
 }
 
 export interface AgentStateSnapshot {
@@ -1622,6 +1623,7 @@ export class AgyAgent extends AbstractAgent {
 // Hermes config and models cache paths
 export const HERMES_CONFIG = join(homedir(), ".hermes", "config.yaml");
 export const HERMES_MODELS_CACHE = join(homedir(), ".hermes", "provider_models_cache.json");
+export const HERMES_MODELS_CACHE_TMP = join(tmpdir(), "agentdeck-hermes-models.json");
 
 export function parseHermesConfig(yamlText: string): { model?: string; effort?: string } {
   let model: string | undefined;
@@ -1671,27 +1673,81 @@ export function parseHermesModelsCache(jsonText: string): string[] {
   }
 }
 
+export function qualifyHermesModel(candidate: string, knownModels?: string[]): string {
+  if (!candidate || candidate.includes("/")) return candidate;
+  const list = knownModels && knownModels.length ? knownModels : readHermesModelsCache();
+  const fallback = list.length ? list : [
+    "deepseek/deepseek-v4-flash-0731",
+    "anthropic/claude-sonnet-4-6",
+    "openai/gpt-5.6-luna",
+    "google/gemini-3.8-flash",
+    "minimax/minimax-m3",
+  ];
+  const match = fallback.find((m) => m === candidate || m.endsWith("/" + candidate));
+  return match || candidate;
+}
+
 export function readHermesState(ctx?: AgentContext): AgentStateSnapshot {
+  let model: string | undefined;
+  let effort: string | undefined;
+
+  // 1. Live model from tab title (Hermes composeTabTitle format: <marker> <sessionName> · <model> · <cwd>)
+  if (ctx?.tabTitle) {
+    const parts = ctx.tabTitle.split(/\s+[·•]\s+/);
+    if (parts.length >= 2) {
+      const candidate = parts[1].trim();
+      if (candidate && !candidate.startsWith("/") && !candidate.startsWith("~")) {
+        model = qualifyHermesModel(candidate);
+      }
+    }
+  }
+
+  // 2. Live model and effort from terminal preview
+  if (ctx?.preview) {
+    if (!model) {
+      const modelMatch = /(?:☤|[│|])\s*([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)?)\s*[│|]/.exec(ctx.preview);
+      if (modelMatch && modelMatch[1].trim()) {
+        const m = modelMatch[1].trim();
+        if (m !== "ctx" && !m.includes("░") && !m.includes("█")) {
+          model = qualifyHermesModel(m);
+        }
+      }
+    }
+    if (!effort) {
+      const effortMatch = /(?:reasoning effort(?: set to)?[:\s]+['"]?|reasoning[:\s]+['"]?)(none|minimal|low|medium|high|xhigh|max|ultra)\b/i.exec(ctx.preview);
+      if (effortMatch && effortMatch[1].trim()) {
+        effort = effortMatch[1].trim().toLowerCase();
+      }
+    }
+  }
+
+  // 3. Local/workspace config files
   try {
     if (ctx?.worktreePath) {
       const localCfg = join(ctx.worktreePath, ".hermes", "config.yaml");
       if (existsSync(localCfg)) {
         const cfg = parseHermesConfig(readFileSync(localCfg, "utf8"));
-        return { model: cfg.model, effort: cfg.effort };
+        if (!model && cfg.model) model = qualifyHermesModel(cfg.model);
+        if (!effort && cfg.effort) effort = cfg.effort;
       }
     }
     if (existsSync(HERMES_CONFIG)) {
       const cfg = parseHermesConfig(readFileSync(HERMES_CONFIG, "utf8"));
-      return { model: cfg.model, effort: cfg.effort };
+      if (!model && cfg.model) model = qualifyHermesModel(cfg.model);
+      if (!effort && cfg.effort) effort = cfg.effort;
     }
   } catch {}
-  return {};
+
+  return { model, effort };
 }
 
 export function readHermesModelsCache(): string[] {
   try {
     if (existsSync(HERMES_MODELS_CACHE)) {
       return parseHermesModelsCache(readFileSync(HERMES_MODELS_CACHE, "utf8"));
+    }
+    if (existsSync(HERMES_MODELS_CACHE_TMP)) {
+      return parseHermesModelsCache(readFileSync(HERMES_MODELS_CACHE_TMP, "utf8"));
     }
   } catch {}
   return [];
@@ -1707,6 +1763,14 @@ export class HermesAgent extends AbstractAgent {
     return kind === "model" || kind === "effort";
   }
 
+  override cleanTitle(title: string): string {
+    if (!title) return "";
+    const parts = title.split(/\s+[·•]\s+/);
+    const head = parts[0] || "";
+    const stripped = head.replace(/^[\s✓✔☤⠀-⣿✨✳✻⏺※*•…!?]+[\s:·-]*/u, "").trim();
+    return stripped || head.trim() || title.trim();
+  }
+
   override getModels(): string[] {
     const cached = readHermesModelsCache();
     if (cached.length) return cached;
@@ -1720,7 +1784,7 @@ export class HermesAgent extends AbstractAgent {
   }
 
   override getEfforts(): string[] {
-    return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+    return ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
   }
 
   override getModes(): string[] {

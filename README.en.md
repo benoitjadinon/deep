@@ -64,8 +64,8 @@ npx streamdeck link com.byjw.deep.sdPlugin
 | Element | Meaning |
 |---|---|
 | **Top color ribbon** | 🔵 working · 🟡 waiting (input needed) · 🟢 done · 🔴 error · ⚪ idle |
-| **Center white text** | Project name (extracted from the path, e.g. `AcmeApp`) |
-| **Bottom** | Branch. The session you're currently viewing is highlighted with a coral chip |
+| **Center white text** | Project name (extracted from the path, e.g. `AcmeApp`), branch, then a 2-line session summary |
+| **Bottom edge** | Host running that project — `ben-laptop13` for this machine, `Mac mini` for a remote Orca host — with the focused session marked by a coral dot at the bottom right |
 | **Tap** | Focus that session (`orca terminal switch`) / If already focused on that session, toggle back to previous app (OS super-tab) |
 | **Green done color** | done + unread = green (needs checking), fades to white (idle) once reviewed |
 
@@ -94,6 +94,7 @@ If something's wrong, the **Talk dial shows the cause**: `Enable Dictation` / `E
 - **Mac + Orca only**. Other terminals/OSes unsupported.
 - **Keys are 8 slots (1 page)**. With more than 8 sessions, the 9th+ aren't on the keys but remain reachable via the **target dial**. Slots are **grouped by project** (a project's agents sit together) and ordered by most recent activity: freshest project group first, freshest session first inside a group, handle as tiebreak. Activity is bucketed (60s) so multiple concurrently working projects don't re-sort the keys constantly — override with `AGENTDECK_ORDER_BUCKET_MS` (milliseconds).
 - Dial signals are **gated per running agent**: only supported agents (Claude, OpenCode, Codex, AGY, Hermes, Pi) get a working model/effort/mode dial, and model lists are **loaded live** from respective agent configurations and tools. Unsupported/unknown agents get the dial blocked (`-`), so no wrong command is ever sent.
+- **Sessions from paired remote Orca runtimes** (e.g. a Mac mini, via `orca environment list`) share the same board: the tile footer names the machine (`BEN-LAPTOP13`, `MAC MINI`) and taps/dials are routed to that runtime. Because the remote agent's own files are not readable here, its dials show the **last applied** model/effort/mode rather than live state, and remote tiles draw no project watermark icon.
 
 ## Development
 ```bash

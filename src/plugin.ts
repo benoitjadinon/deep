@@ -28,12 +28,14 @@ import {
 } from "./linux";
 import {
   buildDeck,
+  environmentArgs,
   needsAttention,
   resolveActiveTerminal,
   nextWorktreeName,
   stabilizeTerminalAgents,
   DEFAULT_ACTIVITY_BUCKET_MS,
   type Deck,
+  type OrcaHost,
   type OrcaRepo,
   type CachedTerminalAgent,
 } from "./deck";
@@ -63,6 +65,8 @@ import {
   type OpenCodeModelState,
   type OrcaRateLimits,
   readLocalAgyQuota,
+  HERMES_MODELS_CACHE,
+  HERMES_MODELS_CACHE_TMP,
 } from "./agents";
 
 const execFileP = promisify(execFile);
@@ -315,7 +319,7 @@ function switchTargetSoon(handle: string): void {
   if (targetSwitchTimer) clearTimeout(targetSwitchTimer);
   targetSwitchTimer = setTimeout(() => {
     targetSwitchTimer = null;
-    orcaRun(["terminal", "switch", "--terminal", handle]).then(() => {
+    orcaRun(["terminal", "switch", ...envArgsFor(handle), "--terminal", handle]).then(() => {
       pollDebounced(50);
     }).catch(() => {});
   }, 180);
@@ -348,6 +352,13 @@ const modesByHandle = new Map<string, string[]>(); // session -> discovered mode
 const effortsByHandle = new Map<string, string[]>(); // session -> discovered effort list
 let allHandles: string[] = []; // All session handles (sidebar total, independent of 8-slot page)
 const sessionByHandle = new Map<string, any>(); // handle -> button metadata
+// handle -> paired environment name (undefined = this machine). Terminal handles belong to the
+// runtime that issued them, so every `terminal send`/`switch` for a remote session must pass
+// `--environment <name>` or it resolves against the wrong runtime.
+const environmentByHandle = new Map<string, string | undefined>();
+function envArgsFor(handle?: string): string[] {
+  return environmentArgs(handle ? environmentByHandle.get(handle) : undefined);
+}
 const terminalAgentCache = new Map<string, CachedTerminalAgent>(); // handle -> stabilized agentIdentity across polls
 
 // Push-to-talk state — uses Apple Speech STT helper (.app)
@@ -469,7 +480,7 @@ async function stopAndSend(target?: string): Promise<void> {
     let sendErr: string | null = null;
     if (txt && target) {
       try {
-        await orcaRun(["terminal", "send", "--terminal", target, "--text", txt]);
+        await orcaRun(["terminal", "send", ...envArgsFor(target), "--terminal", target, "--text", txt]);
         sent = true;
       } catch (e) {
         sendErr = String(e);
@@ -494,6 +505,7 @@ function contextForHandle(h: string): AgentContext {
     worktreePath: b?.worktreePath,
     worktreeId: b?.worktreeId,
     preview: b?.preview,
+    tabTitle: b?.tabTitle || b?.label,
   };
 }
 
@@ -594,7 +606,7 @@ function dialList(kind: ControlKind): string[] {
   if (kind === "effort") {
     const live = effortsByHandle.get(t);
     if (live && live.length) return live;
-    return agent.getEfforts(currentModelByHandle.get(t));
+    return agent.getEfforts(currentModelByHandle.get(t) || modelByHandle.get(t));
   }
   if (kind === "mode") {
     const live = modesByHandle.get(t);
@@ -650,7 +662,7 @@ function dialValue(role: string): string {
 async function applyAgentSteps(handle: string, steps: ApplyStep[]): Promise<void> {
   for (const s of steps) {
     if (s.delayMs) await new Promise((r) => setTimeout(r, s.delayMs));
-    const args = ["terminal", "send", "--terminal", handle, "--text", s.text];
+    const args = ["terminal", "send", ...envArgsFor(handle), "--terminal", handle, "--text", s.text];
     if (s.enter) args.push("--enter");
     await orcaRun(args);
   }
@@ -675,6 +687,26 @@ async function refreshDiscovery(): Promise<void> {
         const st = agent.readCurrentState(contextForHandle(t));
         modelsByHandle.set(t, sortModels(list, st.recentModels ?? [], st.favoriteModels ?? []));
       }
+    }
+    if (agent.agentType === "hermes" && !existsSync(HERMES_MODELS_CACHE)) {
+      try {
+        const isRemote = Boolean(environmentByHandle.get(t));
+        if (isRemote || !existsSync(HERMES_MODELS_CACHE_TMP)) {
+          const { stdout } = await execFileP(
+            "ssh",
+            ["-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "mac-mini", "cat ~/.hermes/provider_models_cache.json"],
+            EXEC,
+          );
+          if (stdout && stdout.startsWith("{")) {
+            writeFileSync(HERMES_MODELS_CACHE_TMP, stdout, "utf8");
+            const models = agent.getModels();
+            if (models.length) {
+              const st = agent.readCurrentState(contextForHandle(t));
+              modelsByHandle.set(t, sortModels(models, st.recentModels ?? [], st.favoriteModels ?? []));
+            }
+          }
+        }
+      } catch {}
     }
     const agentCmd = agent.getDiscoverAgentCmd();
     if (agentCmd) {
@@ -704,6 +736,11 @@ async function refreshDiscovery(): Promise<void> {
 function refreshCurrentState(): void {
   const t = ensureTarget();
   for (const h of allHandles) {
+    // A remote session's agent state files live on that machine and are not readable directly
+    // from this filesystem. But sessions with terminal context (tabTitle, preview) or the
+    // currently targeted session can still resolve live agent state.
+    const isRemote = Boolean(environmentByHandle.get(h));
+    if (isRemote && h !== t) continue;
     const modelChanged = refreshSessionState(h);
     if (h === t && modelChanged) {
       lastEffortDiscoverAt = 0;
@@ -724,7 +761,7 @@ async function refreshEfforts(): Promise<void> {
   const agent = agentForHandle();
   const cmd = agent.getDiscoverVariantCmd();
   if (!cmd) return;
-  const currentModel = currentModelByHandle.get(t);
+  const currentModel = currentModelByHandle.get(t) || modelByHandle.get(t) || pendingModel;
   if (!currentModel) return;
   if (effortDiscoverBusy || Date.now() - lastEffortDiscoverAt < 30000) return;
   effortDiscoverBusy = true;
@@ -926,6 +963,45 @@ async function refreshRepos(): Promise<void> {
   }
 }
 
+interface OrcaEnvironment {
+  id: string;
+  name: string;
+  runtimeId?: string;
+}
+
+let cachedEnvironments: OrcaEnvironment[] = [];
+let lastEnvFetchAt = 0;
+/** Paired remote Orca runtimes (`orca environment list`) — each is polled on its own so its sessions
+ * appear on the deck next to this machine's (a remote runtime reports its own rows as hostId `local`). */
+async function refreshEnvironments(): Promise<void> {
+  if (Date.now() - lastEnvFetchAt < 30000 && cachedEnvironments.length > 0) return;
+  try {
+    const el = await orcaJson(["environment", "list"]);
+    if (el?.result?.environments) {
+      cachedEnvironments = (el.result.environments as any[]).filter((e) => e?.name);
+      lastEnvFetchAt = Date.now();
+    }
+  } catch (e) {
+    streamDeck.logger.error(`fetch environments: ${e}`);
+  }
+}
+
+let cachedHosts: OrcaHost[] = [];
+let lastHostFetchAt = 0;
+/** Hosts from `orca host list` — maps each session's hostId to a short machine label on the tile. */
+async function refreshHosts(): Promise<void> {
+  if (Date.now() - lastHostFetchAt < 30000 && cachedHosts.length > 0) return;
+  try {
+    const hl = await orcaJson(["host", "list"]);
+    if (hl?.result?.hosts) {
+      cachedHosts = hl.result.hosts;
+      lastHostFetchAt = Date.now();
+    }
+  } catch (e) {
+    streamDeck.logger.error(`fetch hosts: ${e}`);
+  }
+}
+
 let cachedRateLimits: OrcaRateLimits | null = null;
 let lastRateLimitFetchAt = 0;
 
@@ -969,33 +1045,77 @@ async function poll(): Promise<void> {
   try {
     refreshRepos().catch(() => {});
     refreshRateLimits().catch(() => {});
-    const [tl, wp] = await Promise.all([
+    refreshHosts().catch(() => {});
+    // Cached (30s) so the fan-out below starts from a known set of paired runtimes.
+    await refreshEnvironments();
+    // Paired environments are polled in parallel with the local runtime; a failing environment
+    // (offline Mac mini, revoked pairing) is logged and skipped rather than breaking the deck.
+    const remotePoll = Promise.all(
+      cachedEnvironments.map(async (env) => {
+        try {
+          const [rtl, rwp] = await Promise.all([
+            orcaJson(["terminal", "list", "--include-visual-layouts", "--environment", env.name]),
+            orcaJson(["worktree", "ps", "--environment", env.name]),
+          ]);
+          return {
+            env,
+            terminals: (rtl.result?.terminals ?? []).map((t: any) => ({ ...t, environment: env.name, environmentId: env.id })),
+            worktrees: (rwp.result?.worktrees ?? []).map((w: any) => ({ ...w, environment: env.name, environmentId: env.id })),
+            visualLayouts: (rtl.result?.visualLayouts ?? []) as any[],
+          };
+        } catch (e) {
+          streamDeck.logger.error(`poll environment ${env.name}: ${e}`);
+          return null;
+        }
+      }),
+    );
+    const [tl, wp, remote] = await Promise.all([
       orcaJson(["terminal", "list", "--include-visual-layouts"]),
       orcaJson(["worktree", "ps"]),
+      remotePoll,
     ]);
+    const localTerminals = tl.result?.terminals ?? [];
+    const localWorktrees = wp.result?.worktrees ?? [];
+    const remoteOk = remote.filter((r): r is NonNullable<typeof r> => !!r);
     const hookEvents = getHookEvents();
-    const visualLayouts = tl.result?.visualLayouts;
+    const visualLayouts = [...(tl.result?.visualLayouts ?? []), ...remoteOk.flatMap((r) => r.visualLayouts)];
     // One shared timestamp so the 8-key page and the full session list always agree on ordering buckets.
     const now = Date.now();
     const activeSlots = getActiveSlotCount();
     const pagingSlotIndex = getPagingSlotIndex();
-    const terminals = stabilizeTerminalAgents(tl.result?.terminals ?? [], terminalAgentCache, now);
-    deck = buildDeck(
-      { terminals, worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-      { page: currentPage, perPage: activeSlots, now, activityBucketMs: ORDER_BUCKET_MS, pagingSlotIndex },
+    const terminals = stabilizeTerminalAgents(
+      [...localTerminals, ...remoteOk.flatMap((r) => r.terminals)],
+      terminalAgentCache,
+      now,
     );
+    const worktrees = [...localWorktrees, ...remoteOk.flatMap((r) => r.worktrees)];
+    const deckInput = {
+      terminals,
+      worktrees,
+      repos: cachedRepos,
+      hosts: cachedHosts,
+      visualLayouts,
+      hookEventsByPane: hookEvents,
+    };
+    deck = buildDeck(deckInput, {
+      page: currentPage,
+      perPage: activeSlots,
+      now,
+      activityBucketMs: ORDER_BUCKET_MS,
+      pagingSlotIndex,
+    });
     if (currentPage >= deck.pageCount) {
       currentPage = Math.max(0, deck.pageCount - 1);
-      deck = buildDeck(
-        { terminals, worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-        { page: currentPage, perPage: activeSlots, now, activityBucketMs: ORDER_BUCKET_MS, pagingSlotIndex },
-      );
+      deck = buildDeck(deckInput, {
+        page: currentPage,
+        perPage: activeSlots,
+        now,
+        activityBucketMs: ORDER_BUCKET_MS,
+        pagingSlotIndex,
+      });
     }
     // Full session list (sidebar total) — target dial can cycle past 8 keys
-    const full = buildDeck(
-      { terminals, worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-      { page: 0, perPage: 9999, now, activityBucketMs: ORDER_BUCKET_MS },
-    );
+    const full = buildDeck(deckInput, { page: 0, perPage: 9999, now, activityBucketMs: ORDER_BUCKET_MS });
     allHandles = [];
     sessionByHandle.clear();
     for (const s of full.slots) {
@@ -1003,6 +1123,7 @@ async function poll(): Promise<void> {
         const h = (s as any).handle;
         allHandles.push(h);
         sessionByHandle.set(h, s);
+        environmentByHandle.set(h, (s as any).environment);
         const nextType = (s as any).agentType ?? "";
         if (agentByHandle.get(h) !== nextType) {
           agentByHandle.set(h, nextType);
@@ -1019,6 +1140,7 @@ async function poll(): Promise<void> {
       if (!sessionByHandle.has(h)) {
         agentByHandle.delete(h);
         agentInstanceByHandle.delete(h);
+        environmentByHandle.delete(h);
         modelsByHandle.delete(h);
         modesByHandle.delete(h);
         effortsByHandle.delete(h);
@@ -1030,10 +1152,12 @@ async function poll(): Promise<void> {
         modeByHandle.delete(h);
       }
     }
-    // Automatically set currently focused session as target
+    // Automatically set currently focused session as target. Only the local runtime can report
+    // what this desktop is focused on — a remote runtime's `isActive` would fight the user's
+    // manual selection (and every remote deck session would look "active" at once).
     const activeHandle = resolveActiveTerminal(
-      wp.result?.worktrees ?? [],
-      terminals,
+      localWorktrees,
+      localTerminals,
       tl.result?.visualLayouts,
       targetHandle,
     );
@@ -1051,7 +1175,7 @@ async function poll(): Promise<void> {
     try {
       writeFileSync(
         "/tmp/agentdeck-debug.json",
-        JSON.stringify({ at: new Date().toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, target: targetHandle, dials: { model: dialValue("model"), effort: dialValue("effort"), mode: dialValue("mode") }, slots: deck.slots }, null, 2),
+        JSON.stringify({ at: new Date().toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, environments: cachedEnvironments.map((e) => e.name), target: targetHandle, targetEnvironment: environmentByHandle.get(targetHandle ?? "") ?? null, dials: { model: dialValue("model"), effort: dialValue("effort"), mode: dialValue("mode") }, slots: deck.slots }, null, 2),
       );
     } catch {}
   } catch (e) {
@@ -1081,11 +1205,15 @@ async function spawnSession(ev: any): Promise<void> {
     return;
   }
   try {
+    // Spawn in the target session's runtime: local by default, or the paired environment it came
+    // from (repo ids and terminal handles are server-scoped, so every call here must be scoped too).
+    const env = environmentByHandle.get(t!);
+    const envArgs = env ? ["--environment", env] : [];
     // Determine next index from existing worktrees in same repo
-    const list = await orcaJson(["worktree", "list"]);
+    const list = await orcaJson(["worktree", "list", ...envArgs]);
     const same = (list?.result?.worktrees ?? []).filter((w: any) => w.repoId === repoId);
     const name = nextWorktreeName(repo, same.map((w: any) => w.displayName || ""));
-    const createArgs: string[] = ["worktree", "create", "--repo", `id:${repoId}`, "--name", name];
+    const createArgs: string[] = ["worktree", "create", ...envArgs, "--repo", `id:${repoId}`, "--name", name];
     // Work around Orca injecting unsupported --permissions argument for opencode
     const isOpenCode = agent === "opencode";
     if (!isOpenCode) createArgs.push("--agent", agent);
@@ -1095,15 +1223,15 @@ async function spawnSession(ev: any): Promise<void> {
     let handle: string | undefined;
     if (isOpenCode) {
       if (createdWt) {
-        const created = await orcaJson(["terminal", "create", "--worktree", createdWt, "--command", OPENCODE_CMD, "--focus"]);
+        const created = await orcaJson(["terminal", "create", ...envArgs, "--worktree", createdWt, "--command", OPENCODE_CMD, "--focus"]);
         handle = created?.result?.terminal?.handle ?? created?.result?.handle?.handle;
       }
       // fallback: if agent terminal not found yet, find terminal in created worktree
       if (!handle) {
-        const terms = await orcaJson(["terminal", "list"]);
+        const terms = await orcaJson(["terminal", "list", ...envArgs]);
         const wtTerm = (terms?.result?.terminals ?? []).find((x: any) => x.worktreeId === createdWt || (x.worktreePath ?? "").includes(name));
         if (wtTerm?.handle) {
-          await orcaRun(["terminal", "switch", "--terminal", wtTerm.handle]);
+          await orcaRun(["terminal", "switch", ...envArgs, "--terminal", wtTerm.handle]);
           handle = wtTerm.handle;
         }
       }
@@ -1115,7 +1243,7 @@ async function spawnSession(ev: any): Promise<void> {
       lastNav = Date.now();
       setTarget(handle);
       try {
-        await orcaRun(["terminal", "switch", "--terminal", handle]);
+        await orcaRun(["terminal", "switch", ...envArgs, "--terminal", handle]);
         await focusOrca();
       } catch (e) {
         streamDeck.logger.error(`spawn switch: ${e}`);
@@ -1186,7 +1314,7 @@ class SlotAction extends SingletonAction<SlotSettings> {
       setTarget(b.handle);
       lastNav = Date.now();
       try {
-        await orcaRun(["terminal", "switch", "--terminal", b.handle]);
+        await orcaRun(["terminal", "switch", ...envArgsFor(b.handle), "--terminal", b.handle]);
         await focusOrca();
       } catch (e) {
         streamDeck.logger.error(`switch failed: ${e}`);
@@ -1304,7 +1432,7 @@ class DialBase extends SingletonAction {
       }
     } else if (this.role === "target" && t) {
       lastNav = Date.now();
-      await orcaRun(["terminal", "switch", "--terminal", t]).catch(() => {});
+      await orcaRun(["terminal", "switch", ...envArgsFor(t), "--terminal", t]).catch(() => {});
       await focusOrca();
       pollDebounced(50);
     } else if (this.role === "talk") {

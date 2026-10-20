@@ -927,7 +927,41 @@ agent:
       "high",
       "xhigh",
       "max",
+      "ultra",
     ]);
+  });
+
+  it("HermesAgent.cleanTitle: extracts clean session name and strips markers / metadata", () => {
+    const a = agentFor("hermes");
+    expect(
+      a.cleanTitle("✓ Build SIP voice bridge for … · deepseek-v4-flash-0731 · ~/Notes/SecondBrain"),
+    ).toBe("Build SIP voice bridge for …");
+    expect(
+      a.cleanTitle("✓ Brain fog after sleeping mo… · deepseek-v4-flash-0731 · ~/Notes/SecondBrain"),
+    ).toBe("Brain fog after sleeping mo…");
+    expect(
+      a.cleanTitle("⠼ Fix auth token · openai/gpt-5.6-luna · /repo"),
+    ).toBe("Fix auth token");
+    expect(a.cleanTitle("☤ Diagnostics")).toBe("Diagnostics");
+    expect(a.cleanTitle("Plain Title")).toBe("Plain Title");
+    expect(a.cleanTitle("")).toBe("");
+  });
+
+  it("readHermesState: extracts live model from tabTitle and effort from preview", () => {
+    const a = agentFor("hermes");
+    const st1 = a.readCurrentState({
+      tabTitle: "✓ Build SIP voice bridge for … · deepseek-v4-flash-0731 · ~/Notes/SecondBrain",
+      preview: "Example: /resume 2\n☤ deepseek-v4-flash-0731 │ ctx -- │ [░░░░░░░░░░] -- │ 1.1d │ ⏲ 0s\n⚙️  /reasoning\nReasoning effort:  medium\nReasoning display: on ✓",
+    });
+    expect(st1).toEqual({
+      model: "deepseek/deepseek-v4-flash-0731",
+      effort: "medium",
+    });
+
+    const st2 = a.readCurrentState({
+      preview: "✓ Reasoning effort set to 'high' (this session — use --global to persist)",
+    });
+    expect(st2.effort).toBe("high");
   });
 });
 

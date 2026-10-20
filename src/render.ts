@@ -202,6 +202,20 @@ function units(s: string): number {
   return u || 1;
 }
 
+// Truncate a string to fit a pixel budget, using the same width units as font fitting.
+export function fitText(s: string, maxUnits: number): string {
+  if (!s || units(s) <= maxUnits) return s ?? "";
+  let out = "";
+  let u = 0;
+  for (const ch of s) {
+    const w = /[\x00-\x7F]/.test(ch) ? 0.56 : 1;
+    if (u + w > maxUnits - 1) break;
+    out += ch;
+    u += w;
+  }
+  return `${out.trimEnd()}…`;
+}
+
 /**
  * Project background watermark icon (144x144 tile full fill/crop, opacity 0.25)
  * - GitHub avatar / local icon.png (Data URI, preserveAspectRatio="xMidYMid slice")
@@ -327,17 +341,26 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
     subSvg = `<text x="72" y="70" text-anchor="middle" fill="#a1a1aa" font-family="sans-serif" font-size="18" font-weight="600">${esc(sub)}</text>`;
   }
 
-  // 3. Tab title (3-line summary below branch)
+  // 3. Tab title (2-line summary below branch)
   const titleText = (b as any).tabTitle || b.label || "";
   const rawTitle = titleText !== proj ? titleText : "";
-  const titleLines = wrapWords(rawTitle, 15, 3);
+  const titleLines = wrapWords(rawTitle, 15, 2);
   let titleSvg = "";
   if (titleLines.length > 0) {
-    const startY = sub ? 96 : 86;
+    // Two lines only, both kept above y=112 so a long 2nd line never collides with the
+    // bottom-left agent badge (top edge y=112).
+    const startY = sub ? 90 : 80;
     titleSvg = titleLines
-      .map((line, idx) => `<text x="72" y="${startY + idx * 18}" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="16" font-weight="500">${esc(line)}</text>`)
+      .map((line, idx) => `<text x="72" y="${startY + idx * 17}" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="16" font-weight="500">${esc(line)}</text>`)
       .join("");
   }
+
+  // 4. Host label along the bottom edge: which machine this session's project runs on
+  // (`ben-laptop13` for this laptop, `Mac mini` for a remote Orca host). It is centered in the
+  // gap between the bottom-left agent badge (ends at x=32) and the target dot (starts at x=117).
+  const hostSvg = b.host
+    ? `<text x="72" y="129" text-anchor="middle" fill="#7c7c85" font-family="sans-serif" font-size="11" font-weight="600" letter-spacing="0.2">${esc(fitText(b.host.toUpperCase(), 76 / 11))}</text>`
+    : "";
 
   // Top state bar: status glyph on the right side; the agent badge lives in the
   // bottom-left corner (50% larger than the old top-bar badge).
@@ -368,7 +391,7 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
   ${renderBgIcon(b)}
   ${glow}
   <rect width="144" height="18" fill="${color}" clip-path="url(#r)"/>
-  ${projSvg}${subSvg}${titleSvg}${stIcon}${badge}${g1}${cornerTag}
+  ${projSvg}${subSvg}${titleSvg}${hostSvg}${stIcon}${badge}${g1}${cornerTag}
 </svg>`;
 }
 

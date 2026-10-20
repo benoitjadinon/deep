@@ -18,7 +18,17 @@ const page = Number(process.argv[2] ?? 0);
 const terminals = orca(["terminal", "list", "--json"]).result?.terminals ?? [];
 const worktrees = orca(["worktree", "ps", "--json"]).result?.worktrees ?? [];
 const repos = orca(["repo", "list", "--json"]).result?.repos ?? [];
-const deck = buildDeck({ terminals, worktrees, repos }, { page, perPage: 8 });
+const hosts = orca(["host", "list", "--json"]).result?.hosts ?? [];
+// Paired remote runtimes (e.g. a Mac mini) are polled per environment, same as the plugin does.
+const envs = orca(["environment", "list", "--json"]).result?.environments ?? [];
+for (const env of envs) {
+  const tag = { environment: env.name, environmentId: env.id };
+  const rt = orca(["terminal", "list", "--json", "--environment", env.name]).result?.terminals ?? [];
+  const rw = orca(["worktree", "ps", "--json", "--environment", env.name]).result?.worktrees ?? [];
+  terminals.push(...rt.map((t) => ({ ...t, ...tag })));
+  worktrees.push(...rw.map((w) => ({ ...w, ...tag })));
+}
+const deck = buildDeck({ terminals, worktrees, repos, hosts }, { page, perPage: 8 });
 
 const cell = (b) => {
   if (b.empty) return `⚪ ${"·".padEnd(14)}`;
@@ -33,5 +43,8 @@ for (let r = 0; r < 2; r++) {
 console.log("\n  🟠working 🟣waiting 🟢done 🔴error ⚪idle/empty\n");
 // Reference for tap mapping: which handle each button switches/sends to
 deck.slots.forEach((b, i) => {
-  if (!b.empty) console.log(`  S${i + 1} → orca terminal switch --terminal ${b.handle}`);
+  if (!b.empty) {
+    const env = b.environment ? `--environment "${b.environment}" ` : "";
+    console.log(`  S${i + 1} → orca terminal switch ${env}--terminal ${b.handle}   [host: ${b.host ?? "?"}]`);
+  }
 });

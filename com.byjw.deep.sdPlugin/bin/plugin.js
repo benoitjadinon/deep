@@ -55728,6 +55728,7 @@ var AgyAgent = class extends AbstractAgent {
 };
 var HERMES_CONFIG = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".hermes", "config.yaml");
 var HERMES_MODELS_CACHE = (0, import_node_path7.join)((0, import_node_os.homedir)(), ".hermes", "provider_models_cache.json");
+var HERMES_MODELS_CACHE_TMP = (0, import_node_path7.join)((0, import_node_os.tmpdir)(), "agentdeck-hermes-models.json");
 function parseHermesConfig(yamlText) {
   let model;
   let effort;
@@ -55771,27 +55772,73 @@ function parseHermesModelsCache(jsonText) {
     return [];
   }
 }
+function qualifyHermesModel(candidate, knownModels) {
+  if (!candidate || candidate.includes("/")) return candidate;
+  const list = knownModels && knownModels.length ? knownModels : readHermesModelsCache();
+  const fallback = list.length ? list : [
+    "deepseek/deepseek-v4-flash-0731",
+    "anthropic/claude-sonnet-4-6",
+    "openai/gpt-5.6-luna",
+    "google/gemini-3.8-flash",
+    "minimax/minimax-m3"
+  ];
+  const match = fallback.find((m) => m === candidate || m.endsWith("/" + candidate));
+  return match || candidate;
+}
 function readHermesState(ctx) {
+  let model;
+  let effort;
+  if (ctx?.tabTitle) {
+    const parts = ctx.tabTitle.split(/\s+[·•]\s+/);
+    if (parts.length >= 2) {
+      const candidate = parts[1].trim();
+      if (candidate && !candidate.startsWith("/") && !candidate.startsWith("~")) {
+        model = qualifyHermesModel(candidate);
+      }
+    }
+  }
+  if (ctx?.preview) {
+    if (!model) {
+      const modelMatch = /(?:☤|[│|])\s*([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)?)\s*[│|]/.exec(ctx.preview);
+      if (modelMatch && modelMatch[1].trim()) {
+        const m = modelMatch[1].trim();
+        if (m !== "ctx" && !m.includes("\u2591") && !m.includes("\u2588")) {
+          model = qualifyHermesModel(m);
+        }
+      }
+    }
+    if (!effort) {
+      const effortMatch = /(?:reasoning effort(?: set to)?[:\s]+['"]?|reasoning[:\s]+['"]?)(none|minimal|low|medium|high|xhigh|max|ultra)\b/i.exec(ctx.preview);
+      if (effortMatch && effortMatch[1].trim()) {
+        effort = effortMatch[1].trim().toLowerCase();
+      }
+    }
+  }
   try {
     if (ctx?.worktreePath) {
       const localCfg = (0, import_node_path7.join)(ctx.worktreePath, ".hermes", "config.yaml");
       if ((0, import_node_fs4.existsSync)(localCfg)) {
         const cfg = parseHermesConfig((0, import_node_fs4.readFileSync)(localCfg, "utf8"));
-        return { model: cfg.model, effort: cfg.effort };
+        if (!model && cfg.model) model = qualifyHermesModel(cfg.model);
+        if (!effort && cfg.effort) effort = cfg.effort;
       }
     }
     if ((0, import_node_fs4.existsSync)(HERMES_CONFIG)) {
       const cfg = parseHermesConfig((0, import_node_fs4.readFileSync)(HERMES_CONFIG, "utf8"));
-      return { model: cfg.model, effort: cfg.effort };
+      if (!model && cfg.model) model = qualifyHermesModel(cfg.model);
+      if (!effort && cfg.effort) effort = cfg.effort;
     }
   } catch {
   }
-  return {};
+  return { model, effort };
 }
 function readHermesModelsCache() {
   try {
     if ((0, import_node_fs4.existsSync)(HERMES_MODELS_CACHE)) {
       return parseHermesModelsCache((0, import_node_fs4.readFileSync)(HERMES_MODELS_CACHE, "utf8"));
+    }
+    if ((0, import_node_fs4.existsSync)(HERMES_MODELS_CACHE_TMP)) {
+      return parseHermesModelsCache((0, import_node_fs4.readFileSync)(HERMES_MODELS_CACHE_TMP, "utf8"));
     }
   } catch {
   }
@@ -55807,6 +55854,13 @@ var HermesAgent = class extends AbstractAgent {
   supports(kind) {
     return kind === "model" || kind === "effort";
   }
+  cleanTitle(title) {
+    if (!title) return "";
+    const parts = title.split(/\s+[·•]\s+/);
+    const head = parts[0] || "";
+    const stripped = head.replace(/^[\s✓✔☤⠀-⣿✨✳✻⏺※*•…!?]+[\s:·-]*/u, "").trim();
+    return stripped || head.trim() || title.trim();
+  }
   getModels() {
     const cached2 = readHermesModelsCache();
     if (cached2.length) return cached2;
@@ -55819,7 +55873,7 @@ var HermesAgent = class extends AbstractAgent {
     ];
   }
   getEfforts() {
-    return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+    return ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
   }
   getModes() {
     return [];
@@ -56494,6 +56548,19 @@ var STATE_COLOR = {
   idle: "white",
   unverifiable: "violet"
 };
+function environmentArgs(environment) {
+  return environment ? ["--environment", environment] : [];
+}
+function hostLabel(hostId, hosts) {
+  if (!hostId && !hosts?.length) return void 0;
+  const id = hostId || "local";
+  const host = (hosts ?? []).find((h) => h?.id === id);
+  if (!host) return id === "local" ? "local" : id;
+  if (host.kind === "local" || host.id === "local") {
+    return host.machineName || host.platform || host.name || "local";
+  }
+  return host.name || host.machineName || host.id || id;
+}
 function projectOf(path5, repo) {
   if (repo) return repo;
   if (path5) {
@@ -56640,7 +56707,12 @@ function buildDeck(input, opts = {}) {
     }
     if (wt.worktreeId) {
       const branch = wt.displayName || (wt.branch ?? "").replace(/^refs\/heads\//, "");
-      metaByWt.set(wt.worktreeId, { repo: wt.repo, branch: branch || void 0, unread: wt.unread });
+      metaByWt.set(wt.worktreeId, {
+        repo: wt.repo,
+        branch: branch || void 0,
+        unread: wt.unread,
+        hostId: wt.hostId || void 0
+      });
     }
   }
   const tabTitlesFromLayouts = extractTabTitlesFromLayouts(input.visualLayouts);
@@ -56717,6 +56789,10 @@ function buildDeck(input, opts = {}) {
       agentType: agent,
       tabTitle,
       unread,
+      // Prefer the terminal's execution host; fall back to the worktree's host.
+      hostId: t.executionHostId || meta?.hostId,
+      environment: t.environment,
+      environmentId: t.environmentId,
       recency: sessionRecency(t.lastOutputAt, timeByPane.get(pane), hook?.receivedAt)
     };
   }).filter((x) => x !== null);
@@ -56786,7 +56862,7 @@ function buildDeck(input, opts = {}) {
       continue;
     }
     const repoId = e.item.t.worktreeId ? e.item.t.worktreeId.split("::")[0] : void 0;
-    const repo = (repoId ? repoById.get(repoId) : void 0) || (e.item.t.worktreePath ? repoByPath.get(e.item.t.worktreePath) : void 0) || (e.project ? repoByName.get(e.project.toLowerCase()) : void 0);
+    const repo = e.item.t.environment ? void 0 : (repoId ? repoById.get(repoId) : void 0) || (e.item.t.worktreePath ? repoByPath.get(e.item.t.worktreePath) : void 0) || (e.project ? repoByName.get(e.project.toLowerCase()) : void 0);
     const iconInfo = repo ? resolveRepoBgIcon(repo) : void 0;
     const shownTitle = agentFor(e.item.agentType).cleanTitle(e.item.tabTitle || e.item.t.title || "");
     slots.push({
@@ -56809,6 +56885,12 @@ function buildDeck(input, opts = {}) {
       dupIndex: e.dupIndex,
       unread: e.unread,
       agentType: e.item.agentType,
+      // A remote runtime reports its own worktrees as hostId `local`, so the environment name is the
+      // only truthful machine label there. Local sessions resolve through `orca host list`.
+      host: e.item.environment || hostLabel(e.item.hostId, input.hosts),
+      hostId: e.item.hostId,
+      environment: e.item.environment,
+      environmentId: e.item.environmentId,
       badgeColor: repo?.badgeColor,
       repoIcon: repo?.repoIcon,
       bgIconUri: iconInfo?.uri,
@@ -57062,6 +57144,18 @@ function units(s) {
   for (const ch of s) u += /[\x00-\x7F]/.test(ch) ? 0.56 : 1;
   return u || 1;
 }
+function fitText(s, maxUnits) {
+  if (!s || units(s) <= maxUnits) return s ?? "";
+  let out = "";
+  let u = 0;
+  for (const ch of s) {
+    const w = /[\x00-\x7F]/.test(ch) ? 0.56 : 1;
+    if (u + w > maxUnits - 1) break;
+    out += ch;
+    u += w;
+  }
+  return `${out.trimEnd()}\u2026`;
+}
 function renderBgIcon(b) {
   if (b.empty) return "";
   if (b.bgIconUri) {
@@ -57155,12 +57249,13 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   }
   const titleText = b.tabTitle || b.label || "";
   const rawTitle = titleText !== proj ? titleText : "";
-  const titleLines = wrapWords(rawTitle, 15, 3);
+  const titleLines = wrapWords(rawTitle, 15, 2);
   let titleSvg = "";
   if (titleLines.length > 0) {
-    const startY = sub ? 96 : 86;
-    titleSvg = titleLines.map((line, idx) => `<text x="72" y="${startY + idx * 18}" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="16" font-weight="500">${esc2(line)}</text>`).join("");
+    const startY = sub ? 90 : 80;
+    titleSvg = titleLines.map((line, idx) => `<text x="72" y="${startY + idx * 17}" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="16" font-weight="500">${esc2(line)}</text>`).join("");
   }
+  const hostSvg = b.host ? `<text x="72" y="129" text-anchor="middle" fill="#7c7c85" font-family="sans-serif" font-size="11" font-weight="600" letter-spacing="0.2">${esc2(fitText(b.host.toUpperCase(), 76 / 11))}</text>` : "";
   const stIcon = stateIcon(b.status || b.state, 130, 9);
   const badge = agentBadge(b.agentType, { boxX: 5, boxY: 112, boxSize: 27 });
   const attn = needsAttention(b, isTarget);
@@ -57181,7 +57276,7 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   ${renderBgIcon(b)}
   ${glow}
   <rect width="144" height="18" fill="${color}" clip-path="url(#r)"/>
-  ${projSvg}${subSvg}${titleSvg}${stIcon}${badge}${g1}${cornerTag}
+  ${projSvg}${subSvg}${titleSvg}${hostSvg}${stIcon}${badge}${g1}${cornerTag}
 </svg>`;
 }
 function keyImage(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
@@ -57579,7 +57674,7 @@ function switchTargetSoon(handle) {
   if (targetSwitchTimer) clearTimeout(targetSwitchTimer);
   targetSwitchTimer = setTimeout(() => {
     targetSwitchTimer = null;
-    orcaRun(["terminal", "switch", "--terminal", handle]).then(() => {
+    orcaRun(["terminal", "switch", ...envArgsFor(handle), "--terminal", handle]).then(() => {
       pollDebounced(50);
     }).catch(() => {
     });
@@ -57607,6 +57702,10 @@ var modesByHandle = /* @__PURE__ */ new Map();
 var effortsByHandle = /* @__PURE__ */ new Map();
 var allHandles = [];
 var sessionByHandle = /* @__PURE__ */ new Map();
+var environmentByHandle = /* @__PURE__ */ new Map();
+function envArgsFor(handle) {
+  return environmentArgs(handle ? environmentByHandle.get(handle) : void 0);
+}
 var terminalAgentCache = /* @__PURE__ */ new Map();
 var STT_WAV = "/tmp/agentdeck-stt.wav";
 var sttRecorder = null;
@@ -57736,7 +57835,7 @@ async function stopAndSend(target) {
     let sendErr = null;
     if (txt && target) {
       try {
-        await orcaRun(["terminal", "send", "--terminal", target, "--text", txt]);
+        await orcaRun(["terminal", "send", ...envArgsFor(target), "--terminal", target, "--text", txt]);
         sent = true;
       } catch (e) {
         sendErr = String(e);
@@ -57759,7 +57858,8 @@ function contextForHandle(h) {
     handle: h,
     worktreePath: b?.worktreePath,
     worktreeId: b?.worktreeId,
-    preview: b?.preview
+    preview: b?.preview,
+    tabTitle: b?.tabTitle || b?.label
   };
 }
 function noteHandle(h) {
@@ -57845,7 +57945,7 @@ function dialList(kind) {
   if (kind === "effort") {
     const live = effortsByHandle.get(t);
     if (live && live.length) return live;
-    return agent.getEfforts(currentModelByHandle.get(t));
+    return agent.getEfforts(currentModelByHandle.get(t) || modelByHandle.get(t));
   }
   if (kind === "mode") {
     const live = modesByHandle.get(t);
@@ -57898,7 +57998,7 @@ function dialValue(role) {
 async function applyAgentSteps(handle, steps) {
   for (const s of steps) {
     if (s.delayMs) await new Promise((r) => setTimeout(r, s.delayMs));
-    const args = ["terminal", "send", "--terminal", handle, "--text", s.text];
+    const args = ["terminal", "send", ...envArgsFor(handle), "--terminal", handle, "--text", s.text];
     if (s.enter) args.push("--enter");
     await orcaRun(args);
   }
@@ -57921,6 +58021,27 @@ async function refreshDiscovery() {
         agent.setModelNames(agent.parseDiscoveredModelNames(stdout));
         const st = agent.readCurrentState(contextForHandle(t));
         modelsByHandle.set(t, sortModels(list, st.recentModels ?? [], st.favoriteModels ?? []));
+      }
+    }
+    if (agent.agentType === "hermes" && !(0, import_node_fs6.existsSync)(HERMES_MODELS_CACHE)) {
+      try {
+        const isRemote = Boolean(environmentByHandle.get(t));
+        if (isRemote || !(0, import_node_fs6.existsSync)(HERMES_MODELS_CACHE_TMP)) {
+          const { stdout } = await execFileP(
+            "ssh",
+            ["-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "mac-mini", "cat ~/.hermes/provider_models_cache.json"],
+            EXEC
+          );
+          if (stdout && stdout.startsWith("{")) {
+            (0, import_node_fs6.writeFileSync)(HERMES_MODELS_CACHE_TMP, stdout, "utf8");
+            const models = agent.getModels();
+            if (models.length) {
+              const st = agent.readCurrentState(contextForHandle(t));
+              modelsByHandle.set(t, sortModels(models, st.recentModels ?? [], st.favoriteModels ?? []));
+            }
+          }
+        }
+      } catch {
       }
     }
     const agentCmd = agent.getDiscoverAgentCmd();
@@ -57949,6 +58070,8 @@ async function refreshDiscovery() {
 function refreshCurrentState() {
   const t = ensureTarget();
   for (const h of allHandles) {
+    const isRemote = Boolean(environmentByHandle.get(h));
+    if (isRemote && h !== t) continue;
     const modelChanged = refreshSessionState(h);
     if (h === t && modelChanged) {
       lastEffortDiscoverAt = 0;
@@ -57968,7 +58091,7 @@ async function refreshEfforts() {
   const agent = agentForHandle();
   const cmd = agent.getDiscoverVariantCmd();
   if (!cmd) return;
-  const currentModel = currentModelByHandle.get(t);
+  const currentModel = currentModelByHandle.get(t) || modelByHandle.get(t) || pendingModel;
   if (!currentModel) return;
   if (effortDiscoverBusy || Date.now() - lastEffortDiscoverAt < 3e4) return;
   effortDiscoverBusy = true;
@@ -58139,6 +58262,34 @@ async function refreshRepos() {
     plugin_default.logger.error(`fetch repos: ${e}`);
   }
 }
+var cachedEnvironments = [];
+var lastEnvFetchAt = 0;
+async function refreshEnvironments() {
+  if (Date.now() - lastEnvFetchAt < 3e4 && cachedEnvironments.length > 0) return;
+  try {
+    const el = await orcaJson(["environment", "list"]);
+    if (el?.result?.environments) {
+      cachedEnvironments = el.result.environments.filter((e) => e?.name);
+      lastEnvFetchAt = Date.now();
+    }
+  } catch (e) {
+    plugin_default.logger.error(`fetch environments: ${e}`);
+  }
+}
+var cachedHosts = [];
+var lastHostFetchAt = 0;
+async function refreshHosts() {
+  if (Date.now() - lastHostFetchAt < 3e4 && cachedHosts.length > 0) return;
+  try {
+    const hl = await orcaJson(["host", "list"]);
+    if (hl?.result?.hosts) {
+      cachedHosts = hl.result.hosts;
+      lastHostFetchAt = Date.now();
+    }
+  } catch (e) {
+    plugin_default.logger.error(`fetch hosts: ${e}`);
+  }
+}
 var cachedRateLimits = null;
 var lastRateLimitFetchAt = 0;
 function mergeLocalRateLimits() {
@@ -58181,31 +58332,73 @@ async function poll() {
     });
     refreshRateLimits().catch(() => {
     });
-    const [tl, wp] = await Promise.all([
+    refreshHosts().catch(() => {
+    });
+    await refreshEnvironments();
+    const remotePoll = Promise.all(
+      cachedEnvironments.map(async (env) => {
+        try {
+          const [rtl, rwp] = await Promise.all([
+            orcaJson(["terminal", "list", "--include-visual-layouts", "--environment", env.name]),
+            orcaJson(["worktree", "ps", "--environment", env.name])
+          ]);
+          return {
+            env,
+            terminals: (rtl.result?.terminals ?? []).map((t) => ({ ...t, environment: env.name, environmentId: env.id })),
+            worktrees: (rwp.result?.worktrees ?? []).map((w) => ({ ...w, environment: env.name, environmentId: env.id })),
+            visualLayouts: rtl.result?.visualLayouts ?? []
+          };
+        } catch (e) {
+          plugin_default.logger.error(`poll environment ${env.name}: ${e}`);
+          return null;
+        }
+      })
+    );
+    const [tl, wp, remote] = await Promise.all([
       orcaJson(["terminal", "list", "--include-visual-layouts"]),
-      orcaJson(["worktree", "ps"])
+      orcaJson(["worktree", "ps"]),
+      remotePoll
     ]);
+    const localTerminals = tl.result?.terminals ?? [];
+    const localWorktrees = wp.result?.worktrees ?? [];
+    const remoteOk = remote.filter((r) => !!r);
     const hookEvents = getHookEvents();
-    const visualLayouts = tl.result?.visualLayouts;
+    const visualLayouts = [...tl.result?.visualLayouts ?? [], ...remoteOk.flatMap((r) => r.visualLayouts)];
     const now = Date.now();
     const activeSlots = getActiveSlotCount();
     const pagingSlotIndex = getPagingSlotIndex();
-    const terminals = stabilizeTerminalAgents(tl.result?.terminals ?? [], terminalAgentCache, now);
-    deck = buildDeck(
-      { terminals, worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-      { page: currentPage, perPage: activeSlots, now, activityBucketMs: ORDER_BUCKET_MS, pagingSlotIndex }
+    const terminals = stabilizeTerminalAgents(
+      [...localTerminals, ...remoteOk.flatMap((r) => r.terminals)],
+      terminalAgentCache,
+      now
     );
+    const worktrees = [...localWorktrees, ...remoteOk.flatMap((r) => r.worktrees)];
+    const deckInput = {
+      terminals,
+      worktrees,
+      repos: cachedRepos,
+      hosts: cachedHosts,
+      visualLayouts,
+      hookEventsByPane: hookEvents
+    };
+    deck = buildDeck(deckInput, {
+      page: currentPage,
+      perPage: activeSlots,
+      now,
+      activityBucketMs: ORDER_BUCKET_MS,
+      pagingSlotIndex
+    });
     if (currentPage >= deck.pageCount) {
       currentPage = Math.max(0, deck.pageCount - 1);
-      deck = buildDeck(
-        { terminals, worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-        { page: currentPage, perPage: activeSlots, now, activityBucketMs: ORDER_BUCKET_MS, pagingSlotIndex }
-      );
+      deck = buildDeck(deckInput, {
+        page: currentPage,
+        perPage: activeSlots,
+        now,
+        activityBucketMs: ORDER_BUCKET_MS,
+        pagingSlotIndex
+      });
     }
-    const full = buildDeck(
-      { terminals, worktrees: wp.result?.worktrees ?? [], repos: cachedRepos, visualLayouts, hookEventsByPane: hookEvents },
-      { page: 0, perPage: 9999, now, activityBucketMs: ORDER_BUCKET_MS }
-    );
+    const full = buildDeck(deckInput, { page: 0, perPage: 9999, now, activityBucketMs: ORDER_BUCKET_MS });
     allHandles = [];
     sessionByHandle.clear();
     for (const s of full.slots) {
@@ -58213,6 +58406,7 @@ async function poll() {
         const h = s.handle;
         allHandles.push(h);
         sessionByHandle.set(h, s);
+        environmentByHandle.set(h, s.environment);
         const nextType = s.agentType ?? "";
         if (agentByHandle.get(h) !== nextType) {
           agentByHandle.set(h, nextType);
@@ -58228,6 +58422,7 @@ async function poll() {
       if (!sessionByHandle.has(h)) {
         agentByHandle.delete(h);
         agentInstanceByHandle.delete(h);
+        environmentByHandle.delete(h);
         modelsByHandle.delete(h);
         modesByHandle.delete(h);
         effortsByHandle.delete(h);
@@ -58240,8 +58435,8 @@ async function poll() {
       }
     }
     const activeHandle = resolveActiveTerminal(
-      wp.result?.worktrees ?? [],
-      terminals,
+      localWorktrees,
+      localTerminals,
       tl.result?.visualLayouts,
       targetHandle
     );
@@ -58259,7 +58454,7 @@ async function poll() {
     try {
       (0, import_node_fs6.writeFileSync)(
         "/tmp/agentdeck-debug.json",
-        JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, target: targetHandle, dials: { model: dialValue("model"), effort: dialValue("effort"), mode: dialValue("mode") }, slots: deck.slots }, null, 2)
+        JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, environments: cachedEnvironments.map((e) => e.name), target: targetHandle, targetEnvironment: environmentByHandle.get(targetHandle ?? "") ?? null, dials: { model: dialValue("model"), effort: dialValue("effort"), mode: dialValue("mode") }, slots: deck.slots }, null, 2)
       );
     } catch {
     }
@@ -58287,10 +58482,12 @@ async function spawnSession(ev) {
     return;
   }
   try {
-    const list = await orcaJson(["worktree", "list"]);
+    const env = environmentByHandle.get(t);
+    const envArgs = env ? ["--environment", env] : [];
+    const list = await orcaJson(["worktree", "list", ...envArgs]);
     const same = (list?.result?.worktrees ?? []).filter((w) => w.repoId === repoId);
     const name = nextWorktreeName(repo, same.map((w) => w.displayName || ""));
-    const createArgs = ["worktree", "create", "--repo", `id:${repoId}`, "--name", name];
+    const createArgs = ["worktree", "create", ...envArgs, "--repo", `id:${repoId}`, "--name", name];
     const isOpenCode = agent === "opencode";
     if (!isOpenCode) createArgs.push("--agent", agent);
     const res = await orcaJson(createArgs);
@@ -58299,14 +58496,14 @@ async function spawnSession(ev) {
     let handle;
     if (isOpenCode) {
       if (createdWt) {
-        const created = await orcaJson(["terminal", "create", "--worktree", createdWt, "--command", OPENCODE_CMD, "--focus"]);
+        const created = await orcaJson(["terminal", "create", ...envArgs, "--worktree", createdWt, "--command", OPENCODE_CMD, "--focus"]);
         handle = created?.result?.terminal?.handle ?? created?.result?.handle?.handle;
       }
       if (!handle) {
-        const terms = await orcaJson(["terminal", "list"]);
+        const terms = await orcaJson(["terminal", "list", ...envArgs]);
         const wtTerm = (terms?.result?.terminals ?? []).find((x) => x.worktreeId === createdWt || (x.worktreePath ?? "").includes(name));
         if (wtTerm?.handle) {
-          await orcaRun(["terminal", "switch", "--terminal", wtTerm.handle]);
+          await orcaRun(["terminal", "switch", ...envArgs, "--terminal", wtTerm.handle]);
           handle = wtTerm.handle;
         }
       }
@@ -58318,7 +58515,7 @@ async function spawnSession(ev) {
       lastNav = Date.now();
       setTarget(handle);
       try {
-        await orcaRun(["terminal", "switch", "--terminal", handle]);
+        await orcaRun(["terminal", "switch", ...envArgs, "--terminal", handle]);
         await focusOrca();
       } catch (e) {
         plugin_default.logger.error(`spawn switch: ${e}`);
@@ -58382,7 +58579,7 @@ var SlotAction = class extends SingletonAction {
       setTarget(b.handle);
       lastNav = Date.now();
       try {
-        await orcaRun(["terminal", "switch", "--terminal", b.handle]);
+        await orcaRun(["terminal", "switch", ...envArgsFor(b.handle), "--terminal", b.handle]);
         await focusOrca();
       } catch (e) {
         plugin_default.logger.error(`switch failed: ${e}`);
@@ -58497,7 +58694,7 @@ var DialBase = class extends SingletonAction {
       }
     } else if (this.role === "target" && t) {
       lastNav = Date.now();
-      await orcaRun(["terminal", "switch", "--terminal", t]).catch(() => {
+      await orcaRun(["terminal", "switch", ...envArgsFor(t), "--terminal", t]).catch(() => {
       });
       await focusOrca();
       pollDebounced(50);
