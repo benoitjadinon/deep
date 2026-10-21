@@ -554,6 +554,15 @@ describe("findActivePaneInLayout & resolveActiveTerminal — active terminal det
     expect(active).toBe("term_1");
   });
 
+  it("prefers agent-bearing terminal over non-agent terminal in fallback selection", () => {
+    const termsWithAgent = [
+      { handle: "term_plain", tabId: "tab_1", leafId: "leaf_1", title: "Shell", worktreeId: "wt_1", lastOutputAt: 9999 },
+      { handle: "term_agent", tabId: "tab_2", leafId: "leaf_2", title: "Agent", worktreeId: "wt_1", lastOutputAt: 1000, agentIdentity: "antigravity" },
+    ];
+    const active = resolveActiveTerminal(wts, termsWithAgent, undefined, "term_other");
+    expect(active).toBe("term_agent");
+  });
+
   it("returns undefined when no active worktree exists", () => {
     const inactiveWts = [{ worktreeId: "wt_1", isActive: false }];
     expect(resolveActiveTerminal(inactiveWts, terms, undefined, "term_1")).toBeUndefined();

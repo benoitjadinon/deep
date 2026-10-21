@@ -56973,7 +56973,8 @@ function resolveActiveTerminal(worktrees, terminals, visualLayouts, currentTarge
             const matchLeaf = termsInTab.find((t) => t.leafId === p.leafId);
             if (matchLeaf) activeHandles.push(matchLeaf.handle);
           } else if (termsInTab.length > 0) {
-            activeHandles.push(termsInTab[0].handle);
+            const agentTerm = termsInTab.find((t) => Boolean(t.agentIdentity));
+            activeHandles.push(agentTerm ? agentTerm.handle : termsInTab[0].handle);
           }
         }
       }
@@ -56989,7 +56990,9 @@ function resolveActiveTerminal(worktrees, terminals, visualLayouts, currentTarge
   if (currentTargetHandle && termsInWt.some((t) => t.handle === currentTargetHandle)) {
     return currentTargetHandle;
   }
-  const sorted = termsInWt.slice().sort((a, b) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0));
+  const agentTerms = termsInWt.filter((t) => Boolean(t.agentIdentity));
+  const candidateTerms = agentTerms.length > 0 ? agentTerms : termsInWt;
+  const sorted = candidateTerms.slice().sort((a, b) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0));
   return sorted[0]?.handle;
 }
 
@@ -57670,6 +57673,7 @@ async function focusOrca() {
   }
 }
 var lastNav = 0;
+var lastActiveHandle;
 var pinnedSlots = /* @__PURE__ */ new Map();
 var pinnedUntil = 0;
 var PINNED_SLOT_HOLD_MS = 3e4;
@@ -58242,8 +58246,9 @@ function getPagingSlotIndex() {
 }
 function ensureTarget() {
   if (!targetHandle || !allHandles.includes(targetHandle)) {
-    if (targetHandle !== allHandles[0]) {
-      targetHandle = allHandles[0];
+    const candidate = lastActiveHandle && allHandles.includes(lastActiveHandle) ? lastActiveHandle : allHandles.find((h) => !environmentByHandle.get(h)) ?? allHandles[0];
+    if (targetHandle !== candidate) {
+      targetHandle = candidate;
       applyPending();
     }
   }
@@ -58539,20 +58544,25 @@ async function poll() {
         modeByHandle.delete(h);
       }
     }
-    const isTargetRemote = targetHandle ? (environmentByHandle.get(targetHandle) ?? null) !== null : false;
+    const isTargetRemote = targetHandle ? Boolean(environmentByHandle.get(targetHandle)) : false;
     const activeHandle = resolveActiveTerminal(
       localWorktrees,
       localTerminals,
       tl.result?.visualLayouts,
       targetHandle
     );
+    const orcaChanged = activeHandle !== lastActiveHandle;
+    const navGraceExpired = Date.now() - lastNav > 1800;
     if (activeHandle && sessionByHandle.has(activeHandle)) {
       if (!targetHandle) {
         setTarget(activeHandle);
-      } else if (!isTargetRemote && Date.now() - lastNav > 1800 && activeHandle !== targetHandle) {
+      } else if (orcaChanged && navGraceExpired) {
+        setTarget(activeHandle);
+      } else if (!isTargetRemote && navGraceExpired && activeHandle !== targetHandle) {
         setTarget(activeHandle);
       }
     }
+    lastActiveHandle = activeHandle;
     refreshDiscovery();
     refreshCurrentState();
     refreshEfforts();

@@ -315,6 +315,8 @@ async function focusOrca(): Promise<void> {
 
 // Timestamp of manual navigation (dial rotate / key tap) — prevents poll auto-tracking from overwriting manual selection immediately
 let lastNav = 0;
+// Last resolved Orca active terminal handle — used to detect when the user changes agents in Orca UI
+let lastActiveHandle: string | undefined;
 // Interaction hold: when a session slot is tapped, freeze all currently visible slot positions
 // for 30s so interacting with or replying to an agent never moves any tile under the user's fingers.
 let pinnedSlots = new Map<string, number>(); // handle -> slot index
@@ -952,8 +954,12 @@ function getPagingSlotIndex(): number | undefined {
 
 function ensureTarget(): string | undefined {
   if (!targetHandle || !allHandles.includes(targetHandle)) {
-    if (targetHandle !== allHandles[0]) {
-      targetHandle = allHandles[0];
+    const candidate =
+      lastActiveHandle && allHandles.includes(lastActiveHandle)
+        ? lastActiveHandle
+        : allHandles.find((h) => !environmentByHandle.get(h)) ?? allHandles[0];
+    if (targetHandle !== candidate) {
+      targetHandle = candidate;
       applyPending();
     }
   }
@@ -1289,21 +1295,28 @@ async function poll(): Promise<void> {
     // Automatically set currently focused session as target. Only the local runtime can report
     // what this desktop is focused on — a remote runtime's `isActive` would fight the user's
     // manual selection (and every remote deck session would look "active" at once).
-    // If the user actively selected a remote session, do not clobber it with local active session.
-    const isTargetRemote = targetHandle ? (environmentByHandle.get(targetHandle) ?? null) !== null : false;
+    const isTargetRemote = targetHandle ? Boolean(environmentByHandle.get(targetHandle)) : false;
     const activeHandle = resolveActiveTerminal(
       localWorktrees,
       localTerminals,
       tl.result?.visualLayouts,
       targetHandle,
     );
+    const orcaChanged = activeHandle !== lastActiveHandle;
+    const navGraceExpired = Date.now() - lastNav > 1800;
+
     if (activeHandle && sessionByHandle.has(activeHandle)) {
       if (!targetHandle) {
         setTarget(activeHandle);
-      } else if (!isTargetRemote && Date.now() - lastNav > 1800 && activeHandle !== targetHandle) {
+      } else if (orcaChanged && navGraceExpired) {
+        // Orca's active terminal changed in the UI — follow user focus even if target was remote
+        setTarget(activeHandle);
+      } else if (!isTargetRemote && navGraceExpired && activeHandle !== targetHandle) {
+        // Local active terminal differs from local target after navigation grace — sync target
         setTarget(activeHandle);
       }
     }
+    lastActiveHandle = activeHandle;
     refreshDiscovery(); // Periodically load model list for supported agents (throttled)
     refreshCurrentState(); // Track active state (model/effort/mode) from agent interfaces (every poll)
     refreshEfforts(); // Periodically load effort variants (throttled)

@@ -930,7 +930,8 @@ export function resolveActiveTerminal(
             const matchLeaf = termsInTab.find((t) => t.leafId === p.leafId);
             if (matchLeaf) activeHandles.push(matchLeaf.handle);
           } else if (termsInTab.length > 0) {
-            activeHandles.push(termsInTab[0].handle);
+            const agentTerm = termsInTab.find((t) => Boolean(t.agentIdentity));
+            activeHandles.push(agentTerm ? agentTerm.handle : termsInTab[0].handle);
           }
         }
       }
@@ -951,8 +952,10 @@ export function resolveActiveTerminal(
     return currentTargetHandle;
   }
 
-  // 3. Fallback to latest output terminal or first terminal in worktree
-  const sorted = termsInWt.slice().sort((a, b) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0));
+  // 3. Fallback to latest output terminal or first terminal in worktree (preferring agent terminals)
+  const agentTerms = termsInWt.filter((t) => Boolean(t.agentIdentity));
+  const candidateTerms = agentTerms.length > 0 ? agentTerms : termsInWt;
+  const sorted = candidateTerms.slice().sort((a, b) => (b.lastOutputAt ?? 0) - (a.lastOutputAt ?? 0));
   return sorted[0]?.handle;
 }
 
