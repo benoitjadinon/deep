@@ -13,12 +13,32 @@ if [ "$(uname -s)" = "Linux" ]; then
   if command -v opendeck >/dev/null 2>&1; then
     echo "==> Stopping $APP (native)..."
     pkill -x opendeck || true
-    # Host-side plugin processes can outlive the app; OpenDeck respawns them.
-    pkill -f "^node bin/plugin\\.js .*-pluginUUID com\\.byjw\\.deep\\." || true
-    sleep 1
+    for _ in $(seq 1 10); do
+      if ! pgrep -x "$PROC" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.5
+    done
+    if pgrep -x "$PROC" >/dev/null 2>&1; then
+      echo "==> Still running; forcing kill..."
+      pkill -9 -x "$PROC" || true
+      sleep 0.5
+    fi
+    pkill -f "com.byjw.deep.sdPlugin/bin/plugin.js" || true
     echo "==> Relaunching $APP..."
-    setsid opendeck >/dev/null 2>&1 < /dev/null &
-    echo "==> Done. Give it a moment to rescan plugins."
+    if command -v systemd-run >/dev/null 2>&1; then
+      systemd-run --user --unit=opendeck-app --collect opendeck >/dev/null 2>&1 || setsid opendeck >/dev/null 2>&1 < /dev/null &
+    else
+      setsid opendeck >/dev/null 2>&1 < /dev/null &
+    fi
+    for _ in $(seq 1 10); do
+      if pgrep -x "$PROC" >/dev/null 2>&1; then
+        echo "==> OpenDeck running (PID $(pgrep -x "$PROC" | head -n 1)). Give it a moment to rescan plugins."
+        exit 0
+      fi
+      sleep 0.5
+    done
+    echo "==> Warning: OpenDeck did not appear in process list."
     exit 0
   fi
   FLATPAK_ID="me.amankhanna.opendeck"

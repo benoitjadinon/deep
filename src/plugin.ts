@@ -317,11 +317,11 @@ async function focusOrca(): Promise<void> {
 let lastNav = 0;
 // Last resolved Orca active terminal handle — used to detect when the user changes agents in Orca UI
 let lastActiveHandle: string | undefined;
-// Interaction hold: when a session slot is tapped, freeze all currently visible slot positions
-// for 30s so interacting with or replying to an agent never moves any tile under the user's fingers.
+// Interaction hold: when a session slot is tapped, pin it to slot 0 for 20s
+// so interacting with or replying to an agent does not reshuffle the tile out from under the user's finger.
 let pinnedSlots = new Map<string, number>(); // handle -> slot index
 let pinnedUntil = 0;
-const PINNED_SLOT_HOLD_MS = 30_000;
+const PINNED_SLOT_HOLD_MS = 20_000;
 function getActivePinnedSlots(): Map<string, number> | undefined {
   if (Date.now() < pinnedUntil && pinnedSlots.size > 0) {
     return pinnedSlots;
@@ -329,14 +329,10 @@ function getActivePinnedSlots(): Map<string, number> | undefined {
   pinnedSlots.clear();
   return undefined;
 }
-function freezeCurrentSlots(): void {
+function pinSessionToSlot0(handle: string): void {
   pinnedSlots.clear();
   pinnedUntil = Date.now() + PINNED_SLOT_HOLD_MS;
-  deck.slots.forEach((s, idx) => {
-    if (!s.empty && !("isPageButton" in s && s.isPageButton)) {
-      pinnedSlots.set((s as any).handle, idx);
-    }
-  });
+  pinnedSlots.set(handle, 0);
 }
 // Debounce rapid target dial rotation (180ms)
 let targetSwitchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1462,7 +1458,7 @@ class SlotAction extends SingletonAction<SlotSettings> {
 
       setTarget(b.handle);
       lastNav = Date.now();
-      freezeCurrentSlots();
+      pinSessionToSlot0(b.handle);
       try {
         await switchTerminal(b.handle);
         await focusOrca();
@@ -1701,16 +1697,8 @@ setInterval(() => {
 }, 160);
 poll();
 
-// Check if any visible session key has long titles requiring marquee animation
+// Check if any visible session key has long titles requiring marquee animation (deprecated: marquee replaced with middle cropping)
 function anyMarquee(): boolean {
-  const entries = getSortedSlotEntries();
-  for (let i = 0; i < entries.length; i++) {
-    const b = deck.slots[i];
-    if (b && !b.empty && !("isPageButton" in b && b.isPageButton)) {
-      const proj = (b as any).repo || ((b as any).worktreePath ? String((b as any).worktreePath).split("/").filter(Boolean).pop() : "") || "";
-      if (proj.length > 9) return true;
-    }
-  }
   return false;
 }
 

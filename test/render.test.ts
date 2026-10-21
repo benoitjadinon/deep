@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { keySvg, agentBadge, stateIcon, keyImage, wrap, wrapWords, stripSpinner, marqueeWindow, dialImage, modeColor, pageButtonSvg, fitText } from "../src/render.js";
+import { keySvg, agentBadge, stateIcon, keyImage, wrap, wrapWords, stripSpinner, marqueeWindow, dialImage, modeColor, pageButtonSvg, fitText, truncateMiddle } from "../src/render.js";
 
 describe("stripSpinner / wrap / wrapWords", () => {
   it("strip leading spinner glyph while preserving text", () => {
@@ -22,6 +22,22 @@ describe("stripSpinner / wrap / wrapWords", () => {
       "long task…",
     ]);
     expect(wrapWords("", 15, 2)).toEqual([]);
+  });
+});
+
+describe("truncateMiddle", () => {
+  it("keeps strings shorter than or equal to maxLen intact", () => {
+    expect(truncateMiddle("cat-alert", 12)).toBe("cat-alert");
+    expect(truncateMiddle("123456789012", 12)).toBe("123456789012");
+  });
+  it("crops long strings in the middle with ...", () => {
+    expect(truncateMiddle("obsidian-skills-sync", 12)).toBe("obsid...sync");
+    expect(truncateMiddle("SIPVoiceBridge", 12)).toBe("SIPVo...idge");
+    expect(truncateMiddle("SecondBrain (Mac)", 12)).toBe("Secon...Mac)");
+  });
+  it("handles edge cases with empty or short limits", () => {
+    expect(truncateMiddle("", 12)).toBe("");
+    expect(truncateMiddle("abcde", 3)).toBe("abc");
   });
 });
 
@@ -64,14 +80,22 @@ describe("keySvg", () => {
     expect(svg).toContain('font-size="18" font-weight="600"');
   });
 
-  it("target slot renders top-right coral dot in the bar, non-target does not", () => {
+  it("crops long project names in the middle with ... instead of marquee", () => {
+    const svg = keySvg({
+      empty: false, handle: "term_long", state: "working", color: "blue",
+      repo: "obsidian-skills-sync", branch: "main",
+    });
+    expect(svg).toContain("obsidian...ls-sync");
+    expect(svg).toContain('font-size="13" font-weight="700"');
+  });
+
+  it("target slot renders top-left white dot in the bar, non-target does not", () => {
     const b = { empty: false as const, handle: "t", label: "x", state: "done", color: "green" as const, repo: "svd", branch: "main" };
     const on = keySvg(b, 0, true);
     const off = keySvg(b, 0, false);
-    expect(on).toContain('<circle cx="126" cy="126" r="9" fill="#d97757"');
+    expect(on).toContain('<circle cx="14" cy="9" r="8" fill="#ffffff"/>');
     expect(on).toContain("main");
-    expect(on).toContain('fill="#ffffff"');
-    expect(off).not.toContain("#d97757");
+    expect(off).not.toContain('<circle cx="14" cy="9"');
   });
 
   it("places state glyph on the right side of the top bar and agent badge bottom-left", () => {
@@ -95,7 +119,8 @@ describe("keySvg", () => {
     expect(withHost).toContain("MAC MINI");
 
     const withoutHost = keySvg({ empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main" });
-    expect(withoutHost).not.toContain('fill="#7c7c85"');
+    expect(withHost).toContain('fill="#ffffff"');
+    expect(withoutHost).not.toContain('y="129"');
   });
 
   it("truncates a long host label so it stays between the agent badge and the target dot", () => {
@@ -192,20 +217,22 @@ describe("agentBadge — per-tile agent badge", () => {
     expect(agentBadge("claude")).toContain("M4.709");
     expect(agentBadge("opencode")).toContain('fill="#F1ECEC"');
     expect(agentBadge("opencode")).toContain("M180 240H60V120H180V240Z");
-    expect(agentBadge("codex")).toContain('fill="#A78BFA"');
+    expect(agentBadge("codex")).toContain('fill="#ffffff"');
     expect(agentBadge("codex")).toContain("M9.205");
-    expect(agentBadge("agy")).toContain("<image href=\"data:image/png;base64,");
-    expect(agentBadge("antigravity")).toContain("<image href=\"data:image/png;base64,");
-    expect(agentBadge("hermes")).toContain('fill="#10B981"');
-    expect(agentBadge("hermes-cli")).toContain('fill="#10B981"');
-    expect(agentBadge("hermes-agent")).toContain('fill="#10B981"');
+    expect(agentBadge("codex-cli")).toContain('fill="#ffffff"');
+    expect(agentBadge("codex-cli")).toContain("M9.205");
+    expect(agentBadge("agy")).toContain('fill="#4285F4"');
+    expect(agentBadge("antigravity")).toContain('fill="#4285F4"');
+    expect(agentBadge("hermes")).toContain('fill="#ffffff"');
+    expect(agentBadge("hermes-cli")).toContain('fill="#ffffff"');
+    expect(agentBadge("hermes-agent")).toContain('fill="#ffffff"');
     expect(agentBadge("pi")).toContain(">π</text>");
     expect(agentBadge("pi")).toContain('fill="#8abeb7"');
   });
   it("case insensitive", () => {
     expect(agentBadge("OpenCode")).toContain('fill="#F1ECEC"');
     expect(agentBadge("Claude")).toContain('fill="#D97757"');
-    expect(agentBadge("Hermes")).toContain('fill="#10B981"');
+    expect(agentBadge("Hermes")).toContain('fill="#ffffff"');
     expect(agentBadge("PI")).toContain(">π</text>");
   });
   it("unknown types render gray pill with first 2 characters, or question mark", () => {
@@ -551,7 +578,9 @@ describe("modeColor — mode to color mapping", () => {
 
   it("Codex mode colors: workspace-write=emerald, read-only=sky, danger-full-access=red, plan=blue", () => {
     expect(modeColor("workspace-write", "codex")).toBe("#10b981");
+    expect(modeColor("workspace-write", "codex-cli")).toBe("#10b981");
     expect(modeColor("read-only", "codex")).toBe("#0ea5e9");
+    expect(modeColor("read-only", "codex-cli")).toBe("#0ea5e9");
     expect(modeColor("danger-full-access", "codex")).toBe("#ef4444");
     expect(modeColor("plan", "codex")).toBe("#3b82f6");
   });

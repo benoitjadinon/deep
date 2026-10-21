@@ -84,6 +84,7 @@ describe("agentFor / profileFor — agent type to abstract interface and profile
   it("known agents return concrete class instances", () => {
     expect(agentFor("claude")).toBeInstanceOf(ClaudeAgent);
     expect(agentFor("codex")).toBeInstanceOf(CodexAgent);
+    expect(agentFor("codex-cli")).toBeInstanceOf(CodexAgent);
     expect(agentFor("opencode")).toBeInstanceOf(OpenCodeAgent);
     expect(agentFor("agy")).toBeInstanceOf(AgyAgent);
     expect(agentFor("hermes")).toBeInstanceOf(HermesAgent);
@@ -92,6 +93,7 @@ describe("agentFor / profileFor — agent type to abstract interface and profile
 
     expect(profileFor("claude").label).toBe("Claude");
     expect(profileFor("codex").label).toBe("Codex");
+    expect(profileFor("codex-cli").label).toBe("Codex");
     expect(profileFor("opencode").label).toBe("OpenCode");
     expect(profileFor("agy").label).toBe("Agy");
     expect(profileFor("hermes").label).toBe("Hermes");
@@ -669,7 +671,7 @@ describe("Codex & Agy parser and state reader", () => {
   it("CodexAgent: getModels, getEfforts, getModes default behavior", () => {
     const a = agentFor("codex");
     expect(a.getModels().length).toBeGreaterThan(0);
-    expect(a.getEfforts()).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+    expect(a.getEfforts()).toEqual(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(a.getModes()).toEqual(["workspace-write", "read-only", "danger-full-access"]);
   });
   it("readCodexState: read local state", () => {

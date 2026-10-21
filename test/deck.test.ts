@@ -397,7 +397,7 @@ describe("buildDeck — merges orca sources into 8-slot button model", () => {
     expect(activityBucket(T + 10_000)).toBe(activityBucket(T + 40_000));
   });
 
-  it("orders sessions by activity recency regardless of state tier", () => {
+  it("orders sessions by importance tier (active/attention first, completed/idle last), then activity recency", () => {
     // Fixture across multiple projects: AltReady, deep, sleep, notes
     const ts = [
       { handle: "term_done_unread", tabId: "d1", leafId: "l1", title: "deep done unread", worktreePath: "/x/deep", worktreeId: "wt_d1", lastOutputAt: T + 10 * MIN },
@@ -418,21 +418,21 @@ describe("buildDeck — merges orca sources into 8-slot button model", () => {
       { worktreeId: "wt_d2", unread: false, agents: [{ paneKey: "d2:l2", state: "done" }] },
     ];
     const slots = buildDeck({ terminals: ts, worktrees: wts }).slots.filter((s) => !s.empty) as any[];
-    // Pure recency order:
-    // T+10m: term_done_unread
-    // T+5m:  term_working
-    // T+4m:  term_error
-    // T+3m:  term_done_reviewed
-    // T+2m:  term_ask_question
-    // T+1m:  term_working_older
-    // T:     term_idle
+    // Active tier (unread done, working, error, question) before completed/idle (reviewed done, idle):
+    // T+10m: term_done_unread (active)
+    // T+5m:  term_working (active)
+    // T+4m:  term_error (active)
+    // T+2m:  term_ask_question (active)
+    // T+1m:  term_working_older (active)
+    // T+3m:  term_done_reviewed (inactive)
+    // T:     term_idle (inactive)
     expect(slots.map((s) => s.handle)).toEqual([
       "term_done_unread",
       "term_working",
       "term_error",
-      "term_done_reviewed",
       "term_ask_question",
       "term_working_older",
+      "term_done_reviewed",
       "term_idle",
     ]);
   });
@@ -591,15 +591,17 @@ describe("statePriority & sortSessions — priority rankings and un-grouped sess
     expect(statePriority("waiting")).toBe(0);
     expect(statePriority("blocked")).toBe(0);
     expect(statePriority("error")).toBe(0);
-    expect(statePriority("working")).toBe(10);
-    expect(statePriority("done")).toBe(20);
+    expect(statePriority("working")).toBe(0);
+    expect(statePriority("done", true)).toBe(0);
     expect(statePriority("idle")).toBe(20);
     expect(statePriority("unverifiable")).toBe(20);
+    expect(statePriority("done", false)).toBe(20);
+    expect(statePriority("done")).toBe(20);
     expect(statePriority(undefined)).toBe(20);
     expect(statePriority("unknown" as any)).toBe(20);
   });
 
-  it("sortSessions: orders by activity bucket recency, then handle", () => {
+  it("sortSessions: orders by state priority tier, then activity bucket recency", () => {
     const items = [
       { id: "s1", state: "done" as const, recency: 10000 },
       { id: "s2", state: "waiting" as const, recency: 2000 },
@@ -609,11 +611,18 @@ describe("statePriority & sortSessions — priority rankings and un-grouped sess
       { id: "s6", state: "working" as const, recency: 9000 },
       { id: "s7", state: "done" as const, recency: 4000 },
     ];
-    // bucketMs = 1 to test direct recency
+    // Active tier (s6, s3, s4, s2) -> Inactive tier (s1, s5, s7)
     const sorted = sortSessions(items, (s) => s.state, (s) => s.recency, (s) => s.id, {
       bucketMs: 1,
     });
-    expect(sorted.map((s) => s.id)).toEqual(["s1", "s6", "s5", "s3", "s7", "s4", "s2"]);
+    expect(sorted.map((s) => s.id)).toEqual(["s6", "s3", "s4", "s2", "s1", "s5", "s7"]);
+
+    // With usePriority: false: pure recency order
+    const pureRecency = sortSessions(items, (s) => s.state, (s) => s.recency, (s) => s.id, {
+      bucketMs: 1,
+      usePriority: false,
+    });
+    expect(pureRecency.map((s) => s.id)).toEqual(["s1", "s6", "s5", "s3", "s7", "s4", "s2"]);
   });
 });
 

@@ -325,48 +325,59 @@ export function activityBucket(
 }
 
 /** State sorting priority rank: lower number = placed higher/earlier on the deck */
-export function statePriority(state: AgentState): number {
+export function statePriority(state: AgentState, unread?: boolean): number {
+  if (state === "done") {
+    return unread ? 0 : 20; // unread done needs attention (active tier); reviewed done is inactive tier
+  }
   switch (state) {
+    case "working":
+    case "monitoring":
     case "waiting":
     case "permission":
     case "blocked":
     case "interrupted":
     case "error":
     case "failed":
-      return 0; // Alerts & questions up top (demands user action/input)
-    case "working":
-    case "monitoring":
-      return 10; // Active working states
-    case "done":
+      return 0; // Active / In-progress / Attention tier
     case "idle":
     case "unverifiable":
     default:
-      return 20; // Completed & inactive states (ordered by most recent activity)
+      return 20; // Inactive / Completed tier
   }
 }
 
 /**
- * Deck ordering: sort sessions by most recent activity.
- * Activity is compared in coarse buckets (see `activityBucket`) so concurrently active sessions
- * do not re-sort the deck constantly on every streaming line.
- * Unread attention pulse does NOT alter slot positions, preventing jarring reshuffles on click.
+ * Deck ordering: sort sessions by importance (active/attention first, completed/idle last),
+ * then by activity recency bucket.
+ * Inside each tier, sessions are ordered by activity bucket (freshest bucket first),
+ * with the terminal handle as deterministic tiebreak.
  */
 export function sortSessions<T>(
   sessions: T[],
   stateOf: (s: T) => AgentState,
   recencyOf: (s: T) => number,
   handleOf: (s: T) => string,
-  opts: { bucketMs?: number } = {},
+  opts: {
+    bucketMs?: number;
+    unreadOf?: (s: T) => boolean | undefined;
+    usePriority?: boolean;
+  } = {},
 ): T[] {
   const bucketMs = opts.bucketMs ?? DEFAULT_ACTIVITY_BUCKET_MS;
+  const usePriority = opts.usePriority ?? true;
   const entries = sessions.map((s) => ({
     s,
+    priority: usePriority ? statePriority(stateOf(s), opts.unreadOf?.(s)) : 0,
     bucket: activityBucket(recencyOf(s), bucketMs),
     handle: handleOf(s),
   }));
 
   entries.sort((a, b) => {
-    if (a.bucket !== b.bucket) return b.bucket - a.bucket; // most recently active session first
+    // 1. Primary sort: state priority (active/attention tier first, completed/idle last)
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    // 2. Secondary sort: activity recency bucket (most recently active session first inside tier)
+    if (a.bucket !== b.bucket) return b.bucket - a.bucket;
+    // 3. Deterministic handle tiebreak
     return a.handle.localeCompare(b.handle);
   });
 
@@ -652,6 +663,11 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
 
       const meta = t.worktreeId ? metaByWt.get(t.worktreeId) : undefined;
       const unread = meta?.unread;
+      const agentTime = sessionRecency(timeByPane.get(pane), hook?.receivedAt);
+      // For completed & reviewed sessions, do not let terminal cursor/timer ticks fake fresh activity
+      const recency = (state === "done" && !unread)
+        ? (agentTime || t.lastOutputAt || 0)
+        : sessionRecency(t.lastOutputAt, agentTime);
 
       return {
         t,
@@ -669,18 +685,18 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
         hostId: t.executionHostId || meta?.hostId,
         environment: t.environment,
         environmentId: t.environmentId,
-        recency: sessionRecency(t.lastOutputAt, timeByPane.get(pane), hook?.receivedAt),
+        recency,
       };
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
 
-  // Sort sessions purely by activity recency bucket.
+  // Sort sessions: alerts/questions first -> active working -> inactive -> reviewed done; most recent activity first inside each tier.
   const sessions = sortSessions(
     sessionsRaw,
     (s) => s.state,
     (s) => s.recency,
     (s) => s.t.handle,
-    { bucketMs: opts.activityBucketMs },
+    { bucketMs: opts.activityBucketMs, unreadOf: (s) => s.unread },
   );
 
   // Repository metadata index by repoId, path, and displayName

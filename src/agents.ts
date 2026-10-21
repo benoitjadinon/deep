@@ -963,6 +963,8 @@ export const CODEX_CONFIG = join(homedir(), ".codex", "config.toml");
 export const CODEX_MODELS_CACHE = join(homedir(), ".codex", "models_cache.json");
 
 export const CODEX_DEFAULT_MODELS = [
+  "gpt-6.1-sol",
+  "gpt-6-sol",
   "gpt-5.6-luna",
   "gpt-5.6-terra",
   "gpt-5.5",
@@ -981,7 +983,7 @@ export function parseCodexConfig(tomlText: string): { model?: string; effort?: s
   const effortMatch = /model_reasoning_effort\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
   if (effortMatch) effort = effortMatch[1];
 
-  const modeMatch = /sandbox_mode\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
+  const modeMatch = /(?:sandbox_mode|sandbox)\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
   if (modeMatch) mode = modeMatch[1];
 
   return { model, effort, mode };
@@ -1042,7 +1044,7 @@ export class CodexAgent extends AbstractAgent {
   }
 
   override getEfforts(): string[] {
-    return ["none", "low", "medium", "high", "xhigh", "max"];
+    return ["none", "low", "medium", "high", "xhigh", "max", "ultra"];
   }
 
   override getModes(): string[] {
@@ -2197,6 +2199,7 @@ const AGENT_INSTANCES: Record<string, AbstractAgent> = {
   claude: new ClaudeAgent(),
   codex: new CodexAgent(),
   code: new CodexAgent(),
+  "codex-cli": new CodexAgent(),
   opencode: new OpenCodeAgent(),
   agy: new AgyAgent(),
   antigravity: new AgyAgent(),
@@ -2257,6 +2260,7 @@ export const AGENTS: Record<string, AgentProfile> = {
   claude: profileFor("claude"),
   codex: profileFor("codex"),
   code: profileFor("code"),
+  "codex-cli": profileFor("codex-cli"),
   opencode: profileFor("opencode"),
   agy: profileFor("agy"),
   antigravity: profileFor("antigravity"),
