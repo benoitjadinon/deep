@@ -355,15 +355,18 @@ let targetHandle: string | undefined; // Target session affected by dials (selec
 let pendingEffort = ""; // Selected effort on dial 2 before pushing
 let pendingModel = ""; // Selected model on dial 1 before pushing
 let pendingMode = ""; // Selected mode on mode dial before pushing
+let pendingPermissions = ""; // Selected permissions on permissions dial before pushing
 const modelByHandle = new Map<string, string>(); // Last applied model per session
 const effortByHandle = new Map<string, string>(); // Last applied effort per session
 const modeByHandle = new Map<string, string>(); // Last applied mode per session
+const permissionsByHandle = new Map<string, string>(); // Last applied permissions per session
 // Currently active model/effort/mode per session read periodically from disk
 const currentModelByHandle = new Map<string, string>();
 const currentEffortByHandle = new Map<string, string>();
 const currentModeByHandle = new Map<string, string>();
+const currentPermissionsByHandle = new Map<string, string>();
 // Timestamp when dial was rotated — gives grace period so auto-poll doesn't overwrite user selection
-const pickAt = { model: 0, effort: 0, mode: 0 };
+const pickAt = { model: 0, effort: 0, mode: 0, permissions: 0 };
 const PICK_GRACE = 2500;
 // Gating / discovery state per agent: agentType -> profile / discovered live list
 const agentByHandle = new Map<string, string>(); // session -> agentType (orca worktree ps)
@@ -685,6 +688,9 @@ function refreshSessionState(h: string): boolean {
   if (state.modes && state.modes.length) {
     modesByHandle.set(h, state.modes);
   }
+  if (state.permissions) {
+    currentPermissionsByHandle.set(h, state.permissions);
+  }
 
   if (state.recentModels || state.favoriteModels) {
     const list = modelsByHandle.get(h);
@@ -709,6 +715,7 @@ function setTarget(h?: string): void {
   pickAt.model = 0; // Target change invalidates previous grace period
   pickAt.effort = 0;
   pickAt.mode = 0;
+  pickAt.permissions = 0;
   applyPending();
   renderDials();
 }
@@ -742,12 +749,16 @@ function dialList(kind: ControlKind): string[] {
     if (live && live.length) return live;
     return agent.getModes(contextForHandle(t));
   }
+  if (kind === "permissions") {
+    return agent.getPermissions(contextForHandle(t));
+  }
   return [];
 }
 function applyPending(): void {
   adoptPending("model");
   adoptPending("effort");
   adoptPending("mode");
+  adoptPending("permissions");
 }
 // Populate dial display with currently read value (unless user rotated dial within grace period)
 function adoptPending(role: ControlKind): void {
@@ -763,10 +774,14 @@ function adoptPending(role: ControlKind): void {
     const current = currentEffortByHandle.get(t);
     const applied = effortByHandle.get(t);
     pendingEffort = current || applied || first;
-  } else {
+  } else if (role === "mode") {
     const current = currentModeByHandle.get(t);
     const applied = modeByHandle.get(t);
     pendingMode = current || applied || first;
+  } else if (role === "permissions") {
+    const current = currentPermissionsByHandle.get(t);
+    const applied = permissionsByHandle.get(t);
+    pendingPermissions = current || applied || first;
   }
 }
 // Value to display on dial — "-" if unsupported, "…" if empty/loading
@@ -783,6 +798,10 @@ function dialValue(role: string): string {
   if (role === "mode") {
     if (!agent.supports("mode")) return "-";
     return pendingMode || "…";
+  }
+  if (role === "permissions") {
+    if (!agent.supports("permissions")) return "-";
+    return pendingPermissions || "…";
   }
   if (role === "target") return targetLabel();
   return talkState;
@@ -981,6 +1000,7 @@ function dialFeedback(role: string): { full: string } {
   }
   if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick, !isSupported, badge) };
   if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported, badge) };
+  if (role === "permissions") return { full: dialImage("permissions", "PERM", v, tick, !isSupported, badge) };
   if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
   if (role === "target") {
     // Button-style state rendering: the target session drives the status bar color and glyph.
@@ -1320,7 +1340,7 @@ async function poll(): Promise<void> {
     try {
       writeFileSync(
         "/tmp/agentdeck-debug.json",
-        JSON.stringify({ at: new Date().toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, environments: cachedEnvironments.map((e) => e.name), target: targetHandle, targetEnvironment: environmentByHandle.get(targetHandle ?? "") ?? null, dials: { model: dialValue("model"), effort: dialValue("effort"), mode: dialValue("mode") }, slots: deck.slots }, null, 2),
+        JSON.stringify({ at: new Date().toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, environments: cachedEnvironments.map((e) => e.name), target: targetHandle, targetEnvironment: environmentByHandle.get(targetHandle ?? "") ?? null, dials: { model: dialValue("model"), effort: dialValue("effort"), mode: dialValue("mode"), permissions: dialValue("permissions") }, slots: deck.slots }, null, 2),
       );
     } catch {}
   } catch (e) {
@@ -1491,7 +1511,7 @@ class DialBase extends SingletonAction {
     const dir = (ev.payload?.ticks ?? 0) > 0 ? 1 : (ev.payload?.ticks ?? 0) < 0 ? -1 : 0;
     if (!dir) return;
     const t = ensureTarget();
-    if (this.role === "model" || this.role === "effort" || this.role === "mode") {
+    if (this.role === "model" || this.role === "effort" || this.role === "mode" || this.role === "permissions") {
       // Gate: unsupported agent / empty list -> alert
       const agent = agentForHandle();
       const kind = this.role as ControlKind;
@@ -1504,13 +1524,21 @@ class DialBase extends SingletonAction {
         ev.action.showAlert?.();
         return;
       }
-      const cur = this.role === "model" ? pendingModel : this.role === "effort" ? pendingEffort : pendingMode;
+      const cur =
+        this.role === "model"
+          ? pendingModel
+          : this.role === "effort"
+          ? pendingEffort
+          : this.role === "mode"
+          ? pendingMode
+          : pendingPermissions;
       const idx = cur ? list.indexOf(cur) : -1;
       const start = idx < 0 ? (dir > 0 ? -1 : 0) : idx;
       const next = list[(start + dir + list.length) % list.length];
       if (this.role === "model") pendingModel = next;
       else if (this.role === "effort") pendingEffort = next;
-      else pendingMode = next;
+      else if (this.role === "mode") pendingMode = next;
+      else pendingPermissions = next;
       pickAt[kind] = Date.now();
       renderDials();
     } else if (this.role === "target") {
@@ -1529,14 +1557,21 @@ class DialBase extends SingletonAction {
   }
   override async onDialDown(ev: any): Promise<void> {
     const t = ensureTarget();
-    if (this.role === "model" || this.role === "effort" || this.role === "mode") {
+    if (this.role === "model" || this.role === "effort" || this.role === "mode" || this.role === "permissions") {
       const agent = agentForHandle();
       const kind = this.role as ControlKind;
       if (!t || !agent.supports(kind)) {
         streamDeck.logger.info(`apply ${kind}: unsupported in agent (${agent.label}) — gated`);
         ev.action.showAlert?.();
       } else {
-        const value = this.role === "model" ? pendingModel : this.role === "effort" ? pendingEffort : pendingMode;
+        const value =
+          this.role === "model"
+            ? pendingModel
+            : this.role === "effort"
+            ? pendingEffort
+            : this.role === "mode"
+            ? pendingMode
+            : pendingPermissions;
         if (!value) {
           ev.action.showAlert?.();
           return;
@@ -1546,7 +1581,9 @@ class DialBase extends SingletonAction {
             ? (currentModelByHandle.get(t) || modelByHandle.get(t))
             : this.role === "effort"
             ? (currentEffortByHandle.get(t) || effortByHandle.get(t))
-            : (currentModeByHandle.get(t) || modeByHandle.get(t));
+            : this.role === "mode"
+            ? (currentModeByHandle.get(t) || modeByHandle.get(t))
+            : (currentPermissionsByHandle.get(t) || permissionsByHandle.get(t));
 
         if (this.role === "model") {
           modelByHandle.set(t, value);
@@ -1563,9 +1600,12 @@ class DialBase extends SingletonAction {
         } else if (this.role === "effort") {
           effortByHandle.set(t, value);
           currentEffortByHandle.set(t, value);
-        } else {
+        } else if (this.role === "mode") {
           modeByHandle.set(t, value);
           currentModeByHandle.set(t, value);
+        } else if (this.role === "permissions") {
+          permissionsByHandle.set(t, value);
+          currentPermissionsByHandle.set(t, value);
         }
         try {
           const modeList = this.role === "mode" ? dialList("mode") : undefined;
@@ -1602,6 +1642,10 @@ class EffortDial extends DialBase {
 class ModeDial extends DialBase {
   role = "mode";
 }
+@action({ UUID: "com.byjw.deep.permissions" })
+class PermissionsDial extends DialBase {
+  role = "permissions";
+}
 @action({ UUID: "com.byjw.deep.talk" })
 class TalkDial extends DialBase {
   role = "talk";
@@ -1615,6 +1659,7 @@ streamDeck.actions.registerAction(new SlotAction());
 streamDeck.actions.registerAction(new ModelDial());
 streamDeck.actions.registerAction(new EffortDial());
 streamDeck.actions.registerAction(new ModeDial());
+streamDeck.actions.registerAction(new PermissionsDial());
 streamDeck.actions.registerAction(new TalkDial());
 streamDeck.actions.registerAction(new TargetDial());
 // System & device events: immediate poll and render on system wake-up / device connect

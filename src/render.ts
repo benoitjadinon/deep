@@ -415,6 +415,7 @@ const DIAL_ACCENT: Record<string, string> = {
   model: "#3b82f6", // blue
   effort: "#a855f7", // purple
   mode: "#f43f5e", // rose (fallback)
+  permissions: "#10b981", // emerald
   talk: "#14b8a6", // teal
   target: "#f59e0b", // amber
 };
@@ -469,6 +470,7 @@ export function modeColor(mode?: string | null, agentType?: string | null): stri
     if (m === "read-only" || m === "readonly") return "#0ea5e9"; // cyan
     if (m === "danger-full-access" || m === "full-access" || m === "danger" || m === "yolo") return "#ef4444"; // danger red
     if (m === "plan" || m === "plan-mode") return "#3b82f6"; // blue
+    if (m === "normal" || m === "default") return "#71717a"; // gray
     if (m === "on-request" || m === "ask") return "#f59e0b"; // amber
     if (m === "never" || m === "auto") return "#a855f7"; // violet
   }
@@ -536,7 +538,7 @@ export function dialImage(
   customColor?: string | null,
   attention?: DialAttention | null,
 ): string {
-  const roleAccent = customColor || (role === "mode" ? modeColor(value, badge) : (DIAL_ACCENT[role] ?? "#8a8a90"));
+  const roleAccent = customColor || (role === "mode" || role === "permissions" ? modeColor(value, badge) : (DIAL_ACCENT[role] ?? "#8a8a90"));
   const stateColor = attention?.color ? (HEX[attention.color] ?? HEX.white) : undefined;
   // For the target dial the state color drives the label accent (like the old amber rail), for
   // every other dial the role accent is unchanged.

@@ -442,14 +442,20 @@ describe("dialImage — dial rendering", () => {
     expect(claudePlan).toContain('fill="#3b82f6"');
 
     // 3. Codex
-    const codexWrite = Buffer.from(dialImage("mode", "MODE", "workspace-write", 0, false, "codex").split(",")[1], "base64").toString("utf8");
+    const codexWrite = Buffer.from(dialImage("permissions", "PERM", "workspace-write", 0, false, "codex").split(",")[1], "base64").toString("utf8");
     expect(codexWrite).toContain('fill="#10b981"');
 
-    const codexRead = Buffer.from(dialImage("mode", "MODE", "read-only", 0, false, "codex").split(",")[1], "base64").toString("utf8");
+    const codexRead = Buffer.from(dialImage("permissions", "PERM", "read-only", 0, false, "codex").split(",")[1], "base64").toString("utf8");
     expect(codexRead).toContain('fill="#0ea5e9"');
 
-    const codexDanger = Buffer.from(dialImage("mode", "MODE", "danger-full-access", 0, false, "codex").split(",")[1], "base64").toString("utf8");
+    const codexDanger = Buffer.from(dialImage("permissions", "PERM", "danger-full-access", 0, false, "codex").split(",")[1], "base64").toString("utf8");
     expect(codexDanger).toContain('fill="#ef4444"');
+
+    const codexPlan = Buffer.from(dialImage("mode", "MODE", "plan", 0, false, "codex").split(",")[1], "base64").toString("utf8");
+    expect(codexPlan).toContain('fill="#3b82f6"');
+
+    const codexNormal = Buffer.from(dialImage("mode", "MODE", "normal", 0, false, "codex").split(",")[1], "base64").toString("utf8");
+    expect(codexNormal).toContain('fill="#71717a"');
   });
 
   it("target dial with state renders a vertical state status rail on the left edge", () => {
@@ -583,6 +589,8 @@ describe("modeColor — mode to color mapping", () => {
     expect(modeColor("read-only", "codex-cli")).toBe("#0ea5e9");
     expect(modeColor("danger-full-access", "codex")).toBe("#ef4444");
     expect(modeColor("plan", "codex")).toBe("#3b82f6");
+    expect(modeColor("normal", "codex")).toBe("#71717a");
+    expect(modeColor("default", "codex-cli")).toBe("#71717a");
   });
 
   it("OpenCode mode colors: build=green, plan=blue, review=purple, debug=amber", () => {

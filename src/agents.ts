@@ -6,7 +6,7 @@ import { readFileSync, existsSync, readdirSync, statSync, openSync, fstatSync, r
 import { join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 
-export type ControlKind = "model" | "effort" | "mode";
+export type ControlKind = "model" | "effort" | "mode" | "permissions";
 
 /** A single step (line) to send to terminal. If UI needs reaction delay (e.g. pickers), delayMs waits before/after next send. */
 export interface ApplyStep {
@@ -27,7 +27,9 @@ export interface AgentStateSnapshot {
   model?: string;
   effort?: string;
   mode?: string;
+  permissions?: string;
   modes?: string[];
+  permissionsList?: string[];
   recentModels?: string[];
   favoriteModels?: string[];
 }
@@ -439,6 +441,11 @@ export abstract class AbstractAgent {
     return [];
   }
 
+  /** Available permissions list */
+  getPermissions(_ctx?: AgentContext): string[] {
+    return [];
+  }
+
   /** Generate terminal send sequence for applying a change */
   abstract getApplySteps(kind: ControlKind, value: string, fromValue?: string, modeList?: string[]): ApplyStep[];
 
@@ -788,6 +795,7 @@ export function readClaudeState(ctx?: AgentContext): AgentStateSnapshot {
 
   const isBypass = isClaudeBypassEnabled(ctx);
   state.modes = isBypass ? [...CLAUDE_BYPASS_MODES] : [...CLAUDE_MODES];
+  state.permissions = isBypass ? "bypass-permissions" : state.mode === "accept-edits" ? "accept-edits" : "default";
 
   // 1. Live terminal preview priority parsing (real-time TUI state)
   if (ctx?.preview) {
@@ -908,7 +916,7 @@ export class ClaudeAgent extends AbstractAgent {
   override readonly providerKind: AgentProviderKind = "single";
 
   supports(kind: ControlKind): boolean {
-    return kind === "model" || kind === "effort" || kind === "mode";
+    return kind === "model" || kind === "effort" || kind === "mode" || kind === "permissions";
   }
 
   override getModels(): string[] {
@@ -936,6 +944,10 @@ export class ClaudeAgent extends AbstractAgent {
     return base;
   }
 
+  override getPermissions(): string[] {
+    return ["default", "accept-edits", "bypass-permissions"];
+  }
+
   getApplySteps(kind: ControlKind, value: string, fromValue?: string, modeList?: string[]): ApplyStep[] {
     if (kind === "model") {
       return slash("/model", value);
@@ -945,6 +957,9 @@ export class ClaudeAgent extends AbstractAgent {
     }
     if (kind === "mode") {
       return getClaudeShiftTabSteps(value, fromValue, modeList || this.getModes());
+    }
+    if (kind === "permissions") {
+      return slash("/permissions", value);
     }
     return [];
   }
@@ -972,10 +987,38 @@ export const CODEX_DEFAULT_MODELS = [
   "gpt-reserve",
 ];
 
-export function parseCodexConfig(tomlText: string): { model?: string; effort?: string; mode?: string } {
+export const CODEX_MODES = ["normal", "plan"] as const;
+export const CODEX_PERMISSIONS = ["workspace-write", "read-only", "danger-full-access"] as const;
+
+export function normalizeCodexMode(mode?: string | null): "normal" | "plan" {
+  if (!mode) return "normal";
+  const m = mode.trim().toLowerCase();
+  if (m === "plan" || m === "plan-mode") return "plan";
+  return "normal";
+}
+
+export function getCodexShiftTabSteps(toMode: string, fromMode?: string): ApplyStep[] {
+  const target = normalizeCodexMode(toMode);
+  const current = normalizeCodexMode(fromMode);
+  if (target === current) return [];
+  // Codex CLI toggles between normal and plan with Shift-Tab
+  return [{ text: "\x1b[Z", enter: false }];
+}
+
+export function parseCodexModeFromText(text: string): "plan" | "normal" | undefined {
+  if (!text) return undefined;
+  const t = text.toLowerCase();
+  if (t.includes("[plan") || t.includes("plan mode") || t.includes("mode: plan") || t.includes("plan]")) {
+    return "plan";
+  }
+  return undefined;
+}
+
+export function parseCodexConfig(tomlText: string): { model?: string; effort?: string; mode?: string; permissions?: string } {
   let model: string | undefined;
   let effort: string | undefined;
   let mode: string | undefined;
+  let permissions: string | undefined;
 
   const modelMatch = /model\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
   if (modelMatch) model = modelMatch[1];
@@ -983,10 +1026,10 @@ export function parseCodexConfig(tomlText: string): { model?: string; effort?: s
   const effortMatch = /model_reasoning_effort\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
   if (effortMatch) effort = effortMatch[1];
 
-  const modeMatch = /(?:sandbox_mode|sandbox)\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
-  if (modeMatch) mode = modeMatch[1];
+  const permMatch = /(?:sandbox_mode|sandbox)\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
+  if (permMatch) permissions = permMatch[1];
 
-  return { model, effort, mode };
+  return { model, effort, mode, permissions };
 }
 
 export function parseCodexModelsCache(jsonText: string): string[] {
@@ -1003,17 +1046,32 @@ export function parseCodexModelsCache(jsonText: string): string[] {
 
 export function readCodexState(ctx?: AgentContext): AgentStateSnapshot {
   try {
+    let model: string | undefined;
+    let effort: string | undefined;
+    let permissions: string | undefined;
+    let mode: string | undefined;
+
     if (ctx?.worktreePath) {
       const localCfg = join(ctx.worktreePath, ".codex", "config.toml");
       if (existsSync(localCfg)) {
         const cfg = parseCodexConfig(readFileSync(localCfg, "utf8"));
-        return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
+        model = cfg.model;
+        effort = cfg.effort;
+        permissions = cfg.permissions;
       }
     }
-    if (existsSync(CODEX_CONFIG)) {
-      const cfg = parseCodexConfig(readFileSync(CODEX_CONFIG, "utf8"));
-      return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
+    if (!model || !effort || !permissions) {
+      if (existsSync(CODEX_CONFIG)) {
+        const cfg = parseCodexConfig(readFileSync(CODEX_CONFIG, "utf8"));
+        if (!model) model = cfg.model;
+        if (!effort) effort = cfg.effort;
+        if (!permissions) permissions = cfg.permissions;
+      }
     }
+    if (ctx?.preview) {
+      mode = parseCodexModeFromText(ctx.preview);
+    }
+    return { model, effort, mode: mode || "normal", permissions };
   } catch {}
   return {};
 }
@@ -1034,7 +1092,7 @@ export class CodexAgent extends AbstractAgent {
   override readonly providerKind: AgentProviderKind = "single";
 
   supports(kind: ControlKind): boolean {
-    return kind === "model" || kind === "effort" || kind === "mode";
+    return kind === "model" || kind === "effort" || kind === "mode" || kind === "permissions";
   }
 
   override getModels(): string[] {
@@ -1048,10 +1106,14 @@ export class CodexAgent extends AbstractAgent {
   }
 
   override getModes(): string[] {
-    return ["workspace-write", "read-only", "danger-full-access"];
+    return [...CODEX_MODES];
   }
 
-  getApplySteps(kind: ControlKind, value: string): ApplyStep[] {
+  override getPermissions(): string[] {
+    return [...CODEX_PERMISSIONS];
+  }
+
+  getApplySteps(kind: ControlKind, value: string, fromValue?: string): ApplyStep[] {
     if (kind === "model") {
       return slash("/model", value);
     }
@@ -1059,6 +1121,9 @@ export class CodexAgent extends AbstractAgent {
       return slash("/effort", value);
     }
     if (kind === "mode") {
+      return getCodexShiftTabSteps(value, fromValue);
+    }
+    if (kind === "permissions") {
       return slash("/permissions", value);
     }
     return [];
@@ -1548,7 +1613,7 @@ export function readAgyState(ctx?: AgentContext): AgentStateSnapshot {
     }
   }
 
-  return { model, effort, mode };
+  return { model, effort, mode, permissions: mode === "accept-edits" ? "accept-edits" : "default" };
 }
 
 // Agy implementation
@@ -1558,7 +1623,7 @@ export class AgyAgent extends AbstractAgent {
   override readonly providerKind: AgentProviderKind = "single";
 
   supports(kind: ControlKind): boolean {
-    return kind === "model" || kind === "effort" || kind === "mode";
+    return kind === "model" || kind === "effort" || kind === "mode" || kind === "permissions";
   }
 
   override getModels(): string[] {
@@ -1580,6 +1645,10 @@ export class AgyAgent extends AbstractAgent {
     return [...AGY_MODES];
   }
 
+  override getPermissions(): string[] {
+    return ["default", "accept-edits"];
+  }
+
   getApplySteps(kind: ControlKind, value: string, fromValue?: string, modeList?: string[]): ApplyStep[] {
     if (kind === "model") {
       return slash("/model", value);
@@ -1589,6 +1658,9 @@ export class AgyAgent extends AbstractAgent {
     }
     if (kind === "mode") {
       return getAgyShiftTabSteps(value, fromValue, modeList || this.getModes());
+    }
+    if (kind === "permissions") {
+      return slash("/permissions", value);
     }
     return [];
   }
@@ -2226,9 +2298,11 @@ export interface AgentProfile {
   models: string[];
   efforts: string[];
   modes: string[];
+  permissionsList?: string[];
   model: { supported: boolean; steps: (value: string, fromValue?: string) => ApplyStep[] };
   effort: { supported: boolean; steps: (value: string, fromValue?: string) => ApplyStep[] };
   mode: { supported: boolean; steps: (value: string, fromValue?: string) => ApplyStep[] };
+  permissions?: { supported: boolean; steps: (value: string, fromValue?: string) => ApplyStep[] };
 }
 
 export function profileFor(agentType: string | undefined | null): AgentProfile {
@@ -2239,6 +2313,7 @@ export function profileFor(agentType: string | undefined | null): AgentProfile {
     models: agent.getModels(),
     efforts: agent.getEfforts(),
     modes: agent.getModes(),
+    permissionsList: agent.getPermissions(),
     model: {
       supported: agent.supports("model"),
       steps: (v, from) => agent.getApplySteps("model", v, from),
@@ -2250,6 +2325,10 @@ export function profileFor(agentType: string | undefined | null): AgentProfile {
     mode: {
       supported: agent.supports("mode"),
       steps: (v, from) => agent.getApplySteps("mode", v, from),
+    },
+    permissions: {
+      supported: agent.supports("permissions"),
+      steps: (v, from) => agent.getApplySteps("permissions", v, from),
     },
   };
 }
@@ -2275,14 +2354,14 @@ export function supported(agent: AbstractAgent | AgentProfile, kind: ControlKind
   if ("supports" in agent && typeof agent.supports === "function") {
     return agent.supports(kind);
   }
-  return (agent as AgentProfile)[kind].supported;
+  return (agent as AgentProfile)[kind]?.supported ?? false;
 }
 
 export function stepsFor(agent: AbstractAgent | AgentProfile, kind: ControlKind, value: string, fromValue?: string): ApplyStep[] {
   if ("getApplySteps" in agent && typeof agent.getApplySteps === "function") {
     return agent.getApplySteps(kind, value, fromValue);
   }
-  return (agent as AgentProfile)[kind].steps(value, fromValue);
+  return (agent as AgentProfile)[kind]?.steps(value, fromValue) ?? [];
 }
 
 export const DISCOVER_MODEL_CMD: Record<string, string[]> = {

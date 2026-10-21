@@ -54740,6 +54740,10 @@ var AbstractAgent = class {
   getModes(_ctx) {
     return [];
   }
+  /** Available permissions list */
+  getPermissions(_ctx) {
+    return [];
+  }
   /** Host CLI command to discover models (array of arguments) */
   getDiscoverModelCmd() {
     return void 0;
@@ -55014,6 +55018,7 @@ function readClaudeState(ctx) {
   const state = {};
   const isBypass = isClaudeBypassEnabled(ctx);
   state.modes = isBypass ? [...CLAUDE_BYPASS_MODES] : [...CLAUDE_MODES];
+  state.permissions = isBypass ? "bypass-permissions" : state.mode === "accept-edits" ? "accept-edits" : "default";
   if (ctx?.preview) {
     const previewMode = parseClaudeModeFromText(ctx.preview);
     if (previewMode) {
@@ -55125,7 +55130,7 @@ var ClaudeAgent = class extends AbstractAgent {
     this.providerKind = "single";
   }
   supports(kind) {
-    return kind === "model" || kind === "effort" || kind === "mode";
+    return kind === "model" || kind === "effort" || kind === "mode" || kind === "permissions";
   }
   getModels() {
     const cached2 = readClaudeModelsCache();
@@ -55149,6 +55154,9 @@ var ClaudeAgent = class extends AbstractAgent {
     }
     return base;
   }
+  getPermissions() {
+    return ["default", "accept-edits", "bypass-permissions"];
+  }
   getApplySteps(kind, value, fromValue, modeList) {
     if (kind === "model") {
       return slash("/model", value);
@@ -55158,6 +55166,9 @@ var ClaudeAgent = class extends AbstractAgent {
     }
     if (kind === "mode") {
       return getClaudeShiftTabSteps(value, fromValue, modeList || this.getModes());
+    }
+    if (kind === "permissions") {
+      return slash("/permissions", value);
     }
     return [];
   }
@@ -55179,17 +55190,40 @@ var CODEX_DEFAULT_MODELS = [
   "gpt-5.4-mini",
   "gpt-reserve"
 ];
+var CODEX_MODES = ["normal", "plan"];
+var CODEX_PERMISSIONS = ["workspace-write", "read-only", "danger-full-access"];
+function normalizeCodexMode(mode) {
+  if (!mode) return "normal";
+  const m = mode.trim().toLowerCase();
+  if (m === "plan" || m === "plan-mode") return "plan";
+  return "normal";
+}
+function getCodexShiftTabSteps(toMode, fromMode) {
+  const target = normalizeCodexMode(toMode);
+  const current = normalizeCodexMode(fromMode);
+  if (target === current) return [];
+  return [{ text: "\x1B[Z", enter: false }];
+}
+function parseCodexModeFromText(text) {
+  if (!text) return void 0;
+  const t = text.toLowerCase();
+  if (t.includes("[plan") || t.includes("plan mode") || t.includes("mode: plan") || t.includes("plan]")) {
+    return "plan";
+  }
+  return void 0;
+}
 function parseCodexConfig(tomlText) {
   let model;
   let effort;
   let mode;
+  let permissions;
   const modelMatch = /model\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
   if (modelMatch) model = modelMatch[1];
   const effortMatch = /model_reasoning_effort\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
   if (effortMatch) effort = effortMatch[1];
-  const modeMatch = /(?:sandbox_mode|sandbox)\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
-  if (modeMatch) mode = modeMatch[1];
-  return { model, effort, mode };
+  const permMatch = /(?:sandbox_mode|sandbox)\s*=\s*["']([^"']+)["']/.exec(tomlText || "");
+  if (permMatch) permissions = permMatch[1];
+  return { model, effort, mode, permissions };
 }
 function parseCodexModelsCache(jsonText) {
   try {
@@ -55203,17 +55237,31 @@ function parseCodexModelsCache(jsonText) {
 }
 function readCodexState(ctx) {
   try {
+    let model;
+    let effort;
+    let permissions;
+    let mode;
     if (ctx?.worktreePath) {
       const localCfg = (0, import_node_path7.join)(ctx.worktreePath, ".codex", "config.toml");
       if ((0, import_node_fs4.existsSync)(localCfg)) {
         const cfg = parseCodexConfig((0, import_node_fs4.readFileSync)(localCfg, "utf8"));
-        return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
+        model = cfg.model;
+        effort = cfg.effort;
+        permissions = cfg.permissions;
       }
     }
-    if ((0, import_node_fs4.existsSync)(CODEX_CONFIG)) {
-      const cfg = parseCodexConfig((0, import_node_fs4.readFileSync)(CODEX_CONFIG, "utf8"));
-      return { model: cfg.model, effort: cfg.effort, mode: cfg.mode };
+    if (!model || !effort || !permissions) {
+      if ((0, import_node_fs4.existsSync)(CODEX_CONFIG)) {
+        const cfg = parseCodexConfig((0, import_node_fs4.readFileSync)(CODEX_CONFIG, "utf8"));
+        if (!model) model = cfg.model;
+        if (!effort) effort = cfg.effort;
+        if (!permissions) permissions = cfg.permissions;
+      }
     }
+    if (ctx?.preview) {
+      mode = parseCodexModeFromText(ctx.preview);
+    }
+    return { model, effort, mode: mode || "normal", permissions };
   } catch {
   }
   return {};
@@ -55235,7 +55283,7 @@ var CodexAgent = class extends AbstractAgent {
     this.providerKind = "single";
   }
   supports(kind) {
-    return kind === "model" || kind === "effort" || kind === "mode";
+    return kind === "model" || kind === "effort" || kind === "mode" || kind === "permissions";
   }
   getModels() {
     const cached2 = readCodexModelsCache();
@@ -55246,9 +55294,12 @@ var CodexAgent = class extends AbstractAgent {
     return ["none", "low", "medium", "high", "xhigh", "max", "ultra"];
   }
   getModes() {
-    return ["workspace-write", "read-only", "danger-full-access"];
+    return [...CODEX_MODES];
   }
-  getApplySteps(kind, value) {
+  getPermissions() {
+    return [...CODEX_PERMISSIONS];
+  }
+  getApplySteps(kind, value, fromValue) {
     if (kind === "model") {
       return slash("/model", value);
     }
@@ -55256,6 +55307,9 @@ var CodexAgent = class extends AbstractAgent {
       return slash("/effort", value);
     }
     if (kind === "mode") {
+      return getCodexShiftTabSteps(value, fromValue);
+    }
+    if (kind === "permissions") {
       return slash("/permissions", value);
     }
     return [];
@@ -55668,7 +55722,7 @@ function readAgyState(ctx) {
       mode = previewMode;
     }
   }
-  return { model, effort, mode };
+  return { model, effort, mode, permissions: mode === "accept-edits" ? "accept-edits" : "default" };
 }
 var AgyAgent = class extends AbstractAgent {
   constructor() {
@@ -55678,7 +55732,7 @@ var AgyAgent = class extends AbstractAgent {
     this.providerKind = "single";
   }
   supports(kind) {
-    return kind === "model" || kind === "effort" || kind === "mode";
+    return kind === "model" || kind === "effort" || kind === "mode" || kind === "permissions";
   }
   getModels() {
     return [
@@ -55696,6 +55750,9 @@ var AgyAgent = class extends AbstractAgent {
   getModes() {
     return [...AGY_MODES];
   }
+  getPermissions() {
+    return ["default", "accept-edits"];
+  }
   getApplySteps(kind, value, fromValue, modeList) {
     if (kind === "model") {
       return slash("/model", value);
@@ -55705,6 +55762,9 @@ var AgyAgent = class extends AbstractAgent {
     }
     if (kind === "mode") {
       return getAgyShiftTabSteps(value, fromValue, modeList || this.getModes());
+    }
+    if (kind === "permissions") {
+      return slash("/permissions", value);
     }
     return [];
   }
@@ -56225,6 +56285,7 @@ function profileFor(agentType) {
     models: agent.getModels(),
     efforts: agent.getEfforts(),
     modes: agent.getModes(),
+    permissionsList: agent.getPermissions(),
     model: {
       supported: agent.supports("model"),
       steps: (v, from) => agent.getApplySteps("model", v, from)
@@ -56236,6 +56297,10 @@ function profileFor(agentType) {
     mode: {
       supported: agent.supports("mode"),
       steps: (v, from) => agent.getApplySteps("mode", v, from)
+    },
+    permissions: {
+      supported: agent.supports("permissions"),
+      steps: (v, from) => agent.getApplySteps("permissions", v, from)
     }
   };
 }
@@ -57324,6 +57389,8 @@ var DIAL_ACCENT = {
   // purple
   mode: "#f43f5e",
   // rose (fallback)
+  permissions: "#10b981",
+  // emerald
   talk: "#14b8a6",
   // teal
   target: "#f59e0b"
@@ -57349,6 +57416,7 @@ function modeColor(mode, agentType) {
     if (m === "read-only" || m === "readonly") return "#0ea5e9";
     if (m === "danger-full-access" || m === "full-access" || m === "danger" || m === "yolo") return "#ef4444";
     if (m === "plan" || m === "plan-mode") return "#3b82f6";
+    if (m === "normal" || m === "default") return "#71717a";
     if (m === "on-request" || m === "ask") return "#f59e0b";
     if (m === "never" || m === "auto") return "#a855f7";
   }
@@ -57383,7 +57451,7 @@ function modeColor(mode, agentType) {
   return "#f43f5e";
 }
 function dialImage(role, label, value, tick2 = 0, disabled = false, badge, sub, customColor, attention) {
-  const roleAccent = customColor || (role === "mode" ? modeColor(value, badge) : DIAL_ACCENT[role] ?? "#8a8a90");
+  const roleAccent = customColor || (role === "mode" || role === "permissions" ? modeColor(value, badge) : DIAL_ACCENT[role] ?? "#8a8a90");
   const stateColor = attention?.color ? HEX[attention.color] ?? HEX.white : void 0;
   const accent = disabled ? "#2e2e34" : stateColor || roleAccent;
   const labelColor = disabled ? "#4a4a52" : accent;
@@ -57739,13 +57807,16 @@ var targetHandle;
 var pendingEffort = "";
 var pendingModel = "";
 var pendingMode = "";
+var pendingPermissions = "";
 var modelByHandle = /* @__PURE__ */ new Map();
 var effortByHandle = /* @__PURE__ */ new Map();
 var modeByHandle = /* @__PURE__ */ new Map();
+var permissionsByHandle = /* @__PURE__ */ new Map();
 var currentModelByHandle = /* @__PURE__ */ new Map();
 var currentEffortByHandle = /* @__PURE__ */ new Map();
 var currentModeByHandle = /* @__PURE__ */ new Map();
-var pickAt = { model: 0, effort: 0, mode: 0 };
+var currentPermissionsByHandle = /* @__PURE__ */ new Map();
+var pickAt = { model: 0, effort: 0, mode: 0, permissions: 0 };
 var PICK_GRACE = 2500;
 var agentByHandle = /* @__PURE__ */ new Map();
 var agentInstanceByHandle = /* @__PURE__ */ new Map();
@@ -58037,6 +58108,9 @@ function refreshSessionState(h) {
   if (state.modes && state.modes.length) {
     modesByHandle.set(h, state.modes);
   }
+  if (state.permissions) {
+    currentPermissionsByHandle.set(h, state.permissions);
+  }
   if (state.recentModels || state.favoriteModels) {
     const list = modelsByHandle.get(h);
     if (list && list.length) {
@@ -58058,6 +58132,7 @@ function setTarget(h) {
   pickAt.model = 0;
   pickAt.effort = 0;
   pickAt.mode = 0;
+  pickAt.permissions = 0;
   applyPending();
   renderDials();
 }
@@ -58086,12 +58161,16 @@ function dialList(kind) {
     if (live && live.length) return live;
     return agent.getModes(contextForHandle(t));
   }
+  if (kind === "permissions") {
+    return agent.getPermissions(contextForHandle(t));
+  }
   return [];
 }
 function applyPending() {
   adoptPending("model");
   adoptPending("effort");
   adoptPending("mode");
+  adoptPending("permissions");
 }
 function adoptPending(role) {
   const t = targetHandle;
@@ -58106,10 +58185,14 @@ function adoptPending(role) {
     const current = currentEffortByHandle.get(t);
     const applied = effortByHandle.get(t);
     pendingEffort = current || applied || first;
-  } else {
+  } else if (role === "mode") {
     const current = currentModeByHandle.get(t);
     const applied = modeByHandle.get(t);
     pendingMode = current || applied || first;
+  } else if (role === "permissions") {
+    const current = currentPermissionsByHandle.get(t);
+    const applied = permissionsByHandle.get(t);
+    pendingPermissions = current || applied || first;
   }
 }
 function dialValue(role) {
@@ -58125,6 +58208,10 @@ function dialValue(role) {
   if (role === "mode") {
     if (!agent.supports("mode")) return "-";
     return pendingMode || "\u2026";
+  }
+  if (role === "permissions") {
+    if (!agent.supports("permissions")) return "-";
+    return pendingPermissions || "\u2026";
   }
   if (role === "target") return targetLabel();
   return talkState;
@@ -58301,6 +58388,7 @@ function dialFeedback(role) {
   }
   if (role === "effort") return { full: dialImage("effort", "EFFORT", v, tick, !isSupported, badge) };
   if (role === "mode") return { full: dialImage("mode", "MODE", v, tick, !isSupported, badge) };
+  if (role === "permissions") return { full: dialImage("permissions", "PERM", v, tick, !isSupported, badge) };
   if (role === "talk") return { full: dialImage("talk", "TALK", v, tick) };
   if (role === "target") {
     const st = tb ? {
@@ -58598,7 +58686,7 @@ async function poll() {
     try {
       (0, import_node_fs6.writeFileSync)(
         "/tmp/agentdeck-debug.json",
-        JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, environments: cachedEnvironments.map((e) => e.name), target: targetHandle, targetEnvironment: environmentByHandle.get(targetHandle ?? "") ?? null, dials: { model: dialValue("model"), effort: dialValue("effort"), mode: dialValue("mode") }, slots: deck.slots }, null, 2)
+        JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, environments: cachedEnvironments.map((e) => e.name), target: targetHandle, targetEnvironment: environmentByHandle.get(targetHandle ?? "") ?? null, dials: { model: dialValue("model"), effort: dialValue("effort"), mode: dialValue("mode"), permissions: dialValue("permissions") }, slots: deck.slots }, null, 2)
       );
     } catch {
     }
@@ -58759,7 +58847,7 @@ var DialBase = class extends SingletonAction {
     const dir = (ev.payload?.ticks ?? 0) > 0 ? 1 : (ev.payload?.ticks ?? 0) < 0 ? -1 : 0;
     if (!dir) return;
     const t = ensureTarget();
-    if (this.role === "model" || this.role === "effort" || this.role === "mode") {
+    if (this.role === "model" || this.role === "effort" || this.role === "mode" || this.role === "permissions") {
       const agent = agentForHandle();
       const kind = this.role;
       if (!t || !agent.supports(kind)) {
@@ -58771,13 +58859,14 @@ var DialBase = class extends SingletonAction {
         ev.action.showAlert?.();
         return;
       }
-      const cur = this.role === "model" ? pendingModel : this.role === "effort" ? pendingEffort : pendingMode;
+      const cur = this.role === "model" ? pendingModel : this.role === "effort" ? pendingEffort : this.role === "mode" ? pendingMode : pendingPermissions;
       const idx = cur ? list.indexOf(cur) : -1;
       const start = idx < 0 ? dir > 0 ? -1 : 0 : idx;
       const next = list[(start + dir + list.length) % list.length];
       if (this.role === "model") pendingModel = next;
       else if (this.role === "effort") pendingEffort = next;
-      else pendingMode = next;
+      else if (this.role === "mode") pendingMode = next;
+      else pendingPermissions = next;
       pickAt[kind] = Date.now();
       renderDials();
     } else if (this.role === "target") {
@@ -58795,19 +58884,19 @@ var DialBase = class extends SingletonAction {
   }
   async onDialDown(ev) {
     const t = ensureTarget();
-    if (this.role === "model" || this.role === "effort" || this.role === "mode") {
+    if (this.role === "model" || this.role === "effort" || this.role === "mode" || this.role === "permissions") {
       const agent = agentForHandle();
       const kind = this.role;
       if (!t || !agent.supports(kind)) {
         plugin_default.logger.info(`apply ${kind}: unsupported in agent (${agent.label}) \u2014 gated`);
         ev.action.showAlert?.();
       } else {
-        const value = this.role === "model" ? pendingModel : this.role === "effort" ? pendingEffort : pendingMode;
+        const value = this.role === "model" ? pendingModel : this.role === "effort" ? pendingEffort : this.role === "mode" ? pendingMode : pendingPermissions;
         if (!value) {
           ev.action.showAlert?.();
           return;
         }
-        const prevValue = this.role === "model" ? currentModelByHandle.get(t) || modelByHandle.get(t) : this.role === "effort" ? currentEffortByHandle.get(t) || effortByHandle.get(t) : currentModeByHandle.get(t) || modeByHandle.get(t);
+        const prevValue = this.role === "model" ? currentModelByHandle.get(t) || modelByHandle.get(t) : this.role === "effort" ? currentEffortByHandle.get(t) || effortByHandle.get(t) : this.role === "mode" ? currentModeByHandle.get(t) || modeByHandle.get(t) : currentPermissionsByHandle.get(t) || permissionsByHandle.get(t);
         if (this.role === "model") {
           modelByHandle.set(t, value);
           currentModelByHandle.set(t, value);
@@ -58824,9 +58913,12 @@ var DialBase = class extends SingletonAction {
         } else if (this.role === "effort") {
           effortByHandle.set(t, value);
           currentEffortByHandle.set(t, value);
-        } else {
+        } else if (this.role === "mode") {
           modeByHandle.set(t, value);
           currentModeByHandle.set(t, value);
+        } else if (this.role === "permissions") {
+          permissionsByHandle.set(t, value);
+          currentPermissionsByHandle.set(t, value);
         }
         try {
           const modeList = this.role === "mode" ? dialList("mode") : void 0;
@@ -58877,6 +58969,15 @@ var ModeDial = class extends DialBase {
 ModeDial = __decorateClass([
   action({ UUID: "com.byjw.deep.mode" })
 ], ModeDial);
+var PermissionsDial = class extends DialBase {
+  constructor() {
+    super(...arguments);
+    this.role = "permissions";
+  }
+};
+PermissionsDial = __decorateClass([
+  action({ UUID: "com.byjw.deep.permissions" })
+], PermissionsDial);
 var TalkDial = class extends DialBase {
   constructor() {
     super(...arguments);
@@ -58899,6 +59000,7 @@ plugin_default.actions.registerAction(new SlotAction());
 plugin_default.actions.registerAction(new ModelDial());
 plugin_default.actions.registerAction(new EffortDial());
 plugin_default.actions.registerAction(new ModeDial());
+plugin_default.actions.registerAction(new PermissionsDial());
 plugin_default.actions.registerAction(new TalkDial());
 plugin_default.actions.registerAction(new TargetDial());
 plugin_default.system.onSystemDidWakeUp(() => {

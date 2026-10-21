@@ -95,6 +95,24 @@
       }
     },
     {
+      "Name": "Permissions",
+      "UUID": "com.byjw.deep.permissions",
+      "Icon": "imgs/actions/model/icon",
+      "Tooltip": "Rotate to select permissions, push to apply (/permissions in target session)",
+      "Controllers": [
+        "Encoder"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/slot/key"
+        }
+      ],
+      "Encoder": {
+        "Icon": "imgs/actions/slot/icon",
+        "layout": "layouts/dial.json"
+      }
+    },
+    {
       "Name": "Talk",
       "UUID": "com.byjw.deep.talk",
       "Icon": "imgs/actions/talk/icon",

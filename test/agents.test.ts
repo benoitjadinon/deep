@@ -24,6 +24,9 @@ import {
   readCodexModelsCache,
   readCodexState,
   CODEX_DEFAULT_MODELS,
+  getCodexShiftTabSteps,
+  normalizeCodexMode,
+  parseCodexModeFromText,
   parseClaudeSettings,
   parseClaudeModelCatalog,
   readClaudeModelsCache,
@@ -115,47 +118,55 @@ describe("agentFor / profileFor — agent type to abstract interface and profile
 });
 
 describe("supported — per-agent capability gating", () => {
-  it("claude: supports model, effort, and mode", () => {
+  it("claude: supports model, effort, mode, and permissions", () => {
     const a = agentFor("claude");
     expect(a.supports("model")).toBe(true);
     expect(a.supports("effort")).toBe(true);
     expect(a.supports("mode")).toBe(true);
+    expect(a.supports("permissions")).toBe(true);
     expect(supported(a, "model")).toBe(true);
     expect(supported(a, "effort")).toBe(true);
     expect(supported(a, "mode")).toBe(true);
+    expect(supported(a, "permissions")).toBe(true);
   });
-  it("codex: supports model, effort, and mode", () => {
+  it("codex: supports model, effort, mode, and permissions", () => {
     const a = agentFor("codex");
     expect(a.supports("model")).toBe(true);
     expect(a.supports("effort")).toBe(true);
     expect(a.supports("mode")).toBe(true);
+    expect(a.supports("permissions")).toBe(true);
     expect(supported(a, "model")).toBe(true);
     expect(supported(a, "effort")).toBe(true);
     expect(supported(a, "mode")).toBe(true);
+    expect(supported(a, "permissions")).toBe(true);
   });
-  it("opencode: supports model, effort, and mode (pickers)", () => {
+  it("opencode: supports model, effort, and mode (pickers), permissions unsupported", () => {
     const a = agentFor("opencode");
     expect(a.supports("model")).toBe(true);
     expect(a.supports("effort")).toBe(true);
     expect(a.supports("mode")).toBe(true);
+    expect(a.supports("permissions")).toBe(false);
   });
-  it("agy: supports model, effort, and mode", () => {
+  it("agy: supports model, effort, mode, and permissions", () => {
     const a = agentFor("agy");
     expect(a.supports("model")).toBe(true);
     expect(a.supports("effort")).toBe(true);
     expect(a.supports("mode")).toBe(true);
+    expect(a.supports("permissions")).toBe(true);
   });
-  it("hermes: supports model and effort, mode unsupported", () => {
+  it("hermes: supports model and effort, mode and permissions unsupported", () => {
     const a = agentFor("hermes");
     expect(a.supports("model")).toBe(true);
     expect(a.supports("effort")).toBe(true);
     expect(a.supports("mode")).toBe(false);
+    expect(a.supports("permissions")).toBe(false);
   });
   it("unsupported agents are completely blocked", () => {
     const a = agentFor("grok");
     expect(a.supports("model")).toBe(false);
     expect(a.supports("effort")).toBe(false);
     expect(a.supports("mode")).toBe(false);
+    expect(a.supports("permissions")).toBe(false);
   });
 });
 
@@ -203,7 +214,7 @@ describe("stepsFor — apply command sequences", () => {
       { text: "\x1b[Z", enter: false },
     ]);
   });
-  it("codex: slash commands (/model <m>, /effort <e>, /permissions <m>)", () => {
+  it("codex: slash commands (/model <m>, /effort <e>, /permissions <m>) and Shift+Tab mode cycling", () => {
     const a = agentFor("codex");
     expect(stepsFor(a, "model", "gpt-5.6-luna")).toEqual([
       { text: "/model gpt-5.6-luna", enter: true, delayMs: 120 },
@@ -211,8 +222,11 @@ describe("stepsFor — apply command sequences", () => {
     expect(stepsFor(a, "effort", "high")).toEqual([
       { text: "/effort high", enter: true, delayMs: 120 },
     ]);
-    expect(stepsFor(a, "mode", "workspace-write")).toEqual([
+    expect(stepsFor(a, "permissions", "workspace-write")).toEqual([
       { text: "/permissions workspace-write", enter: true, delayMs: 120 },
+    ]);
+    expect(stepsFor(a, "mode", "plan", "normal")).toEqual([
+      { text: "\x1b[Z", enter: false },
     ]);
   });
   it("opencode: model picker (leader+m) -> provider-qualified filter text", () => {
@@ -652,11 +666,12 @@ describe("Codex & Agy parser and state reader", () => {
     expect(parseCodexConfig(toml)).toEqual({
       model: "gpt-5.6-luna",
       effort: "medium",
-      mode: "workspace-write",
+      mode: undefined,
+      permissions: "workspace-write",
     });
   });
   it("parseCodexConfig: undefined when missing", () => {
-    expect(parseCodexConfig("")).toEqual({ model: undefined, effort: undefined, mode: undefined });
+    expect(parseCodexConfig("")).toEqual({ model: undefined, effort: undefined, mode: undefined, permissions: undefined });
   });
   it("parseCodexModelsCache: extract model slugs excluding auto-review from JSON cache", () => {
     const json = JSON.stringify({
@@ -668,11 +683,18 @@ describe("Codex & Agy parser and state reader", () => {
     });
     expect(parseCodexModelsCache(json)).toEqual(["gpt-reserve", "gpt-5.6-luna"]);
   });
-  it("CodexAgent: getModels, getEfforts, getModes default behavior", () => {
+  it("CodexAgent: getModels, getEfforts, getModes, getPermissions default behavior", () => {
     const a = agentFor("codex");
     expect(a.getModels().length).toBeGreaterThan(0);
     expect(a.getEfforts()).toEqual(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
-    expect(a.getModes()).toEqual(["workspace-write", "read-only", "danger-full-access"]);
+    expect(a.getModes()).toEqual(["normal", "plan"]);
+    expect(a.getPermissions()).toEqual(["workspace-write", "read-only", "danger-full-access"]);
+    expect(a.supports("permissions")).toBe(true);
+    expect(a.supports("mode")).toBe(true);
+    expect(getCodexShiftTabSteps("plan", "normal")).toEqual([{ text: "\x1b[Z", enter: false }]);
+    expect(getCodexShiftTabSteps("normal", "plan")).toEqual([{ text: "\x1b[Z", enter: false }]);
+    expect(getCodexShiftTabSteps("plan", "plan")).toEqual([]);
+    expect(a.getApplySteps("permissions", "read-only")).toEqual([{ text: "/permissions read-only", enter: true, delayMs: 120 }]);
   });
   it("readCodexState: read local state", () => {
     const st = readCodexState();
