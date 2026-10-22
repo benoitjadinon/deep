@@ -1581,13 +1581,63 @@ export function parseAgyLogMode(text: string): string | undefined {
 const agyWorkspaceHeaderCache = new Map<string, { mtime: number; workspaces: string[] }>();
 const MAX_AGY_WORKSPACE_CACHE = 100;
 
+interface RecentAgyFilesCache {
+  at: number;
+  files: { path: string; mtime: number }[];
+}
+let recentAgyFilesCache: RecentAgyFilesCache | null = null;
+const RECENT_AGY_CACHE_TTL_MS = 2500;
+
+interface AgyLiveStateResult {
+  at: number;
+  state: { model?: string; effort?: string; mode?: string };
+}
+const agyLiveStateCache = new Map<string, AgyLiveStateResult>();
+const AGY_LIVE_STATE_CACHE_TTL_MS = 1500;
+
+export function clearRecentAgyFilesCache(): void {
+  recentAgyFilesCache = null;
+  agyLiveStateCache.clear();
+}
+
+function getRecentAgyFiles(): { path: string; mtime: number }[] {
+  const now = Date.now();
+  if (recentAgyFilesCache && now - recentAgyFilesCache.at < RECENT_AGY_CACHE_TTL_MS) {
+    return recentAgyFilesCache.files;
+  }
+  if (!existsSync(AGY_LOG_DIR)) return [];
+  try {
+    // Fast chronological sort by filename (cli-YYYYMMDD_HHMMSS.log) without statSync'ing thousands of files
+    const names = readdirSync(AGY_LOG_DIR)
+      .filter((f) => f.startsWith("cli-") && f.endsWith(".log"))
+      .sort((a, b) => b.localeCompare(a))
+      .slice(0, 30);
+
+    const files = names.map((f) => {
+      const p = join(AGY_LOG_DIR, f);
+      let mtime = 0;
+      try {
+        mtime = statSync(p).mtimeMs;
+      } catch {}
+      return { path: p, mtime };
+    });
+    recentAgyFilesCache = { at: now, files };
+    return files;
+  } catch {
+    return [];
+  }
+}
+
 export function readAgyLiveState(ctx?: AgentContext): { model?: string; effort?: string; mode?: string } {
   try {
-    if (!existsSync(AGY_LOG_DIR)) return {};
-    const allFiles = readdirSync(AGY_LOG_DIR)
-      .filter((f) => f.startsWith("cli-") && f.endsWith(".log"))
-      .map((f) => ({ path: join(AGY_LOG_DIR, f), mtime: statSync(join(AGY_LOG_DIR, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
+    const cacheKey = ctx?.worktreePath ?? "__global__";
+    const cachedLive = agyLiveStateCache.get(cacheKey);
+    if (cachedLive && Date.now() - cachedLive.at < AGY_LIVE_STATE_CACHE_TTL_MS) {
+      return cachedLive.state;
+    }
+
+    const allFiles = getRecentAgyFiles();
+    if (!allFiles.length) return {};
 
     const targetPath = ctx?.worktreePath;
     let candidateFiles: { path: string; mtime: number }[] = [];
@@ -1673,7 +1723,9 @@ export function readAgyLiveState(ctx?: AgentContext): { model?: string; effort?:
       }
     }
 
-    return { model: foundModel, effort: foundEffort, mode: foundMode };
+    const result = { model: foundModel, effort: foundEffort, mode: foundMode };
+    agyLiveStateCache.set(cacheKey, { at: Date.now(), state: result });
+    return result;
   } catch {
     return {};
   }
