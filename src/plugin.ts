@@ -1730,6 +1730,7 @@ class SlotAction extends SingletonAction<SlotSettings> {
       }
 
       setTarget(b.handle);
+      b.unread = false;
       lastNav = Date.now();
       holdCurrentSlotsInPlace();
       try {

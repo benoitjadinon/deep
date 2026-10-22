@@ -24,6 +24,10 @@ describe("needsAttention — session attention check for animation triggers", ()
     expect(needsAttention(b("amber"), false)).toBe(true);
     expect(needsAttention(b("green", true), false)).toBe(true);
     expect(needsAttention(b("red"), false)).toBe(true);
+    expect(needsAttention(b("red", true), false)).toBe(true);
+    // Once reviewed/validated (unread: false), red session stops demanding attention
+    expect(needsAttention(b("red", false), false)).toBe(false);
+    expect(needsAttention(b("green", false), false)).toBe(false);
   });
   it("working (blue), idle (white), and empty slots do not require attention", () => {
     expect(needsAttention(b("blue"), false)).toBe(false);

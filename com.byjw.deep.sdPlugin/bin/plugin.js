@@ -56785,7 +56785,7 @@ function activityBucket(timestamp, bucketMs = DEFAULT_ACTIVITY_BUCKET_MS) {
 }
 function statePriority(state, unread) {
   if (state === "done") {
-    return unread ? 0 : 20;
+    return Boolean(unread) ? 0 : 20;
   }
   switch (state) {
     case "working":
@@ -56836,20 +56836,25 @@ function needsAttention(b, isTarget = false) {
   if ("isPageButton" in b && b.isPageButton) {
     if (!b.otherColor || b.otherColor === "white" || b.otherColor === "orange" || b.otherColor === "blue") return false;
     if (b.otherColor === "green") return Boolean(b.otherUnread);
-    return b.otherColor === "violet" || b.otherColor === "amber" || b.otherColor === "red";
+    if (b.otherColor === "red") return b.otherUnread !== false;
+    return b.otherColor === "violet" || b.otherColor === "amber";
   }
   if (isTarget) return false;
-  if (b.state === "done") return Boolean(b.unread);
+  if (b.state === "done" || b.color === "green") return Boolean(b.unread);
   if (b.state === "unverifiable") return false;
-  if (b.state === "interrupted") return true;
-  if (b.color === "green") return Boolean(b.unread);
-  return b.color === "violet" || b.color === "amber" || b.color === "red";
+  if (b.state === "interrupted" || b.state === "error" || b.state === "failed" || b.color === "red") {
+    return b.unread !== false;
+  }
+  return b.color === "violet" || b.color === "amber";
 }
 function representativeOtherState(otherItems) {
   if (!otherItems.length) return {};
-  if (otherItems.some((e) => e.item.state === "error" || e.item.state === "failed" || e.item.state === "interrupted")) {
-    const s = otherItems.find((e) => e.item.state === "interrupted")?.item.state ?? "error";
-    return { otherState: s, otherColor: "red" };
+  const unreadErr = otherItems.find(
+    (e) => (e.item.state === "error" || e.item.state === "failed" || e.item.state === "interrupted") && e.unread !== false
+  );
+  if (unreadErr) {
+    const s = otherItems.find((e) => e.item.state === "interrupted" && e.unread !== false)?.item.state ?? "error";
+    return { otherState: s, otherColor: "red", ...unreadErr.unread !== void 0 ? { otherUnread: unreadErr.unread } : {} };
   }
   if (otherItems.some((e) => e.item.state === "waiting" || e.item.state === "permission" || e.item.state === "blocked")) {
     return { otherState: "waiting", otherColor: "violet" };
@@ -56859,6 +56864,13 @@ function representativeOtherState(otherItems) {
   }
   if (otherItems.some((e) => e.item.state === "working" || e.item.state === "monitoring")) {
     return { otherState: "working", otherColor: "orange" };
+  }
+  const reviewedErr = otherItems.find(
+    (e) => e.item.state === "error" || e.item.state === "failed" || e.item.state === "interrupted"
+  );
+  if (reviewedErr) {
+    const s = otherItems.find((e) => e.item.state === "interrupted")?.item.state ?? "error";
+    return { otherState: s, otherColor: "red", otherUnread: false };
   }
   if (otherItems.some((e) => e.item.state === "done")) {
     return { otherState: "done", otherColor: "green", otherUnread: false };
@@ -57420,8 +57432,23 @@ function pageButtonSvg(bOrPage, pageCountOrTick = 1, hasAlertOrNowMs = false, ti
   const actionText = isLastPage ? "PREV \u276E" : "NEXT \u276F";
   const barColor = b.otherColor ? HEX[b.otherColor] ?? HEX.white : "#3f3f46";
   const stIcon = b.otherStatus || b.otherState ? stateIcon(b.otherStatus || b.otherState, 130, 9) : "";
-  const g0 = dim ? '<g opacity="0.32">' : "";
-  const g1 = dim ? "</g>" : "";
+  const attn = needsAttention(b, false);
+  const isLit = attn && Boolean(b.otherColor);
+  let glow = "";
+  if (isLit) {
+    const urgent = b.otherColor === "violet" || b.otherColor === "amber" || b.otherColor === "red";
+    const period = urgent ? 640 : 1300;
+    const p = nowMs > 0 ? 0.5 - 0.5 * Math.cos(2 * Math.PI * (nowMs % period) / period) : 0.7;
+    const op = Math.max(0.18, (urgent ? 0.45 : 0.32) * p);
+    glow = `<rect width="144" height="144" rx="18" fill="${barColor}" opacity="${op.toFixed(2)}"/>`;
+  }
+  const borderStroke = isLit ? barColor : "#3f3f46";
+  const borderWidth = isLit ? "2.5" : "1.5";
+  const pillFill = isLit ? barColor : "#3f3f46";
+  const pillFillOpacity = isLit ? "0.35" : "0.6";
+  const pillStroke = isLit ? barColor : "#52525b";
+  const g0 = dim && !isLit ? '<g opacity="0.32">' : "";
+  const g1 = dim && !isLit ? "</g>" : "";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">
   <defs>
     <clipPath id="r"><rect width="144" height="144" rx="18"/></clipPath>
@@ -57430,7 +57457,8 @@ function pageButtonSvg(bOrPage, pageCountOrTick = 1, hasAlertOrNowMs = false, ti
       <stop offset="100%" stop-color="#18181b"/>
     </linearGradient>
   </defs>
-  ${g0}<rect width="144" height="144" rx="18" fill="url(#pbg)" stroke="#3f3f46" stroke-width="1.5"/>
+  ${g0}<rect width="144" height="144" rx="18" fill="url(#pbg)" stroke="${borderStroke}" stroke-width="${borderWidth}"/>
+  ${glow}
   <rect width="144" height="18" fill="${barColor}" clip-path="url(#r)"/>
   ${stIcon}
 
@@ -57441,7 +57469,7 @@ function pageButtonSvg(bOrPage, pageCountOrTick = 1, hasAlertOrNowMs = false, ti
   <text x="72" y="78" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="28" font-weight="800">${curr} <tspan fill="#71717a" font-size="20" font-weight="600">/ ${b.pageCount}</tspan></text>
 
   <!-- Bottom: Action pill (NEXT \u276F / \u276E PREV) -->
-  <rect x="22" y="100" width="100" height="28" rx="14" fill="#3f3f46" fill-opacity="0.6" stroke="#52525b" stroke-width="1"/>
+  <rect x="22" y="100" width="100" height="28" rx="14" fill="${pillFill}" fill-opacity="${pillFillOpacity}" stroke="${pillStroke}" stroke-width="${isLit ? "1.5" : "1"}"/>
   <text x="72" y="119" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="13" font-weight="700" letter-spacing="0.5">${actionText}</text>${g1}
 </svg>`;
 }
@@ -59123,6 +59151,7 @@ var SlotAction = class extends SingletonAction {
         return;
       }
       setTarget(b.handle);
+      b.unread = false;
       lastNav = Date.now();
       holdCurrentSlotsInPlace();
       try {

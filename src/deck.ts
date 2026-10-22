@@ -327,7 +327,7 @@ export function activityBucket(
 /** State sorting priority rank: lower number = placed higher/earlier on the deck */
 export function statePriority(state: AgentState, unread?: boolean): number {
   if (state === "done") {
-    return unread ? 0 : 20; // unread done needs attention (active tier); reviewed done is inactive tier
+    return Boolean(unread) ? 0 : 20; // unread done needs attention (active tier); reviewed done is inactive tier
   }
   switch (state) {
     case "working":
@@ -449,24 +449,27 @@ export function needsAttention(b: Button, isTarget: boolean = false): boolean {
   if ("isPageButton" in b && b.isPageButton) {
     if (!b.otherColor || b.otherColor === "white" || b.otherColor === "orange" || b.otherColor === "blue") return false;
     if (b.otherColor === "green") return Boolean(b.otherUnread);
-    return b.otherColor === "violet" || b.otherColor === "amber" || b.otherColor === "red";
+    if (b.otherColor === "red") return b.otherUnread !== false;
+    return b.otherColor === "violet" || b.otherColor === "amber";
   }
   if (isTarget) return false;
-  if (b.state === "done") return Boolean(b.unread);
+  if (b.state === "done" || b.color === "green") return Boolean(b.unread);
   if (b.state === "unverifiable") return false;
-  if (b.state === "interrupted") return true;
-  if (b.color === "green") return Boolean(b.unread);
-  return b.color === "violet" || b.color === "amber" || b.color === "red";
+  if (b.state === "interrupted" || b.state === "error" || b.state === "failed" || b.color === "red") {
+    return b.unread !== false;
+  }
+  return b.color === "violet" || b.color === "amber";
 }
 
 /**
  * Extract the highest priority representative state and color from sessions on other pages:
- * 1. error / interrupted / failed (red)
+ * 1. unread error / interrupted / failed (red)
  * 2. waiting / permission / blocked (violet)
  * 3. done (green, unread)
  * 4. working / monitoring (orange)
- * 5. done (green, read)
- * 6. idle / unverifiable (white)
+ * 5. reviewed error / interrupted / failed (red, unread false)
+ * 6. done (green, read)
+ * 7. idle / unverifiable (white)
  */
 export function representativeOtherState(
   otherItems: Array<{ item: { state: AgentState; status?: string }; unread?: boolean }>,
@@ -478,9 +481,12 @@ export function representativeOtherState(
 } {
   if (!otherItems.length) return {};
 
-  if (otherItems.some((e) => e.item.state === "error" || e.item.state === "failed" || e.item.state === "interrupted")) {
-    const s = otherItems.find((e) => e.item.state === "interrupted")?.item.state ?? "error";
-    return { otherState: s, otherColor: "red" };
+  const unreadErr = otherItems.find(
+    (e) => (e.item.state === "error" || e.item.state === "failed" || e.item.state === "interrupted") && e.unread !== false,
+  );
+  if (unreadErr) {
+    const s = otherItems.find((e) => e.item.state === "interrupted" && e.unread !== false)?.item.state ?? "error";
+    return { otherState: s, otherColor: "red", ...(unreadErr.unread !== undefined ? { otherUnread: unreadErr.unread } : {}) };
   }
   if (otherItems.some((e) => e.item.state === "waiting" || e.item.state === "permission" || e.item.state === "blocked")) {
     return { otherState: "waiting", otherColor: "violet" };
@@ -490,6 +496,13 @@ export function representativeOtherState(
   }
   if (otherItems.some((e) => e.item.state === "working" || e.item.state === "monitoring")) {
     return { otherState: "working", otherColor: "orange" };
+  }
+  const reviewedErr = otherItems.find(
+    (e) => e.item.state === "error" || e.item.state === "failed" || e.item.state === "interrupted",
+  );
+  if (reviewedErr) {
+    const s = otherItems.find((e) => e.item.state === "interrupted")?.item.state ?? "error";
+    return { otherState: s, otherColor: "red", otherUnread: false };
   }
   if (otherItems.some((e) => e.item.state === "done")) {
     return { otherState: "done", otherColor: "green", otherUnread: false };

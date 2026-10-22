@@ -287,8 +287,26 @@ export function pageButtonSvg(
   const barColor = b.otherColor ? (HEX[b.otherColor] ?? HEX.white) : "#3f3f46";
   const stIcon = (b.otherStatus || b.otherState) ? stateIcon(b.otherStatus || b.otherState, 130, 9) : "";
 
-  const g0 = dim ? '<g opacity="0.32">' : "";
-  const g1 = dim ? "</g>" : "";
+  const attn = needsAttention(b as any, false);
+  const isLit = attn && Boolean(b.otherColor);
+
+  let glow = "";
+  if (isLit) {
+    const urgent = b.otherColor === "violet" || b.otherColor === "amber" || b.otherColor === "red";
+    const period = urgent ? 640 : 1300; // ms/cycle
+    const p = nowMs > 0 ? (0.5 - 0.5 * Math.cos((2 * Math.PI * (nowMs % period)) / period)) : 0.7;
+    const op = Math.max(0.18, (urgent ? 0.45 : 0.32) * p);
+    glow = `<rect width="144" height="144" rx="18" fill="${barColor}" opacity="${op.toFixed(2)}"/>`;
+  }
+
+  const borderStroke = isLit ? barColor : "#3f3f46";
+  const borderWidth = isLit ? "2.5" : "1.5";
+  const pillFill = isLit ? barColor : "#3f3f46";
+  const pillFillOpacity = isLit ? "0.35" : "0.6";
+  const pillStroke = isLit ? barColor : "#52525b";
+
+  const g0 = (dim && !isLit) ? '<g opacity="0.32">' : "";
+  const g1 = (dim && !isLit) ? "</g>" : "";
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">
   <defs>
@@ -298,7 +316,8 @@ export function pageButtonSvg(
       <stop offset="100%" stop-color="#18181b"/>
     </linearGradient>
   </defs>
-  ${g0}<rect width="144" height="144" rx="18" fill="url(#pbg)" stroke="#3f3f46" stroke-width="1.5"/>
+  ${g0}<rect width="144" height="144" rx="18" fill="url(#pbg)" stroke="${borderStroke}" stroke-width="${borderWidth}"/>
+  ${glow}
   <rect width="144" height="18" fill="${barColor}" clip-path="url(#r)"/>
   ${stIcon}
 
@@ -309,7 +328,7 @@ export function pageButtonSvg(
   <text x="72" y="78" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="28" font-weight="800">${curr} <tspan fill="#71717a" font-size="20" font-weight="600">/ ${b.pageCount}</tspan></text>
 
   <!-- Bottom: Action pill (NEXT ❯ / ❮ PREV) -->
-  <rect x="22" y="100" width="100" height="28" rx="14" fill="#3f3f46" fill-opacity="0.6" stroke="#52525b" stroke-width="1"/>
+  <rect x="22" y="100" width="100" height="28" rx="14" fill="${pillFill}" fill-opacity="${pillFillOpacity}" stroke="${pillStroke}" stroke-width="${isLit ? '1.5' : '1'}"/>
   <text x="72" y="119" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="13" font-weight="700" letter-spacing="0.5">${actionText}</text>${g1}
 </svg>`;
 }
