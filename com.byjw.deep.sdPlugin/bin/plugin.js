@@ -58624,7 +58624,8 @@ function renderKeys() {
     const [id, { action: a }] = entries[i];
     const b = deck.slots[i] ?? { empty: true };
     const isTarget = !b.empty && b.handle === targetHandle;
-    const dim = boardAttn && !b.empty && !needsAttention(b, isTarget);
+    const isWorking = !b.empty && (b.state === "working" || b.color === "orange");
+    const dim = boardAttn && !b.empty && !isTarget && !isWorking && !needsAttention(b, false);
     const img = keyImage(b, tick, isTarget, now, dim);
     if (lastImg.get(id) === img) continue;
     lastImg.set(id, img);
