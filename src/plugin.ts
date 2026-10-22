@@ -3,7 +3,7 @@
 // Dial roles determined by physical position (column): 0=Model 1=Effort 2=Talk 3=Target.
 import streamDeck, { action, SingletonAction } from "@elgato/streamdeck";
 import { execFile } from "node:child_process";
-import { writeFileSync, readFileSync, existsSync, unlinkSync, watch } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, unlinkSync, watch, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
@@ -115,7 +115,7 @@ const TALK_HINT: Record<string, string> = {
   STT_FAILED: "STT Failed",
 };
 const talkHint = (code: string) => TALK_HINT[code] ?? "STT Error";
-const EXEC = { maxBuffer: 64 * 1024 * 1024 } as const;
+const EXEC = { maxBuffer: 64 * 1024 * 1024, timeout: 10_000 } as const;
 // Deck ordering debounce: sessions/groups active in the same wall-clock bucket keep their relative order,
 // so several concurrently working projects don't re-sort the keys on every poll. Override with
 // AGENTDECK_ORDER_BUCKET_MS (milliseconds).
@@ -384,6 +384,109 @@ function envArgsFor(handle?: string): string[] {
   return environmentArgs(handle ? environmentByHandle.get(handle) : undefined);
 }
 
+interface OrcaRuntimeInfo {
+  endpoint: string;
+  authToken: string;
+  mtimeMs: number;
+}
+let cachedRuntimeInfo: OrcaRuntimeInfo | null = null;
+
+function getSocketEndpointAndToken(): { endpoint: string; authToken: string } | null {
+  const metaPath = join(ORCA_DATA_DIR, "orca-runtime.json");
+  if (!existsSync(metaPath)) return null;
+  try {
+    const stat = statSync(metaPath);
+    if (cachedRuntimeInfo && cachedRuntimeInfo.mtimeMs === stat.mtimeMs) {
+      if (existsSync(cachedRuntimeInfo.endpoint)) {
+        return cachedRuntimeInfo;
+      }
+    }
+    const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+    const transports = Array.isArray(meta?.transports)
+      ? meta.transports
+      : meta?.transport
+        ? [meta.transport]
+        : [];
+    const unixTransport = transports.find((t: any) => t?.kind === "unix");
+    const endpoint = unixTransport?.endpoint;
+    if (endpoint && existsSync(endpoint)) {
+      cachedRuntimeInfo = {
+        endpoint,
+        authToken: meta.authToken || "",
+        mtimeMs: stat.mtimeMs,
+      };
+      return cachedRuntimeInfo;
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Fast direct RPC to Orca's local Unix domain socket.
+ * Executes in ~1-5ms without spawning any child processes.
+ */
+async function orcaRpc(
+  method: string,
+  params: Record<string, any> = {},
+  timeoutMs = 2500,
+): Promise<any> {
+  const info = getSocketEndpointAndToken();
+  if (!info) throw new Error("Orca runtime socket not available");
+
+  return await new Promise<any>((resolve, reject) => {
+    let settled = false;
+    const socket = createConnection(info.endpoint);
+    const reqId = randomUUID();
+    let buf = "";
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      reject(new Error(`Socket RPC timeout after ${timeoutMs}ms: ${method}`));
+    }, timeoutMs);
+
+    socket.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+
+    socket.on("connect", () => {
+      const payload = JSON.stringify({
+        id: reqId,
+        authToken: info.authToken,
+        method,
+        params,
+      }) + "\n";
+      socket.write(payload);
+    });
+
+    socket.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      const newlineIdx = buf.indexOf("\n");
+      if (newlineIdx !== -1) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.destroy();
+        try {
+          const line = buf.slice(0, newlineIdx);
+          const parsed = JSON.parse(line);
+          if (parsed && typeof parsed === "object" && parsed.ok === false) {
+            reject(new Error(parsed.error?.message || `RPC error: ${method}`));
+          } else {
+            resolve(parsed);
+          }
+        } catch (e) {
+          reject(e);
+        }
+      }
+    });
+  });
+}
+
 /**
  * Direct RPC to the local Orca desktop runtime to reveal a terminal pane in the UI.
  * Used for paired remote sessions because Orca CLI's `terminal switch` commands the remote
@@ -395,64 +498,12 @@ async function orcaRevealTerminal(params: {
   leafId?: string | null;
   executionHostId?: string | null;
 }): Promise<boolean> {
-  const metaPath = join(ORCA_DATA_DIR, "orca-runtime.json");
-  if (!existsSync(metaPath)) return false;
-  let meta: any;
   try {
-    meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+    const res = await orcaRpc("terminal.reveal", params);
+    return res?.ok === true && res?.result?.reveal?.navigated === true;
   } catch {
     return false;
   }
-  const unixTransport = Array.isArray(meta?.transports)
-    ? meta.transports.find((t: any) => t.kind === "unix")
-    : meta?.transport?.kind === "unix"
-      ? meta.transport
-      : null;
-  const endpoint = unixTransport?.endpoint;
-  if (!endpoint) return false;
-
-  return await new Promise<boolean>((resolve) => {
-    let settled = false;
-    const socket = createConnection(endpoint);
-    const reqId = randomUUID();
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(false);
-    }, 2000);
-
-    socket.on("error", () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(false);
-    });
-
-    socket.on("connect", () => {
-      socket.write(
-        JSON.stringify({
-          id: reqId,
-          authToken: meta.authToken,
-          method: "terminal.reveal",
-          params,
-        }) + "\n",
-      );
-    });
-
-    socket.on("data", (data) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.end();
-      try {
-        const res = JSON.parse(data.toString());
-        resolve(res?.ok === true && res?.result?.reveal?.navigated === true);
-      } catch {
-        resolve(false);
-      }
-    });
-  });
 }
 
 /**
@@ -461,9 +512,24 @@ async function orcaRevealTerminal(params: {
  */
 async function switchTerminal(handle: string): Promise<void> {
   const b = sessionByHandle.get(handle);
-  const switchArgs = ["terminal", "switch", ...envArgsFor(handle), "--terminal", handle];
-  streamDeck.logger.info(`switching terminal: ${switchArgs.join(" ")}`);
-  await orcaRun(switchArgs);
+  const env = environmentByHandle.get(handle);
+
+  let focused = false;
+  if (!env) {
+    try {
+      const res = await orcaRpc("terminal.focus", {
+        terminal: handle,
+        navigation: "host",
+      });
+      if (res?.ok) focused = true;
+    } catch {}
+  }
+
+  if (!focused) {
+    const switchArgs = ["terminal", "switch", ...envArgsFor(handle), "--terminal", handle];
+    streamDeck.logger.info(`switching terminal via CLI: ${switchArgs.join(" ")}`);
+    await orcaRun(switchArgs);
+  }
 
   let worktreeId = b?.worktreeId;
   let tabId = b?.tabId;
@@ -472,7 +538,16 @@ async function switchTerminal(handle: string): Promise<void> {
 
   if (envId && (!worktreeId || !tabId)) {
     try {
-      const show = await orcaJson(["terminal", "show", ...envArgsFor(handle), "--terminal", handle]);
+      let show: any;
+      if (env) {
+        show = await orcaJson(["terminal", "show", ...envArgsFor(handle), "--terminal", handle]);
+      } else {
+        try {
+          show = await orcaRpc("terminal.show", { terminal: handle });
+        } catch {
+          show = await orcaJson(["terminal", "show", "--terminal", handle]);
+        }
+      }
       if (show?.result?.terminal) {
         worktreeId = show.result.terminal.worktreeId;
         tabId = show.result.terminal.tabId;
@@ -548,6 +623,10 @@ let recPoll: ReturnType<typeof setInterval> | null = null;
 
 async function startRecording(): Promise<void> {
   if (recording) return;
+  if (recPoll) {
+    clearInterval(recPoll);
+    recPoll = null;
+  }
   recording = true;
   talkState = "● REC";
   renderAll();
@@ -630,13 +709,62 @@ async function stopAndSend(target?: string): Promise<void> {
 }
 
 // Create AgentContext for given handle (worktree path, worktree ID, preview, etc.)
+const screenTailByHandle = new Map<string, string>();
+const lastTargetOutputAt = new Map<string, number | null>();
+let screenReadBusy = false;
+
+async function refreshTargetScreen(target: string): Promise<string | undefined> {
+  if (screenReadBusy || !target) return screenTailByHandle.get(target);
+  const session = sessionByHandle.get(target);
+  const lastOutput = session ? (session as any).lastOutputAt : undefined;
+  if (
+    lastOutput !== undefined &&
+    lastOutput !== null &&
+    lastOutput === lastTargetOutputAt.get(target) &&
+    screenTailByHandle.has(target)
+  ) {
+    return screenTailByHandle.get(target);
+  }
+
+  screenReadBusy = true;
+  try {
+    const env = environmentByHandle.get(target);
+    let res: any;
+    if (env) {
+      res = await orcaJson(["terminal", "read", ...envArgsFor(target), "--terminal", target, "--screen", "--limit", "15"]);
+    } else {
+      try {
+        res = await orcaRpc("terminal.read", {
+          terminal: target,
+          screen: true,
+          limit: 15,
+        });
+      } catch {
+        res = await orcaJson(["terminal", "read", "--terminal", target, "--screen", "--limit", "15"]);
+      }
+    }
+    const tail = res?.result?.terminal?.tail;
+    if (Array.isArray(tail) && tail.length) {
+      const text = tail.join("\n");
+      screenTailByHandle.set(target, text);
+      lastTargetOutputAt.set(target, lastOutput ?? null);
+      return text;
+    }
+  } catch (e) {
+    streamDeck.logger.error(`read screen for ${target}: ${e}`);
+  } finally {
+    screenReadBusy = false;
+  }
+  return screenTailByHandle.get(target);
+}
+
 function contextForHandle(h: string): AgentContext {
   const b = sessionByHandle.get(h);
   return {
     handle: h,
     worktreePath: b?.worktreePath,
     worktreeId: b?.worktreeId,
-    preview: b?.preview,
+    preview: screenTailByHandle.get(h) || b?.preview,
     tabTitle: b?.tabTitle || b?.label,
   };
 }
@@ -662,7 +790,7 @@ function refreshSessionState(h: string): boolean {
   const state = agent.readCurrentState(ctx);
   let modelChanged = false;
 
-  if (state.model) {
+  if (state.model && (h !== targetHandle || Date.now() - pickAt.model >= PICK_GRACE)) {
     if (currentModelByHandle.get(h) !== state.model) {
       currentModelByHandle.set(h, state.model);
       modelChanged = true;
@@ -673,7 +801,7 @@ function refreshSessionState(h: string): boolean {
   if (!effortToSet && state.model) {
     effortToSet = agent.getEffortForModel(state.model);
   }
-  if (effortToSet) {
+  if (effortToSet && (h !== targetHandle || Date.now() - pickAt.effort >= PICK_GRACE)) {
     if (currentEffortByHandle.get(h) !== effortToSet || modelChanged) {
       currentEffortByHandle.set(h, effortToSet);
       if (modelChanged) {
@@ -682,13 +810,13 @@ function refreshSessionState(h: string): boolean {
     }
   }
 
-  if (state.mode) {
+  if (state.mode && (h !== targetHandle || Date.now() - pickAt.mode >= PICK_GRACE)) {
     currentModeByHandle.set(h, state.mode);
   }
   if (state.modes && state.modes.length) {
     modesByHandle.set(h, state.modes);
   }
-  if (state.permissions) {
+  if (state.permissions && (h !== targetHandle || Date.now() - pickAt.permissions >= PICK_GRACE)) {
     currentPermissionsByHandle.set(h, state.permissions);
   }
 
@@ -706,10 +834,16 @@ function refreshSessionState(h: string): boolean {
 }
 
 function setTarget(h?: string): void {
+  boostPolling();
   targetHandle = h;
   if (h) {
     noteHandle(h);
     refreshSessionState(h);
+    refreshTargetScreen(h).then(() => {
+      refreshSessionState(h);
+      applyPending();
+      renderDials();
+    }).catch(() => {});
   }
   agentForHandle();
   pickAt.model = 0; // Target change invalidates previous grace period
@@ -898,6 +1032,7 @@ function refreshCurrentState(): void {
   adoptPending("model");
   adoptPending("effort");
   adoptPending("mode");
+  adoptPending("permissions");
 }
 
 // Periodically load effort variants for target session's current model (throttled)
@@ -1013,7 +1148,7 @@ function dialFeedback(role: string): { full: string } {
           status: (tb as any).status,
           color: (tb as any).color as string | undefined,
           attention: needsAttention(tb, false),
-          nowMs: Date.now(),
+          nowMs: 0,
         }
       : undefined;
     return { full: dialImage("target", "TARGET", v, tick, false, badge, branch, undefined, st) };
@@ -1105,7 +1240,12 @@ let lastRepoFetchAt = 0;
 async function refreshRepos(): Promise<void> {
   if (Date.now() - lastRepoFetchAt < 15000 && cachedRepos.length > 0) return;
   try {
-    const rl = await orcaJson(["repo", "list"]);
+    let rl: any;
+    try {
+      rl = await orcaRpc("repo.list");
+    } catch {
+      rl = await orcaJson(["repo", "list"]);
+    }
     if (rl?.result?.repos) {
       cachedRepos = rl.result.repos;
       lastRepoFetchAt = Date.now();
@@ -1128,6 +1268,17 @@ let lastEnvFetchAt = 0;
  * appear on the deck next to this machine's (a remote runtime reports its own rows as hostId `local`). */
 async function refreshEnvironments(): Promise<void> {
   if (Date.now() - lastEnvFetchAt < 30000 && cachedEnvironments.length > 0) return;
+  const envFile = join(ORCA_DATA_DIR, "orca-environments.json");
+  if (existsSync(envFile)) {
+    try {
+      const data = JSON.parse(readFileSync(envFile, "utf-8"));
+      if (Array.isArray(data?.environments)) {
+        cachedEnvironments = (data.environments as any[]).filter((e) => e?.name);
+        lastEnvFetchAt = Date.now();
+        return;
+      }
+    } catch {}
+  }
   try {
     const el = await orcaJson(["environment", "list"]);
     if (el?.result?.environments) {
@@ -1143,12 +1294,28 @@ let cachedHosts: OrcaHost[] = [];
 let lastHostFetchAt = 0;
 /** Hosts from `orca host list` — maps each session's hostId to a short machine label on the tile. */
 async function refreshHosts(): Promise<void> {
-  if (Date.now() - lastHostFetchAt < 30000 && cachedHosts.length > 0) return;
+  if (Date.now() - lastHostFetchAt < 60000 && cachedHosts.length > 0) return;
+  for (const cacheFile of ["/tmp/orca-panel-hosts.json", "/tmp/orca-hosts.json"]) {
+    if (existsSync(cacheFile)) {
+      try {
+        const cached = JSON.parse(readFileSync(cacheFile, "utf-8"));
+        const atMs = typeof cached.at === "number" ? (cached.at < 1e11 ? cached.at * 1000 : cached.at) : 0;
+        if (Date.now() - atMs < 60000 && Array.isArray(cached.hosts) && cached.hosts.length > 0) {
+          cachedHosts = cached.hosts;
+          lastHostFetchAt = Date.now();
+          return;
+        }
+      } catch {}
+    }
+  }
   try {
     const hl = await orcaJson(["host", "list"]);
     if (hl?.result?.hosts) {
       cachedHosts = hl.result.hosts;
       lastHostFetchAt = Date.now();
+      try {
+        writeFileSync("/tmp/orca-hosts.json", JSON.stringify({ hosts: cachedHosts, at: Date.now() }));
+      } catch {}
     }
   } catch (e) {
     streamDeck.logger.error(`fetch hosts: ${e}`);
@@ -1180,7 +1347,12 @@ async function refreshRateLimits(): Promise<void> {
     return;
   }
   try {
-    const data = await orcaJson(["account", "list"]);
+    let data: any;
+    try {
+      data = await orcaRpc("accounts.list");
+    } catch {
+      data = await orcaJson(["account", "list"]);
+    }
     if (data?.result?.rateLimits) {
       cachedRateLimits = data.result.rateLimits;
       lastRateLimitFetchAt = Date.now();
@@ -1203,6 +1375,8 @@ async function poll(): Promise<void> {
     await refreshEnvironments();
     // Paired environments are polled in parallel with the local runtime; a failing environment
     // (offline Mac mini, revoked pairing) is logged and skipped rather than breaking the deck.
+    // Remote environments must be queried via CLI (`orcaJson`), because the local domain socket
+    // RPC (`orcaRpc`) runs on this machine and ignores the environment parameter.
     const remotePoll = Promise.all(
       cachedEnvironments.map(async (env) => {
         try {
@@ -1222,11 +1396,20 @@ async function poll(): Promise<void> {
         }
       }),
     );
-    const [tl, wp, remote] = await Promise.all([
-      orcaJson(["terminal", "list", "--include-visual-layouts"]),
-      orcaJson(["worktree", "ps"]),
-      remotePoll,
-    ]);
+    let tl: any;
+    let wp: any;
+    try {
+      [tl, wp] = await Promise.all([
+        orcaRpc("terminal.list", { includeVisualLayouts: true }),
+        orcaRpc("worktree.ps"),
+      ]);
+    } catch {
+      [tl, wp] = await Promise.all([
+        orcaJson(["terminal", "list", "--include-visual-layouts"]),
+        orcaJson(["worktree", "ps"]),
+      ]);
+    }
+    const [remote] = await Promise.all([remotePoll]);
     const localTerminals = tl.result?.terminals ?? [];
     const localWorktrees = wp.result?.worktrees ?? [];
     const remoteOk = remote.filter((r): r is NonNullable<typeof r> => !!r);
@@ -1291,21 +1474,30 @@ async function poll(): Promise<void> {
         }
       }
     }
-    // Prevent memory leaks for closed sessions
-    for (const h of Array.from(agentByHandle.keys())) {
-      if (!sessionByHandle.has(h)) {
-        agentByHandle.delete(h);
-        agentInstanceByHandle.delete(h);
-        environmentByHandle.delete(h);
-        modelsByHandle.delete(h);
-        modesByHandle.delete(h);
-        effortsByHandle.delete(h);
-        currentModelByHandle.delete(h);
-        currentEffortByHandle.delete(h);
-        currentModeByHandle.delete(h);
-        modelByHandle.delete(h);
-        effortByHandle.delete(h);
-        modeByHandle.delete(h);
+    // Prevent memory leaks for closed sessions across all handle maps
+    const handleMaps: Map<string, any>[] = [
+      agentByHandle,
+      agentInstanceByHandle,
+      environmentByHandle,
+      modelsByHandle,
+      modesByHandle,
+      effortsByHandle,
+      currentModelByHandle,
+      currentEffortByHandle,
+      currentModeByHandle,
+      currentPermissionsByHandle,
+      screenTailByHandle,
+      lastTargetOutputAt,
+      modelByHandle,
+      effortByHandle,
+      modeByHandle,
+      permissionsByHandle,
+    ];
+    for (const map of handleMaps) {
+      for (const h of Array.from(map.keys())) {
+        if (!sessionByHandle.has(h)) {
+          map.delete(h);
+        }
       }
     }
     // Automatically set currently focused session as target. Only the local runtime can report
@@ -1333,6 +1525,10 @@ async function poll(): Promise<void> {
       }
     }
     lastActiveHandle = activeHandle;
+    const t = ensureTarget();
+    if (t) {
+      await refreshTargetScreen(t);
+    }
     refreshDiscovery(); // Periodically load model list for supported agents (throttled)
     refreshCurrentState(); // Track active state (model/effort/mode) from agent interfaces (every poll)
     refreshEfforts(); // Periodically load effort variants (throttled)
@@ -1340,7 +1536,33 @@ async function poll(): Promise<void> {
     try {
       writeFileSync(
         "/tmp/agentdeck-debug.json",
-        JSON.stringify({ at: new Date().toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, environments: cachedEnvironments.map((e) => e.name), target: targetHandle, targetEnvironment: environmentByHandle.get(targetHandle ?? "") ?? null, dials: { model: dialValue("model"), effort: dialValue("effort"), mode: dialValue("mode"), permissions: dialValue("permissions") }, slots: deck.slots }, null, 2),
+        JSON.stringify(
+          {
+            at: new Date().toISOString(),
+            total: deck.total,
+            slotViews: slotViews.size,
+            dialViews: dialViews.size,
+            environments: cachedEnvironments.map((e) => e.name),
+            target: targetHandle,
+            targetEnvironment: environmentByHandle.get(targetHandle ?? "") ?? null,
+            dials: {
+              model: dialValue("model"),
+              effort: dialValue("effort"),
+              mode: dialValue("mode"),
+              permissions: dialValue("permissions"),
+            },
+            slots: deck.slots.map((s) =>
+              s.empty
+                ? s
+                : {
+                    ...s,
+                    bgIconUri: s.bgIconUri ? `[data-uri ${s.bgIconUri.length} chars]` : undefined,
+                  },
+            ),
+          },
+          null,
+          2,
+        ),
       );
     } catch {}
   } catch (e) {
@@ -1421,13 +1643,36 @@ async function spawnSession(ev: any): Promise<void> {
   }
 }
 
-let fileDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let pollBurstUntil = 0;
+const IDLE_POLL_INTERVAL_MS = 3000;
+const BURST_POLL_INTERVAL_MS = 1000;
+const BURST_DURATION_MS = 4000;
+
+function boostPolling(durationMs = BURST_DURATION_MS): void {
+  pollBurstUntil = Math.max(pollBurstUntil, Date.now() + durationMs);
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(runPollLoop, 50);
+  }
+}
+
 function pollDebounced(delay = 50): void {
-  if (fileDebounceTimer) clearTimeout(fileDebounceTimer);
-  fileDebounceTimer = setTimeout(() => {
-    fileDebounceTimer = null;
-    poll().catch(() => {});
-  }, delay);
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(runPollLoop, delay);
+}
+
+async function runPollLoop(): Promise<void> {
+  pollTimer = null;
+  try {
+    await poll();
+  } catch (e) {
+    streamDeck.logger.error(`poll loop error: ${e}`);
+  } finally {
+    const isBurst = Date.now() < pollBurstUntil;
+    const delay = isBurst ? BURST_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS;
+    pollTimer = setTimeout(runPollLoop, delay);
+  }
 }
 
 @action({ UUID: "com.byjw.deep.slot" })
@@ -1508,6 +1753,7 @@ class DialBase extends SingletonAction {
     lastDialImg.delete(ev.action.id);
   }
   override onDialRotate(ev: any): void {
+    boostPolling();
     const dir = (ev.payload?.ticks ?? 0) > 0 ? 1 : (ev.payload?.ticks ?? 0) < 0 ? -1 : 0;
     if (!dir) return;
     const t = ensureTarget();
@@ -1556,6 +1802,7 @@ class DialBase extends SingletonAction {
     }
   }
   override async onDialDown(ev: any): Promise<void> {
+    boostPolling();
     const t = ensureTarget();
     if (this.role === "model" || this.role === "effort" || this.role === "mode" || this.role === "permissions") {
       const agent = agentForHandle();
@@ -1588,6 +1835,7 @@ class DialBase extends SingletonAction {
         if (this.role === "model") {
           modelByHandle.set(t, value);
           currentModelByHandle.set(t, value);
+          pendingModel = value;
           const inferred = agent.getEffortForModel(value);
           if (inferred) {
             effortByHandle.set(t, inferred);
@@ -1600,16 +1848,24 @@ class DialBase extends SingletonAction {
         } else if (this.role === "effort") {
           effortByHandle.set(t, value);
           currentEffortByHandle.set(t, value);
+          pendingEffort = value;
         } else if (this.role === "mode") {
           modeByHandle.set(t, value);
           currentModeByHandle.set(t, value);
+          pendingMode = value;
         } else if (this.role === "permissions") {
           permissionsByHandle.set(t, value);
           currentPermissionsByHandle.set(t, value);
+          pendingPermissions = value;
         }
+        pickAt[kind] = Date.now();
         try {
           const modeList = this.role === "mode" ? dialList("mode") : undefined;
           await applyAgentSteps(t, agent.getApplySteps(kind, value, prevValue, modeList));
+          pickAt[kind] = Date.now();
+          if (this.role === "mode") {
+            await refreshTargetScreen(t);
+          }
           refreshCurrentState();
         } catch (e) {
           streamDeck.logger.error(`apply ${kind}: ${e}`);
@@ -1692,6 +1948,7 @@ setInterval(() => {
 }, 1000);
 
 // File watchers for Orca hooks and agent state files (<50ms fast reactive update)
+let fileWatchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 function setupFileWatchers(): void {
   const dirsToWatch = [
     join(ORCA_DATA_DIR, "agent-hooks"),
@@ -1708,7 +1965,11 @@ function setupFileWatchers(): void {
     try {
       if (existsSync(dir)) {
         watch(dir, { recursive: false }, () => {
-          pollDebounced(50);
+          if (fileWatchDebounceTimer) return;
+          fileWatchDebounceTimer = setTimeout(() => {
+            fileWatchDebounceTimer = null;
+            pollDebounced(250);
+          }, 1000);
         });
       }
     } catch (e) {
@@ -1720,30 +1981,5 @@ setupFileWatchers();
 
 streamDeck.connect();
 
-setInterval(poll, 1000);
-// Marquee tick interval (450ms)
-setInterval(() => {
-  tick++;
-  if (anyAttention() || anyMarquee()) renderKeys();
-}, 450);
-// Smooth pulse loop for keys AND the target dial requiring attention (160ms ≈ 6fps)
-let wasAttention = false;
-setInterval(() => {
-  const attn = anyAttention() || targetAttention();
-  if (attn) {
-    wasAttention = true;
-    renderKeys();
-    renderDials();
-  } else if (wasAttention) {
-    wasAttention = false;
-    renderKeys();
-    renderDials();
-  }
-}, 160);
-poll();
-
-// Check if any visible session key has long titles requiring marquee animation (deprecated: marquee replaced with middle cropping)
-function anyMarquee(): boolean {
-  return false;
-}
+runPollLoop();
 

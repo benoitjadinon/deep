@@ -25,6 +25,9 @@ import {
   readCodexState,
   CODEX_DEFAULT_MODELS,
   getCodexShiftTabSteps,
+  getCodexModelSteps,
+  getCodexEffortSteps,
+  getCodexPermissionsSteps,
   normalizeCodexMode,
   parseCodexModeFromText,
   parseClaudeSettings,
@@ -214,16 +217,32 @@ describe("stepsFor — apply command sequences", () => {
       { text: "\x1b[Z", enter: false },
     ]);
   });
-  it("codex: slash commands (/model <m>, /effort <e>, /permissions <m>) and Shift+Tab mode cycling", () => {
+  it("codex: picker dialogs (/model, /permissions), Alt+./Alt+, reasoning, and Shift+Tab mode cycling", () => {
     const a = agentFor("codex");
-    expect(stepsFor(a, "model", "gpt-5.6-luna")).toEqual([
-      { text: "/model gpt-5.6-luna", enter: true, delayMs: 120 },
+    expect(stepsFor(a, "model", "gpt-6-sol")).toEqual([
+      { text: "\x15/model", enter: false, delayMs: 150 },
+      { text: "\r", enter: false, delayMs: 350 },
+      { text: "3", enter: false, delayMs: 300 },
+      { text: "\r", enter: false, delayMs: 150 },
     ]);
-    expect(stepsFor(a, "effort", "high")).toEqual([
-      { text: "/effort high", enter: true, delayMs: 120 },
+    expect(stepsFor(a, "effort", "high", "low")).toEqual([
+      { text: "\x1b.", enter: false, delayMs: 80 },
+      { text: "\x1b.", enter: false, delayMs: 80 },
+    ]);
+    expect(stepsFor(a, "effort", "low", "high")).toEqual([
+      { text: "\x1b,", enter: false, delayMs: 80 },
+      { text: "\x1b,", enter: false, delayMs: 80 },
     ]);
     expect(stepsFor(a, "permissions", "workspace-write")).toEqual([
-      { text: "/permissions workspace-write", enter: true, delayMs: 120 },
+      { text: "\x15/permissions", enter: false, delayMs: 150 },
+      { text: "\r", enter: false, delayMs: 350 },
+      { text: "1", enter: false, delayMs: 250 },
+    ]);
+    expect(stepsFor(a, "permissions", "danger-full-access")).toEqual([
+      { text: "\x15/permissions", enter: false, delayMs: 150 },
+      { text: "\r", enter: false, delayMs: 350 },
+      { text: "3", enter: false, delayMs: 250 },
+      { text: "1", enter: false, delayMs: 200 },
     ]);
     expect(stepsFor(a, "mode", "plan", "normal")).toEqual([
       { text: "\x1b[Z", enter: false },
@@ -694,7 +713,60 @@ describe("Codex & Agy parser and state reader", () => {
     expect(getCodexShiftTabSteps("plan", "normal")).toEqual([{ text: "\x1b[Z", enter: false }]);
     expect(getCodexShiftTabSteps("normal", "plan")).toEqual([{ text: "\x1b[Z", enter: false }]);
     expect(getCodexShiftTabSteps("plan", "plan")).toEqual([]);
-    expect(a.getApplySteps("permissions", "read-only")).toEqual([{ text: "/permissions read-only", enter: true, delayMs: 120 }]);
+    expect(a.getApplySteps("permissions", "read-only")).toEqual([
+      { text: "\x15/permissions", enter: false, delayMs: 150 },
+      { text: "\r", enter: false, delayMs: 350 },
+      { text: "4", enter: false, delayMs: 250 },
+    ]);
+  });
+  it("parseCodexModeFromText: detects plan vs normal from status bar and avoids scrollback traps", () => {
+    // 1. Plan mode at active status bar
+    const planScreen = `
+Some earlier output
+› Ask Codex to do anything
+  GPT-6.1-Sol medium · ~/Apps/altready · Test                                                                          Plan mode
+  ? for shortcuts
+`;
+    expect(parseCodexModeFromText(planScreen)).toBe("plan");
+
+    // 2. Normal mode at active status bar
+    const normalScreen = `
+Some earlier output
+› Ask Codex to do anything
+  GPT-6.1-Sol medium · ~/Apps/altready · Test
+  ? for shortcuts
+`;
+    expect(parseCodexModeFromText(normalScreen)).toBe("normal");
+
+    // 3. Historical conversation mentioned "Plan mode", but current status bar is Normal
+    const scrollbackTrap = `
+Assistant: I am entering Plan mode to outline the architecture.
+Plan mode steps:
+1. Create schema
+2. Implement backend
+› Ask Codex to do anything
+  GPT-6.1-Sol medium · ~/Apps/altready · Test
+  ? for shortcuts
+`;
+    expect(parseCodexModeFromText(scrollbackTrap)).toBe("normal");
+
+    // 4. User typing "plan mode" into the prompt when in Normal mode
+    const typingPrompt = `
+› how do I switch to plan mode?
+  GPT-6.1-Sol medium · ~/Apps/altready · Test
+  ? for shortcuts
+`;
+    expect(parseCodexModeFromText(typingPrompt)).toBe("normal");
+
+    // 5. Tool execution / bash output without status bar returns undefined
+    const toolOutput = `
+Running build:
+esbuild src/index.ts --bundle --outdir=dist
+Finished in 24ms.
+`;
+    expect(parseCodexModeFromText(toolOutput)).toBeUndefined();
+    expect(parseCodexModeFromText("")).toBeUndefined();
+    expect(parseCodexModeFromText(undefined)).toBeUndefined();
   });
   it("readCodexState: read local state", () => {
     const st = readCodexState();

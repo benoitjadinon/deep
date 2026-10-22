@@ -826,13 +826,13 @@ export function readClaudeState(ctx?: AgentContext): AgentStateSnapshot {
           .sort((a, b) => b.mtime - a.mtime);
 
         for (const item of jsonlFiles.slice(0, 3)) {
+          let fd: number | undefined;
           try {
-            const fd = openSync(item.path, "r");
+            fd = openSync(item.path, "r");
             const size = fstatSync(fd).size;
             const readLen = Math.min(size, 64 * 1024);
             const buf = Buffer.alloc(readLen);
             readSync(fd, buf, 0, readLen, Math.max(0, size - readLen));
-            closeSync(fd);
             const tail = buf.toString("utf8", 0, readLen);
             const lines = tail.split("\n");
 
@@ -873,7 +873,12 @@ export function readClaudeState(ctx?: AgentContext): AgentStateSnapshot {
               } catch {}
               if (state.model && state.mode && state.effort) break;
             }
-          } catch {}
+          } catch {
+          } finally {
+            if (fd !== undefined) {
+              try { closeSync(fd); } catch {}
+            }
+          }
           if (state.model && state.mode && state.effort) break;
         }
       }
@@ -1005,13 +1010,110 @@ export function getCodexShiftTabSteps(toMode: string, fromMode?: string): ApplyS
   return [{ text: "\x1b[Z", enter: false }];
 }
 
-export function parseCodexModeFromText(text: string): "plan" | "normal" | undefined {
-  if (!text) return undefined;
-  const t = text.toLowerCase();
-  if (t.includes("[plan") || t.includes("plan mode") || t.includes("mode: plan") || t.includes("plan]")) {
-    return "plan";
+export function getCodexModelSteps(value: string, modelList?: string[]): ApplyStep[] {
+  const models = modelList && modelList.length ? modelList : CODEX_DEFAULT_MODELS;
+  const idx = models.findIndex(
+    (m) =>
+      m.toLowerCase() === value.toLowerCase() ||
+      m.toLowerCase().includes(value.toLowerCase()) ||
+      value.toLowerCase().includes(m.toLowerCase())
+  );
+  const num = idx >= 0 && idx < 9 ? String(idx + 1) : "1";
+  return [
+    { text: "\x15/model", enter: false, delayMs: 150 },
+    { text: "\r", enter: false, delayMs: 350 },
+    { text: num, enter: false, delayMs: 300 },
+    { text: "\r", enter: false, delayMs: 150 },
+  ];
+}
+
+export function getCodexEffortSteps(value: string, fromValue?: string): ApplyStep[] {
+  const normalize = (e?: string): number => {
+    if (!e) return 1;
+    const lower = e.toLowerCase();
+    if (lower === "none" || lower === "low") return 0;
+    if (lower === "medium") return 1;
+    if (lower === "high") return 2;
+    if (lower === "xhigh") return 3;
+    if (lower === "max" || lower === "ultra") return 4;
+    return 1;
+  };
+
+  const toIdx = normalize(value);
+  if (fromValue) {
+    const fromIdx = normalize(fromValue);
+    const diff = toIdx - fromIdx;
+    if (diff > 0) {
+      return Array.from({ length: diff }, () => ({
+        text: "\x1b.",
+        enter: false,
+        delayMs: 80,
+      }));
+    } else if (diff < 0) {
+      return Array.from({ length: Math.abs(diff) }, () => ({
+        text: "\x1b,",
+        enter: false,
+        delayMs: 80,
+      }));
+    }
+    return [];
   }
-  return undefined;
+
+  const steps: ApplyStep[] = [];
+  for (let i = 0; i < 4; i++) {
+    steps.push({ text: "\x1b,", enter: false, delayMs: 50 });
+  }
+  for (let i = 0; i < toIdx; i++) {
+    steps.push({ text: "\x1b.", enter: false, delayMs: 80 });
+  }
+  return steps;
+}
+
+export function getCodexPermissionsSteps(value: string): ApplyStep[] {
+  const lower = value.toLowerCase();
+  const isFull = lower.includes("danger") || lower.includes("full");
+  const isRead = lower.includes("read") || lower.includes("only");
+  const num = isRead ? "4" : isFull ? "3" : "1";
+
+  const steps: ApplyStep[] = [
+    { text: "\x15/permissions", enter: false, delayMs: 150 },
+    { text: "\r", enter: false, delayMs: 350 },
+    { text: num, enter: false, delayMs: 250 },
+  ];
+  if (isFull) {
+    steps.push({ text: "1", enter: false, delayMs: 200 });
+  }
+  return steps;
+}
+
+export function parseCodexModeFromText(text?: string): "plan" | "normal" | undefined {
+  if (!text) return undefined;
+  const clean = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+  const lines = clean
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) return undefined;
+
+  const tail = lines.slice(-4);
+  const hasFooter = tail.some(
+    (l) => l.includes("·") || /\? for shortcuts/i.test(l) || /ask codex/i.test(l)
+  );
+  if (!hasFooter) return undefined;
+
+  for (const l of tail) {
+    if (l.startsWith("›") || l.startsWith(">")) {
+      if (/^[›>]\s*\[plan\]/i.test(l)) {
+        return "plan";
+      }
+      continue;
+    }
+    if (/\bplan mode\b/i.test(l) || /\[plan\]/i.test(l) || /\bmode:\s*plan\b/i.test(l)) {
+      return "plan";
+    }
+  }
+
+  return "normal";
 }
 
 export function parseCodexConfig(tomlText: string): { model?: string; effort?: string; mode?: string; permissions?: string } {
@@ -1071,7 +1173,7 @@ export function readCodexState(ctx?: AgentContext): AgentStateSnapshot {
     if (ctx?.preview) {
       mode = parseCodexModeFromText(ctx.preview);
     }
-    return { model, effort, mode: mode || "normal", permissions };
+    return { model, effort, mode, permissions };
   } catch {}
   return {};
 }
@@ -1115,16 +1217,16 @@ export class CodexAgent extends AbstractAgent {
 
   getApplySteps(kind: ControlKind, value: string, fromValue?: string): ApplyStep[] {
     if (kind === "model") {
-      return slash("/model", value);
+      return getCodexModelSteps(value, this.getModels());
     }
     if (kind === "effort") {
-      return slash("/effort", value);
+      return getCodexEffortSteps(value, fromValue);
     }
     if (kind === "mode") {
       return getCodexShiftTabSteps(value, fromValue);
     }
     if (kind === "permissions") {
-      return slash("/permissions", value);
+      return getCodexPermissionsSteps(value);
     }
     return [];
   }
@@ -1476,6 +1578,9 @@ export function parseAgyLogMode(text: string): string | undefined {
   return undefined;
 }
 
+const agyWorkspaceHeaderCache = new Map<string, { mtime: number; workspaces: string[] }>();
+const MAX_AGY_WORKSPACE_CACHE = 100;
+
 export function readAgyLiveState(ctx?: AgentContext): { model?: string; effort?: string; mode?: string } {
   try {
     if (!existsSync(AGY_LOG_DIR)) return {};
@@ -1490,19 +1595,36 @@ export function readAgyLiveState(ctx?: AgentContext): { model?: string; effort?:
     if (targetPath) {
       const matched: { path: string; mtime: number }[] = [];
       for (const file of allFiles.slice(0, 30)) {
-        try {
-          const fd = openSync(file.path, "r");
-          const size = fstatSync(fd).size;
-          const readHeaderLen = Math.min(size, 32 * 1024);
-          const buf = Buffer.alloc(readHeaderLen);
-          readSync(fd, buf, 0, readHeaderLen, 0);
-          closeSync(fd);
-          const header = buf.toString("utf8", 0, readHeaderLen);
-          const workspaces = parseAgyLogWorkspace(header);
-          if (workspaces.some((ws) => isMatchingWorkspace(ws, targetPath))) {
-            matched.push(file);
+        let workspaces: string[] = [];
+        const cached = agyWorkspaceHeaderCache.get(file.path);
+        if (cached && cached.mtime === file.mtime) {
+          workspaces = cached.workspaces;
+        } else {
+          let fd: number | undefined;
+          try {
+            fd = openSync(file.path, "r");
+            const size = fstatSync(fd).size;
+            const readHeaderLen = Math.min(size, 32 * 1024);
+            const buf = Buffer.alloc(readHeaderLen);
+            readSync(fd, buf, 0, readHeaderLen, 0);
+            const header = buf.toString("utf8", 0, readHeaderLen);
+            workspaces = parseAgyLogWorkspace(header);
+            if (agyWorkspaceHeaderCache.size >= MAX_AGY_WORKSPACE_CACHE) {
+              const oldest = agyWorkspaceHeaderCache.keys().next().value;
+              if (oldest) agyWorkspaceHeaderCache.delete(oldest);
+            }
+            agyWorkspaceHeaderCache.set(file.path, { mtime: file.mtime, workspaces });
+          } catch {
+            workspaces = [];
+          } finally {
+            if (fd !== undefined) {
+              try { closeSync(fd); } catch {}
+            }
           }
-        } catch {}
+        }
+        if (workspaces.some((ws) => isMatchingWorkspace(ws, targetPath))) {
+          matched.push(file);
+        }
       }
       if (matched.length) {
         candidateFiles = matched;
@@ -1518,13 +1640,13 @@ export function readAgyLiveState(ctx?: AgentContext): { model?: string; effort?:
     let foundMode: string | undefined;
 
     for (const file of candidateFiles.slice(0, 5)) {
+      let fd: number | undefined;
       try {
-        const fd = openSync(file.path, "r");
+        fd = openSync(file.path, "r");
         const size = fstatSync(fd).size;
         const readLen = Math.min(size, 128 * 1024);
         const buf = Buffer.alloc(readLen);
         readSync(fd, buf, 0, readLen, Math.max(0, size - readLen));
-        closeSync(fd);
         const tail = buf.toString("utf8", 0, readLen);
 
         if (!foundModel) {
@@ -1543,7 +1665,12 @@ export function readAgyLiveState(ctx?: AgentContext): { model?: string; effort?:
         }
 
         if (foundModel && foundEffort && foundMode) break;
-      } catch {}
+      } catch {
+      } finally {
+        if (fd !== undefined) {
+          try { closeSync(fd); } catch {}
+        }
+      }
     }
 
     return { model: foundModel, effort: foundEffort, mode: foundMode };
