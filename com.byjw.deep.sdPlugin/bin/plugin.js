@@ -57029,7 +57029,7 @@ function buildDeck(input, opts = {}) {
   const page = Math.min(Math.max(0, opts.page ?? 0), pageCount - 1);
   const start = page * sessionCapacityPerPage;
   let pageItems = enriched.slice(start, start + sessionCapacityPerPage);
-  if (opts.pinnedSlots && page === 0) {
+  if (opts.pinnedSlots) {
     const pinned = opts.pinnedSlots;
     const stabilized = [];
     const usedItems = /* @__PURE__ */ new Set();
@@ -57878,10 +57878,15 @@ function getActivePinnedSlots() {
   pinnedSlots.clear();
   return void 0;
 }
-function pinSessionToSlot0(handle) {
+function holdCurrentSlotsInPlace() {
   pinnedSlots.clear();
   pinnedUntil = Date.now() + PINNED_SLOT_HOLD_MS;
-  pinnedSlots.set(handle, 0);
+  for (let i = 0; i < deck.slots.length; i++) {
+    const s = deck.slots[i];
+    if (s && !s.empty && !s.isPageButton && s.handle) {
+      pinnedSlots.set(s.handle, i);
+    }
+  }
 }
 var targetSwitchTimer = null;
 function switchTargetSoon(handle) {
@@ -59101,6 +59106,8 @@ var SlotAction = class extends SingletonAction {
     const b = idx >= 0 ? deck.slots[idx] : void 0;
     if (b && "isPageButton" in b && b.isPageButton) {
       currentPage = (currentPage + 1) % deck.pageCount;
+      pinnedSlots.clear();
+      pinnedUntil = 0;
       pollDebounced(10);
       return;
     }
@@ -59116,7 +59123,7 @@ var SlotAction = class extends SingletonAction {
       }
       setTarget(b.handle);
       lastNav = Date.now();
-      pinSessionToSlot0(b.handle);
+      holdCurrentSlotsInPlace();
       try {
         await switchTerminal(b.handle);
         await focusOrca();

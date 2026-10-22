@@ -734,7 +734,7 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
 
   // If pinned slot positions are provided (e.g. during interaction hold), stabilize pageItems
   // so every session already on the board keeps its exact slot index.
-  if (opts.pinnedSlots && page === 0) {
+  if (opts.pinnedSlots) {
     const pinned = opts.pinnedSlots;
     const stabilized: typeof pageItems = [];
     const usedItems = new Set<any>();

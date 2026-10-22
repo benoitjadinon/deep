@@ -317,8 +317,8 @@ async function focusOrca(): Promise<void> {
 let lastNav = 0;
 // Last resolved Orca active terminal handle — used to detect when the user changes agents in Orca UI
 let lastActiveHandle: string | undefined;
-// Interaction hold: when a session slot is tapped, pin it to slot 0 for 20s
-// so interacting with or replying to an agent does not reshuffle the tile out from under the user's finger.
+// Interaction hold: when a session slot is tapped, freeze visible slots in place for 20s
+// so interacting with or replying to an agent does not reshuffle tiles out from under the user's finger.
 let pinnedSlots = new Map<string, number>(); // handle -> slot index
 let pinnedUntil = 0;
 const PINNED_SLOT_HOLD_MS = 20_000;
@@ -329,10 +329,15 @@ function getActivePinnedSlots(): Map<string, number> | undefined {
   pinnedSlots.clear();
   return undefined;
 }
-function pinSessionToSlot0(handle: string): void {
+function holdCurrentSlotsInPlace(): void {
   pinnedSlots.clear();
   pinnedUntil = Date.now() + PINNED_SLOT_HOLD_MS;
-  pinnedSlots.set(handle, 0);
+  for (let i = 0; i < deck.slots.length; i++) {
+    const s = deck.slots[i];
+    if (s && !s.empty && !s.isPageButton && s.handle) {
+      pinnedSlots.set(s.handle, i);
+    }
+  }
 }
 // Debounce rapid target dial rotation (180ms)
 let targetSwitchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1703,6 +1708,8 @@ class SlotAction extends SingletonAction<SlotSettings> {
     const b: any = idx >= 0 ? deck.slots[idx] : undefined;
     if (b && "isPageButton" in b && b.isPageButton) {
       currentPage = (currentPage + 1) % deck.pageCount;
+      pinnedSlots.clear();
+      pinnedUntil = 0;
       pollDebounced(10);
       return;
     }
@@ -1723,7 +1730,7 @@ class SlotAction extends SingletonAction<SlotSettings> {
 
       setTarget(b.handle);
       lastNav = Date.now();
-      pinSessionToSlot0(b.handle);
+      holdCurrentSlotsInPlace();
       try {
         await switchTerminal(b.handle);
         await focusOrca();
