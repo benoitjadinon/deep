@@ -26,6 +26,7 @@ For the **target** session, three pieces are resolved independently every poll (
 | **opencode** | **live per model via `opencode models --verbose <provider>`** — parses the model's `variants` keys and prepends `default` (e.g. DeepSeek → `default low high max`); falls back to static `low medium high max` when the model has no variants | `/variants` picker (opens dialog, types the variant, Enter) | ✅ yes — this is what makes DeepSeek show `Default(low/high/max)` instead of a fake `medium` |
 | **agy** | static `low medium high`; the *current* effort is inferred from the model id suffix (`gemini-3.8-flash-high` → `high`) | `/effort <v>` | ⚠️ current value derived from model, option list static |
 | **hermes** | static `none minimal low medium high xhigh max` (naming is hermes's own `/reasoning` vocabulary) | `/reasoning <v>` | ❌ no |
+| **dsh-tui** | static standard ladder `low medium high xhigh max` (dsh-tui validates and falls back downward if route lacks tier) | `/effort <v>` | ❌ no (standard ladder) |
 | **pi** | **per model from `~/.pi/agent/models-store.json` `thinkingLevelMap`** — levels with a `null` value are filtered out; `reasoning: false` models → `["off"]`; models with no map → full `off minimal low medium high xhigh max` (pi clamps on apply) | `/thinking <v>` (applies directly; pi validates/clamps) | ✅ yes — the dial mirrors exactly what the model supports |
 
 ## Why DeepSeek has no `medium`
@@ -60,4 +61,4 @@ Possible future work if a host starts exposing per-model effort data:
 
 - Option resolution: `dialList("effort")` / `refreshEfforts()` in `src/plugin.ts`
 - Per-agent profiles: `getEfforts(modelId?)`, `getDiscoverVariantCmd()`, `parseDiscoveredEfforts()` in `src/agents.ts`
-- Live current value: `readCurrentState()` per agent (pi: `thinking_level_change` from session JSONL; opencode: `variant` map in `model.json`; claude: transcripts + `settings.json`; codex: `config.toml` `model_reasoning_effort`; agy: CLI logs; hermes: `config.yaml` `reasoning_effort`)
+- Live current value: `readCurrentState()` per agent (pi: `thinking_level_change` from session JSONL; opencode: `variant` map in `model.json`; claude: transcripts + `settings.json`; codex: `config.toml` `model_reasoning_effort`; agy: CLI logs; hermes: `config.yaml` `reasoning_effort`; dsh-tui: `~/.dsh-tui/effort.json`)

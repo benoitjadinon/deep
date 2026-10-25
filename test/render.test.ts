@@ -228,12 +228,20 @@ describe("agentBadge — per-tile agent badge", () => {
     expect(agentBadge("hermes-agent")).toContain('fill="#ffffff"');
     expect(agentBadge("pi")).toContain(">π</text>");
     expect(agentBadge("pi")).toContain('fill="#8abeb7"');
+    expect(agentBadge("dsh-tui")).toContain('fill="#4D6BFE"');
+    expect(agentBadge("dsh-tui")).toContain("M48.8354");
+    expect(agentBadge("dsh")).toContain('fill="#4D6BFE"');
+    expect(agentBadge("deepseek")).toContain('fill="#4D6BFE"');
+    expect(agentBadge("deepseek-cli")).toContain('fill="#4D6BFE"');
+    expect(agentBadge("dst")).toContain('fill="#4D6BFE"');
   });
   it("case insensitive", () => {
     expect(agentBadge("OpenCode")).toContain('fill="#F1ECEC"');
     expect(agentBadge("Claude")).toContain('fill="#D97757"');
     expect(agentBadge("Hermes")).toContain('fill="#ffffff"');
     expect(agentBadge("PI")).toContain(">π</text>");
+    expect(agentBadge("DSH-TUI")).toContain('fill="#4D6BFE"');
+    expect(agentBadge("DeepSeek")).toContain('fill="#4D6BFE"');
   });
   it("unknown types render gray pill with first 2 characters, or question mark", () => {
     const g = agentBadge("grok");
@@ -580,5 +588,15 @@ describe("modeColor — mode to color mapping", () => {
     expect(modeColor("plan", "opencode")).toBe("#3b82f6");
     expect(modeColor("review", "opencode")).toBe("#a855f7");
     expect(modeColor("debug", "opencode")).toBe("#f59e0b");
+  });
+
+  it("dsh-tui mode colors: workspace-write=emerald, read-only=cyan, danger-full-access/full=red, plan=blue, auto=purple, default=gray", () => {
+    expect(modeColor("workspace-write", "dsh-tui")).toBe("#10b981");
+    expect(modeColor("read-only", "dsh-tui")).toBe("#0ea5e9");
+    expect(modeColor("danger-full-access", "dsh-tui")).toBe("#ef4444");
+    expect(modeColor("full", "dsh-tui")).toBe("#ef4444");
+    expect(modeColor("plan", "dsh")).toBe("#3b82f6");
+    expect(modeColor("auto", "deepseek")).toBe("#a855f7");
+    expect(modeColor("default", "deepseek-cli")).toBe("#71717a");
   });
 });

@@ -1959,6 +1959,7 @@ function setupFileWatchers(): void {
     join(homedir(), ".gemini/antigravity-cli"),
     join(homedir(), ".pi/agent"),
     join(homedir(), ".pi/agent/sessions"),
+    join(homedir(), ".dsh-tui"),
   ];
   for (const dir of dirsToWatch) {
     try {

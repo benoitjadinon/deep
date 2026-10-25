@@ -74,6 +74,20 @@ import {
   CodexAgent,
   OpenCodeAgent,
   AgyAgent,
+  DshTuiAgent,
+  DSH_TUI_FALLBACK_MODELS,
+  DSH_TUI_EFFORTS,
+  DSH_TUI_MODES,
+  DSH_TUI_PERMISSIONS,
+  parseDshTuiModels,
+  parseDshTuiModelNames,
+  parseDshTuiModelPref,
+  parseDshTuiEffortPref,
+  parseDshTuiPermissionPref,
+  parseDshTuiModelRecents,
+  readDshTuiState,
+  getDshShiftTabSteps,
+  normalizeDshMode,
   formatQuotaDisplay,
   inferProviderFromModel,
   getProviderQuotaDisplay,
@@ -96,6 +110,11 @@ describe("agentFor / profileFor — agent type to abstract interface and profile
     expect(agentFor("hermes")).toBeInstanceOf(HermesAgent);
     expect(agentFor("hermes-cli")).toBeInstanceOf(HermesAgent);
     expect(agentFor("hermes-agent")).toBeInstanceOf(HermesAgent);
+    expect(agentFor("dsh-tui")).toBeInstanceOf(DshTuiAgent);
+    expect(agentFor("dsh")).toBeInstanceOf(DshTuiAgent);
+    expect(agentFor("deepseek")).toBeInstanceOf(DshTuiAgent);
+    expect(agentFor("deepseek-cli")).toBeInstanceOf(DshTuiAgent);
+    expect(agentFor("dst")).toBeInstanceOf(DshTuiAgent);
 
     expect(profileFor("claude").label).toBe("Claude");
     expect(profileFor("codex").label).toBe("Codex");
@@ -103,6 +122,8 @@ describe("agentFor / profileFor — agent type to abstract interface and profile
     expect(profileFor("opencode").label).toBe("OpenCode");
     expect(profileFor("agy").label).toBe("Agy");
     expect(profileFor("hermes").label).toBe("Hermes");
+    expect(profileFor("dsh-tui").label).toBe("dsh-tui");
+    expect(profileFor("deepseek").label).toBe("dsh-tui");
   });
   it("case and whitespace insensitive", () => {
     expect(agentFor(" Claude ")).toBeInstanceOf(ClaudeAgent);
@@ -163,6 +184,17 @@ describe("supported — per-agent capability gating", () => {
     expect(a.supports("effort")).toBe(true);
     expect(a.supports("mode")).toBe(false);
     expect(a.supports("permissions")).toBe(false);
+  });
+  it("dsh-tui: supports model, effort, mode, and permissions", () => {
+    const a = agentFor("dsh-tui");
+    expect(a.supports("model")).toBe(true);
+    expect(a.supports("effort")).toBe(true);
+    expect(a.supports("mode")).toBe(true);
+    expect(a.supports("permissions")).toBe(true);
+    expect(supported(a, "model")).toBe(true);
+    expect(supported(a, "effort")).toBe(true);
+    expect(supported(a, "mode")).toBe(true);
+    expect(supported(a, "permissions")).toBe(true);
   });
   it("unsupported agents are completely blocked", () => {
     const a = agentFor("grok");
@@ -316,6 +348,25 @@ describe("stepsFor — apply command sequences", () => {
     ]);
     expect(stepsFor(a, "mode", "plan")).toEqual([]);
   });
+  it("dsh-tui: model, effort, mode, and permissions steps", () => {
+    const a = agentFor("dsh-tui");
+    expect(stepsFor(a, "model", "deepseek-flash")).toEqual([
+      { text: "/model deepseek-flash", enter: true, delayMs: 120 },
+    ]);
+    expect(stepsFor(a, "effort", "high")).toEqual([
+      { text: "/effort high", enter: true, delayMs: 120 },
+    ]);
+    expect(stepsFor(a, "mode", "plan", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    expect(stepsFor(a, "mode", "full", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
+      { text: "\x1b[Z", enter: false, delayMs: 120 },
+    ]);
+    expect(stepsFor(a, "permissions", "danger-full-access")).toEqual([
+      { text: "/permission danger-full-access", enter: true, delayMs: 120 },
+    ]);
+  });
   it("unsupported agents return empty step sequence", () => {
     expect(stepsFor(agentFor("grok"), "model", "x")).toEqual([]);
     expect(stepsFor(agentFor("grok"), "mode", "plan")).toEqual([]);
@@ -326,6 +377,7 @@ describe("discoverModelCmd / parseModels — live model discovery", () => {
   it("opencode and agy have discovery CLI, claude/codex/unsupported do not", () => {
     expect(discoverModelCmd("opencode")).toEqual(["opencode", "models", "--verbose"]);
     expect(discoverModelCmd("agy")).toEqual(["agy", "models"]);
+    expect(discoverModelCmd("dsh-tui")).toEqual(["dsh-tui", "cli", "models", "list", "--json"]);
     expect(discoverModelCmd("claude")).toBeUndefined();
     expect(discoverModelCmd("codex")).toBeUndefined();
     expect(discoverModelCmd(undefined)).toBeUndefined();
@@ -1248,6 +1300,149 @@ some trailing noise
   });
 });
 
+describe("dsh-tui (DeepSeek CLI) parser and state reader", () => {
+  it("parseDshTuiModels: extracts models from JSON CLI output", () => {
+    const jsonOutput = JSON.stringify({
+      schemaVersion: 1,
+      type: "result",
+      ok: true,
+      data: [
+        {
+          provider: "deepseek-official",
+          models: [
+            { id: "deepseek-flash", name: "DeepSeek-V4.1-Flash" },
+            { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+          ],
+        },
+        { provider: "deepseek-account", models: [] },
+      ],
+    });
+    expect(parseDshTuiModels(jsonOutput)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
+  });
+
+  it("parseDshTuiModels: extracts models from raw array JSON and plain text lines", () => {
+    const rawArray = JSON.stringify([
+      {
+        provider: "deepseek-official",
+        models: [{ id: "deepseek-flash" }],
+      },
+    ]);
+    expect(parseDshTuiModels(rawArray)).toEqual(["deepseek-flash"]);
+
+    const textOutput = "deepseek-flash\ndeepseek-v4-pro # description\n\ndeepseek-flash\n";
+    expect(parseDshTuiModels(textOutput)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
+
+    expect(parseDshTuiModels("")).toEqual([]);
+    expect(parseDshTuiModels("   ")).toEqual([]);
+  });
+
+  it("parseDshTuiModelNames: extracts id -> name mapping", () => {
+    const jsonOutput = JSON.stringify({
+      data: [
+        {
+          provider: "deepseek-official",
+          models: [
+            { id: "deepseek-flash", name: "DeepSeek-V4.1-Flash" },
+          ],
+        },
+      ],
+    });
+    const names = parseDshTuiModelNames(jsonOutput);
+    expect(names["deepseek-flash"]).toBe("DeepSeek-V4.1-Flash");
+    expect(names["deepseek-official/deepseek-flash"]).toBe("DeepSeek-V4.1-Flash");
+  });
+
+  it("parseDshTuiModelPref: parses persisted model route", () => {
+    expect(parseDshTuiModelPref('{"provider":"deepseek-official","model":"deepseek-flash"}')).toEqual({
+      provider: "deepseek-official",
+      model: "deepseek-flash",
+    });
+    expect(parseDshTuiModelPref('{"model":"deepseek-flash"}')).toEqual({
+      provider: undefined,
+      model: "deepseek-flash",
+    });
+    expect(parseDshTuiModelPref("invalid json")).toBeUndefined();
+    expect(parseDshTuiModelPref("{}")).toBeUndefined();
+  });
+
+  it("parseDshTuiEffortPref: parses persisted effort", () => {
+    expect(parseDshTuiEffortPref('{"effort":"high"}')).toBe("high");
+    expect(parseDshTuiEffortPref('{"effort":""}')).toBeUndefined();
+    expect(parseDshTuiEffortPref("{}")).toBeUndefined();
+    expect(parseDshTuiEffortPref("invalid")).toBeUndefined();
+  });
+
+  it("parseDshTuiPermissionPref: parses persisted permission", () => {
+    expect(parseDshTuiPermissionPref('{"permission":"danger-full-access"}')).toBe("danger-full-access");
+    expect(parseDshTuiPermissionPref('{"permission":"workspace-write"}')).toBe("workspace-write");
+    expect(parseDshTuiPermissionPref("{}")).toBeUndefined();
+  });
+
+  it("parseDshTuiModelRecents: parses recent models list", () => {
+    const json = JSON.stringify({
+      models: [
+        { provider: "deepseek-official", id: "deepseek-flash" },
+        "deepseek-v4-pro",
+      ],
+    });
+    expect(parseDshTuiModelRecents(json)).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
+    expect(parseDshTuiModelRecents("{}")).toEqual([]);
+  });
+
+  it("normalizeDshMode: maps permission presets and aliases to modes", () => {
+    expect(normalizeDshMode("workspace-write")).toBe("default");
+    expect(normalizeDshMode("default")).toBe("default");
+    expect(normalizeDshMode("read-only")).toBe("plan");
+    expect(normalizeDshMode("plan")).toBe("plan");
+    expect(normalizeDshMode("danger-full-access")).toBe("full");
+    expect(normalizeDshMode("full")).toBe("full");
+    expect(normalizeDshMode(undefined)).toBe("default");
+  });
+
+  it("getDshShiftTabSteps: cycles through default -> plan -> full", () => {
+    expect(getDshShiftTabSteps("plan", "default")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    expect(getDshShiftTabSteps("full", "plan")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    expect(getDshShiftTabSteps("default", "full")).toEqual([
+      { text: "\x1b[Z", enter: false },
+    ]);
+    expect(getDshShiftTabSteps("default", "default")).toEqual([]);
+  });
+
+  it("readDshTuiState: reads state files from directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentdeck-dsh-test-"));
+    try {
+      writeFileSync(join(dir, "model.json"), JSON.stringify({ provider: "deepseek-official", model: "deepseek-flash" }));
+      writeFileSync(join(dir, "effort.json"), JSON.stringify({ effort: "xhigh" }));
+      writeFileSync(join(dir, "permission.json"), JSON.stringify({ permission: "danger-full-access" }));
+      writeFileSync(join(dir, "model-recents.json"), JSON.stringify({ models: [{ id: "deepseek-flash" }] }));
+
+      const state = readDshTuiState(undefined, dir);
+      expect(state.model).toBe("deepseek-flash");
+      expect(state.effort).toBe("xhigh");
+      expect(state.mode).toBe("full");
+      expect(state.permissions).toBe("danger-full-access");
+      expect(state.recentModels).toEqual(["deepseek-flash"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("DshTuiAgent: models, efforts, modes, permissions fallback", () => {
+    const a = agentFor("dsh-tui");
+    expect(a).toBeInstanceOf(DshTuiAgent);
+    expect(a.agentType).toBe("dsh-tui");
+    expect(a.label).toBe("dsh-tui");
+    expect(a.getEfforts()).toEqual([...DSH_TUI_EFFORTS]);
+    expect(a.getModes()).toEqual([...DSH_TUI_MODES]);
+    expect(a.getPermissions()).toEqual([...DSH_TUI_PERMISSIONS]);
+    expect(a.getModels()).toEqual(expect.arrayContaining([...DSH_TUI_FALLBACK_MODELS]));
+  });
+});
+
 describe("formatQuotaDisplay & getQuotaDisplay — agent quota extraction", () => {
   it("providerKind: distinguishes single-provider vs multi-provider agents", () => {
     expect(agentFor("claude").providerKind).toBe("single");
@@ -1257,6 +1452,7 @@ describe("formatQuotaDisplay & getQuotaDisplay — agent quota extraction", () =
     expect(agentFor("opencode").providerKind).toBe("multi");
     expect(agentFor("pi").providerKind).toBe("multi");
     expect(agentFor("hermes").providerKind).toBe("multi");
+    expect(agentFor("dsh-tui").providerKind).toBe("multi");
     expect(new UnsupportedAgent().providerKind).toBe("single");
   });
 
@@ -1279,6 +1475,11 @@ describe("formatQuotaDisplay & getQuotaDisplay — agent quota extraction", () =
     expect(inferProviderFromModel("opencode-go/claude-sonnet-4-6")).toBe("opencode-go");
     expect(inferProviderFromModel("xai/grok-2")).toBe("grok");
     expect(inferProviderFromModel("cursor/composer")).toBe("cursor");
+    expect(inferProviderFromModel("deepseek-official/deepseek-flash")).toBe("deepseek");
+    expect(inferProviderFromModel("deepseek/deepseek-v4-flash-0731")).toBe("deepseek");
+    expect(inferProviderFromModel("dsh/deepseek-flash")).toBe("deepseek");
+    expect(inferProviderFromModel("deepseek-flash")).toBe("deepseek");
+    expect(inferProviderFromModel("dsh-tui")).toBe("deepseek");
 
     expect(inferProviderFromModel("lmstudio/gemma-4-e4b")).toBe("other");
     expect(inferProviderFromModel("ollama/qwen3")).toBe("other");
@@ -1423,6 +1624,22 @@ describe("formatQuotaDisplay & getQuotaDisplay — agent quota extraction", () =
     expect(agent.getQuotaDisplay(fullRateLimits, undefined, "anthropic/claude-sonnet-4-6")).toBe("39% · 1:59 PM · wk 7%");
     expect(agent.getQuotaDisplay(fullRateLimits, undefined, "openai/gpt-5.6-luna")).toBe("17% · Sat 7:48 PM (+2cr)");
     expect(agent.getQuotaDisplay(fullRateLimits, undefined, "deepseek/deepseek-v4-flash-0731")).toBeUndefined();
+  });
+
+  it("DshTuiAgent.getQuotaDisplay: extracts deepseek quota when present", () => {
+    const agent = new DshTuiAgent();
+    expect(agent.getQuotaDisplay(fullRateLimits, undefined, "deepseek-flash")).toBeUndefined();
+
+    const withDeepSeek = {
+      ...fullRateLimits,
+      deepseek: {
+        provider: "deepseek",
+        session: { usedPercent: 42, resetDescription: "10:00 PM" },
+        weekly: { usedPercent: 15 },
+        status: "ok" as const,
+      },
+    };
+    expect(agent.getQuotaDisplay(withDeepSeek, undefined, "deepseek-flash")).toBe("42% · 10:00 PM · wk 15%");
   });
 
   it("UnsupportedAgent returns undefined", () => {

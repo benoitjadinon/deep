@@ -66,6 +66,7 @@ export interface OrcaRateLimits {
   minimax?: ProviderRateLimit | null;
   grok?: ProviderRateLimit | null;
   cursor?: ProviderRateLimit | null;
+  deepseek?: ProviderRateLimit | null;
   [key: string]: any;
 }
 
@@ -304,7 +305,7 @@ export function readLocalAgyQuota(
 }
 
 export type AgentProviderKind = "single" | "multi";
-export type ProviderId = "claude" | "codex" | "gemini" | "antigravity" | "opencode-go" | "minimax" | "grok" | "cursor" | "other";
+export type ProviderId = "claude" | "codex" | "gemini" | "antigravity" | "opencode-go" | "minimax" | "grok" | "cursor" | "deepseek" | "other";
 
 /** Infers underlying provider from model string (e.g. 'anthropic/claude-sonnet-4-6' -> 'claude') */
 export function inferProviderFromModel(modelId?: string): ProviderId {
@@ -333,6 +334,14 @@ export function inferProviderFromModel(modelId?: string): ProviderId {
   if (m.startsWith("cursor/")) {
     return "cursor";
   }
+  if (
+    m.startsWith("deepseek/") ||
+    m.startsWith("deepseek-official/") ||
+    m.startsWith("deepseek-account/") ||
+    m.startsWith("dsh/")
+  ) {
+    return "deepseek";
+  }
   if (m.startsWith("lmstudio/") || m.startsWith("ollama/") || m.startsWith("local/")) {
     return "other";
   }
@@ -358,6 +367,9 @@ export function inferProviderFromModel(modelId?: string): ProviderId {
   }
   if (m.includes("grok-") || m.includes("grok")) {
     return "grok";
+  }
+  if (m.includes("deepseek") || m.startsWith("dsh-")) {
+    return "deepseek";
   }
 
   return "other";
@@ -409,6 +421,12 @@ export function getProviderQuotaDisplay(provider: ProviderId, rateLimits?: OrcaR
     const cur = rateLimits.cursor;
     if (!cur || cur.status !== "ok") return undefined;
     return formatQuotaDisplay(cur.session, { label: "wk", window: cur.weekly });
+  }
+
+  if (provider === "deepseek") {
+    const deepseek = rateLimits.deepseek;
+    if (!deepseek || deepseek.status !== "ok") return undefined;
+    return formatQuotaDisplay(deepseek.session, { label: "wk", window: deepseek.weekly });
   }
 
   return undefined;
@@ -2433,6 +2451,310 @@ export class PiAgent extends AbstractAgent {
   }
 }
 
+// ============================================================================
+// dsh-tui (DeepSeek CLI) implementation
+// ============================================================================
+
+export const DSH_TUI_DIR = join(homedir(), ".dsh-tui");
+export const DSH_TUI_MODEL_PREF = join(DSH_TUI_DIR, "model.json");
+export const DSH_TUI_MODEL_RECENTS = join(DSH_TUI_DIR, "model-recents.json");
+export const DSH_TUI_EFFORT_PREF = join(DSH_TUI_DIR, "effort.json");
+export const DSH_TUI_PERMISSION_PREF = join(DSH_TUI_DIR, "permission.json");
+export const DSH_TUI_SESSION_INDEX = join(DSH_TUI_DIR, "session-index.json");
+
+export const DSH_TUI_FALLBACK_MODELS = [
+  "deepseek-flash",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+  "deepseek-v4-flash-vision-exp",
+  "deepseek-chat",
+  "deepseek-reasoner",
+];
+
+export const DSH_TUI_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+export const DSH_TUI_MODES = ["default", "plan", "full"];
+export const DSH_TUI_PERMISSIONS = ["workspace-write", "read-only", "danger-full-access"];
+
+export function normalizeDshMode(mode?: string | null): string {
+  if (!mode) return "default";
+  const m = mode.trim().toLowerCase();
+  if (m === "plan" || m === "read-only") return "plan";
+  if (m === "full" || m === "danger-full-access") return "full";
+  if (m === "default" || m === "workspace-write") return "default";
+  return m;
+}
+
+export function getDshShiftTabSteps(toMode: string, fromMode?: string, modeList?: string[]): ApplyStep[] {
+  const list = modeList && modeList.length ? modeList : (DSH_TUI_MODES as unknown as string[]);
+  const target = normalizeDshMode(toMode);
+  const current = normalizeDshMode(fromMode);
+  const targetIdx = list.indexOf(target);
+  const currentIdx = list.indexOf(current);
+  if (targetIdx < 0) {
+    return [];
+  }
+  const fromIdx = currentIdx < 0 ? 0 : currentIdx;
+  const count = (targetIdx - fromIdx + list.length) % list.length;
+  if (count === 0) return [];
+  const steps: ApplyStep[] = [];
+  for (let i = 0; i < count; i++) {
+    steps.push({
+      text: "\x1b[Z",
+      enter: false,
+      ...(i > 0 ? { delayMs: 120 } : {}),
+    });
+  }
+  return steps;
+}
+
+export function parseDshTuiModels(stdout: string): string[] {
+  if (!stdout || !stdout.trim()) return [];
+  const trimmed = stdout.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const data = Array.isArray(parsed) ? parsed : Array.isArray(parsed.data) ? parsed.data : [];
+      const result: string[] = [];
+      for (const item of data) {
+        if (Array.isArray(item.models)) {
+          for (const m of item.models) {
+            const id = typeof m === "string" ? m : m?.id;
+            if (id && !result.includes(id)) {
+              result.push(id);
+            }
+          }
+        } else if (item.id && !result.includes(item.id)) {
+          result.push(item.id);
+        }
+      }
+      if (result.length) return result;
+    } catch {}
+  }
+
+  const lines = trimmed.split("\n").map(l => l.trim()).filter(Boolean);
+  const result: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("#") || line.startsWith("//")) continue;
+    const id = line.split(/\s+/)[0];
+    if (id && !result.includes(id)) {
+      result.push(id);
+    }
+  }
+  return result;
+}
+
+export function parseDshTuiModelNames(stdout: string): Record<string, string> {
+  const names: Record<string, string> = {};
+  if (!stdout || !stdout.trim()) return names;
+  const trimmed = stdout.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const data = Array.isArray(parsed) ? parsed : Array.isArray(parsed.data) ? parsed.data : [];
+      for (const item of data) {
+        const provider = item.provider;
+        if (Array.isArray(item.models)) {
+          for (const m of item.models) {
+            if (m && typeof m === "object" && m.id) {
+              const name = m.name || m.id;
+              names[m.id] = name;
+              if (provider) {
+                names[`${provider}/${m.id}`] = name;
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+  return names;
+}
+
+export function parseDshTuiModelPref(text: string): { provider?: string; model?: string } | undefined {
+  try {
+    const data = JSON.parse(text);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+    const model = typeof data.model === "string" && data.model ? data.model : undefined;
+    const provider = typeof data.provider === "string" && data.provider ? data.provider : undefined;
+    if (!model && !provider) return undefined;
+    return { provider, model };
+  } catch {
+    return undefined;
+  }
+}
+
+export function parseDshTuiEffortPref(text: string): string | undefined {
+  try {
+    const data = JSON.parse(text);
+    return typeof data?.effort === "string" && data.effort ? data.effort : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function parseDshTuiPermissionPref(text: string): string | undefined {
+  try {
+    const data = JSON.parse(text);
+    return typeof data?.permission === "string" && data.permission ? data.permission : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function parseDshTuiModelRecents(text: string): string[] {
+  try {
+    const data = JSON.parse(text);
+    if (Array.isArray(data?.models)) {
+      return data.models
+        .map((m: any) => (typeof m === "string" ? m : m?.id))
+        .filter((id: any): id is string => typeof id === "string" && id.length > 0);
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+export function readDshTuiState(ctx?: AgentContext, baseDir = DSH_TUI_DIR): AgentStateSnapshot {
+  let model: string | undefined;
+  let effort: string | undefined;
+  let permissions: string | undefined;
+  let recentModels: string[] | undefined;
+
+  const modelPrefFile = join(baseDir, "model.json");
+  if (existsSync(modelPrefFile)) {
+    try {
+      const pref = parseDshTuiModelPref(readFileSync(modelPrefFile, "utf8"));
+      if (pref?.model) {
+        model = pref.model;
+      }
+    } catch {}
+  }
+
+  const recentsFile = join(baseDir, "model-recents.json");
+  if (existsSync(recentsFile)) {
+    try {
+      const recents = parseDshTuiModelRecents(readFileSync(recentsFile, "utf8"));
+      if (recents.length) {
+        recentModels = recents;
+        if (!model) {
+          model = recents[0];
+        }
+      }
+    } catch {}
+  }
+
+  const effortFile = join(baseDir, "effort.json");
+  if (existsSync(effortFile)) {
+    try {
+      effort = parseDshTuiEffortPref(readFileSync(effortFile, "utf8"));
+    } catch {}
+  }
+
+  const permFile = join(baseDir, "permission.json");
+  if (existsSync(permFile)) {
+    try {
+      permissions = parseDshTuiPermissionPref(readFileSync(permFile, "utf8"));
+    } catch {}
+  }
+
+  let mode: string | undefined;
+  if (permissions) {
+    if (permissions === "danger-full-access") mode = "full";
+    else if (permissions === "read-only") mode = "plan";
+    else if (permissions === "workspace-write") mode = "default";
+    else mode = permissions;
+  }
+
+  return {
+    model: model || ctx?.model,
+    effort: effort || ctx?.effort,
+    mode: mode || ctx?.mode,
+    permissions,
+    recentModels,
+  };
+}
+
+export class DshTuiAgent extends AbstractAgent {
+  readonly agentType = "dsh-tui";
+  readonly label = "dsh-tui";
+  override readonly providerKind: AgentProviderKind = "multi";
+  private modelNames: Record<string, string> = {};
+
+  supports(kind: ControlKind): boolean {
+    return kind === "model" || kind === "effort" || kind === "mode" || kind === "permissions";
+  }
+
+  override getModels(): string[] {
+    const st = this.readCurrentState();
+    if (st.recentModels && st.recentModels.length) {
+      const combined = [...st.recentModels];
+      for (const m of DSH_TUI_FALLBACK_MODELS) {
+        if (!combined.includes(m)) combined.push(m);
+      }
+      return combined;
+    }
+    return [...DSH_TUI_FALLBACK_MODELS];
+  }
+
+  override getEfforts(): string[] {
+    return [...DSH_TUI_EFFORTS];
+  }
+
+  override getModes(): string[] {
+    return [...DSH_TUI_MODES];
+  }
+
+  override getPermissions(): string[] {
+    return [...DSH_TUI_PERMISSIONS];
+  }
+
+  getApplySteps(kind: ControlKind, value: string, fromValue?: string, modeList?: string[]): ApplyStep[] {
+    if (kind === "model") {
+      return slash("/model", value);
+    }
+    if (kind === "effort") {
+      return slash("/effort", value);
+    }
+    if (kind === "mode") {
+      return getDshShiftTabSteps(value, fromValue, modeList || this.getModes());
+    }
+    if (kind === "permissions") {
+      return slash("/permission", value);
+    }
+    return [];
+  }
+
+  override getDiscoverModelCmd(): string[] | undefined {
+    return ["dsh-tui", "cli", "models", "list", "--json"];
+  }
+
+  override parseDiscoveredModels(stdout: string): string[] {
+    return parseDshTuiModels(stdout);
+  }
+
+  override parseDiscoveredModelNames(stdout: string): Record<string, string> {
+    return parseDshTuiModelNames(stdout);
+  }
+
+  override setModelNames(names: Record<string, string>): void {
+    this.modelNames = { ...this.modelNames, ...names };
+  }
+
+  override readCurrentState(ctx?: AgentContext): AgentStateSnapshot {
+    return readDshTuiState(ctx);
+  }
+
+  override getQuotaDisplay(rateLimits?: OrcaRateLimits | null, ctx?: AgentContext, modelId?: string): string | undefined {
+    const targetModel = modelId || ctx?.model || this.readCurrentState(ctx).model;
+    const provider = inferProviderFromModel(targetModel);
+    if (provider !== "other") {
+      return getProviderQuotaDisplay(provider, rateLimits);
+    }
+    return undefined;
+  }
+}
+
 // Unsupported agent fallback
 export class UnsupportedAgent extends AbstractAgent {
   readonly agentType = "";
@@ -2461,6 +2783,11 @@ const AGENT_INSTANCES: Record<string, AbstractAgent> = {
   "hermes-agent": new HermesAgent(),
   pi: new PiAgent(),
   "pi-cli": new PiAgent(),
+  "dsh-tui": new DshTuiAgent(),
+  dsh: new DshTuiAgent(),
+  deepseek: new DshTuiAgent(),
+  "deepseek-cli": new DshTuiAgent(),
+  dst: new DshTuiAgent(),
 };
 
 export const UNSUPPORTED_AGENT = new UnsupportedAgent();
@@ -2529,6 +2856,11 @@ export const AGENTS: Record<string, AgentProfile> = {
   "hermes-agent": profileFor("hermes-agent"),
   pi: profileFor("pi"),
   "pi-cli": profileFor("pi-cli"),
+  "dsh-tui": profileFor("dsh-tui"),
+  dsh: profileFor("dsh"),
+  deepseek: profileFor("deepseek"),
+  "deepseek-cli": profileFor("deepseek-cli"),
+  dst: profileFor("dst"),
 };
 
 export function supported(agent: AbstractAgent | AgentProfile, kind: ControlKind): boolean {
