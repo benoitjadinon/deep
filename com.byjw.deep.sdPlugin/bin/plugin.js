@@ -55041,13 +55041,13 @@ function readClaudeState(ctx) {
           mtime: (0, import_node_fs4.statSync)((0, import_node_path7.join)(projDir, f)).mtimeMs
         })).sort((a, b) => b.mtime - a.mtime);
         for (const item of jsonlFiles.slice(0, 3)) {
+          let fd;
           try {
-            const fd = (0, import_node_fs4.openSync)(item.path, "r");
+            fd = (0, import_node_fs4.openSync)(item.path, "r");
             const size = (0, import_node_fs4.fstatSync)(fd).size;
             const readLen = Math.min(size, 64 * 1024);
             const buf = Buffer.alloc(readLen);
             (0, import_node_fs4.readSync)(fd, buf, 0, readLen, Math.max(0, size - readLen));
-            (0, import_node_fs4.closeSync)(fd);
             const tail = buf.toString("utf8", 0, readLen);
             const lines = tail.split("\n");
             for (let i = lines.length - 1; i >= 0; i--) {
@@ -55089,6 +55089,13 @@ function readClaudeState(ctx) {
               if (state.model && state.mode && state.effort) break;
             }
           } catch {
+          } finally {
+            if (fd !== void 0) {
+              try {
+                (0, import_node_fs4.closeSync)(fd);
+              } catch {
+              }
+            }
           }
           if (state.model && state.mode && state.effort) break;
         }
@@ -55204,13 +55211,95 @@ function getCodexShiftTabSteps(toMode, fromMode) {
   if (target === current) return [];
   return [{ text: "\x1B[Z", enter: false }];
 }
+function getCodexModelSteps(value, modelList) {
+  const models = modelList && modelList.length ? modelList : CODEX_DEFAULT_MODELS;
+  const idx = models.findIndex(
+    (m) => m.toLowerCase() === value.toLowerCase() || m.toLowerCase().includes(value.toLowerCase()) || value.toLowerCase().includes(m.toLowerCase())
+  );
+  const num = idx >= 0 && idx < 9 ? String(idx + 1) : "1";
+  return [
+    { text: "/model", enter: false, delayMs: 150 },
+    { text: "\r", enter: false, delayMs: 350 },
+    { text: num, enter: false, delayMs: 300 },
+    { text: "\r", enter: false, delayMs: 150 }
+  ];
+}
+function getCodexEffortSteps(value, fromValue) {
+  const normalize = (e) => {
+    if (!e) return 1;
+    const lower = e.toLowerCase();
+    if (lower === "none" || lower === "low") return 0;
+    if (lower === "medium") return 1;
+    if (lower === "high") return 2;
+    if (lower === "xhigh") return 3;
+    if (lower === "max" || lower === "ultra") return 4;
+    return 1;
+  };
+  const toIdx = normalize(value);
+  if (fromValue) {
+    const fromIdx = normalize(fromValue);
+    const diff = toIdx - fromIdx;
+    if (diff > 0) {
+      return Array.from({ length: diff }, () => ({
+        text: "\x1B.",
+        enter: false,
+        delayMs: 80
+      }));
+    } else if (diff < 0) {
+      return Array.from({ length: Math.abs(diff) }, () => ({
+        text: "\x1B,",
+        enter: false,
+        delayMs: 80
+      }));
+    }
+    return [];
+  }
+  const steps = [];
+  for (let i = 0; i < 4; i++) {
+    steps.push({ text: "\x1B,", enter: false, delayMs: 50 });
+  }
+  for (let i = 0; i < toIdx; i++) {
+    steps.push({ text: "\x1B.", enter: false, delayMs: 80 });
+  }
+  return steps;
+}
+function getCodexPermissionsSteps(value) {
+  const lower = value.toLowerCase();
+  const isFull = lower.includes("danger") || lower.includes("full");
+  const isRead = lower.includes("read") || lower.includes("only");
+  const num = isRead ? "4" : isFull ? "3" : "1";
+  const steps = [
+    { text: "/permissions", enter: false, delayMs: 150 },
+    { text: "\r", enter: false, delayMs: 350 },
+    { text: num, enter: false, delayMs: 250 }
+  ];
+  if (isFull) {
+    steps.push({ text: "1", enter: false, delayMs: 200 });
+  }
+  return steps;
+}
 function parseCodexModeFromText(text) {
   if (!text) return void 0;
-  const t = text.toLowerCase();
-  if (t.includes("[plan") || t.includes("plan mode") || t.includes("mode: plan") || t.includes("plan]")) {
-    return "plan";
+  const clean = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+  const lines = clean.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return void 0;
+  const tail = lines.slice(-4);
+  const hasFooter = tail.some(
+    (l) => l.includes("\xB7") || /\? for shortcuts/i.test(l) || /ask codex/i.test(l)
+  );
+  if (!hasFooter) return void 0;
+  for (const l of tail) {
+    if (l.startsWith("\u203A") || l.startsWith(">")) {
+      if (/^[›>]\s*\[plan\]/i.test(l)) {
+        return "plan";
+      }
+      continue;
+    }
+    if (/\bplan mode\b/i.test(l) || /\[plan\]/i.test(l) || /\bmode:\s*plan\b/i.test(l)) {
+      return "plan";
+    }
   }
-  return void 0;
+  return "normal";
 }
 function parseCodexConfig(tomlText) {
   let model;
@@ -55261,7 +55350,7 @@ function readCodexState(ctx) {
     if (ctx?.preview) {
       mode = parseCodexModeFromText(ctx.preview);
     }
-    return { model, effort, mode: mode || "normal", permissions };
+    return { model, effort, mode, permissions };
   } catch {
   }
   return {};
@@ -55301,16 +55390,16 @@ var CodexAgent = class extends AbstractAgent {
   }
   getApplySteps(kind, value, fromValue) {
     if (kind === "model") {
-      return slash("/model", value);
+      return getCodexModelSteps(value, this.getModels());
     }
     if (kind === "effort") {
-      return slash("/effort", value);
+      return getCodexEffortSteps(value, fromValue);
     }
     if (kind === "mode") {
       return getCodexShiftTabSteps(value, fromValue);
     }
     if (kind === "permissions") {
-      return slash("/permissions", value);
+      return getCodexPermissionsSteps(value);
     }
     return [];
   }
@@ -55608,28 +55697,81 @@ function parseAgyLogMode(text) {
   }
   return void 0;
 }
+var agyWorkspaceHeaderCache = /* @__PURE__ */ new Map();
+var MAX_AGY_WORKSPACE_CACHE = 100;
+var recentAgyFilesCache = null;
+var RECENT_AGY_CACHE_TTL_MS = 2500;
+var agyLiveStateCache = /* @__PURE__ */ new Map();
+var AGY_LIVE_STATE_CACHE_TTL_MS = 1500;
+function getRecentAgyFiles() {
+  const now = Date.now();
+  if (recentAgyFilesCache && now - recentAgyFilesCache.at < RECENT_AGY_CACHE_TTL_MS) {
+    return recentAgyFilesCache.files;
+  }
+  if (!(0, import_node_fs4.existsSync)(AGY_LOG_DIR)) return [];
+  try {
+    const names = (0, import_node_fs4.readdirSync)(AGY_LOG_DIR).filter((f) => f.startsWith("cli-") && f.endsWith(".log")).sort((a, b) => b.localeCompare(a)).slice(0, 30);
+    const files = names.map((f) => {
+      const p = (0, import_node_path7.join)(AGY_LOG_DIR, f);
+      let mtime = 0;
+      try {
+        mtime = (0, import_node_fs4.statSync)(p).mtimeMs;
+      } catch {
+      }
+      return { path: p, mtime };
+    });
+    recentAgyFilesCache = { at: now, files };
+    return files;
+  } catch {
+    return [];
+  }
+}
 function readAgyLiveState(ctx) {
   try {
-    if (!(0, import_node_fs4.existsSync)(AGY_LOG_DIR)) return {};
-    const allFiles = (0, import_node_fs4.readdirSync)(AGY_LOG_DIR).filter((f) => f.startsWith("cli-") && f.endsWith(".log")).map((f) => ({ path: (0, import_node_path7.join)(AGY_LOG_DIR, f), mtime: (0, import_node_fs4.statSync)((0, import_node_path7.join)(AGY_LOG_DIR, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
+    const cacheKey = ctx?.worktreePath ?? "__global__";
+    const cachedLive = agyLiveStateCache.get(cacheKey);
+    if (cachedLive && Date.now() - cachedLive.at < AGY_LIVE_STATE_CACHE_TTL_MS) {
+      return cachedLive.state;
+    }
+    const allFiles = getRecentAgyFiles();
+    if (!allFiles.length) return {};
     const targetPath = ctx?.worktreePath;
     let candidateFiles = [];
     if (targetPath) {
       const matched = [];
       for (const file2 of allFiles.slice(0, 30)) {
-        try {
-          const fd = (0, import_node_fs4.openSync)(file2.path, "r");
-          const size = (0, import_node_fs4.fstatSync)(fd).size;
-          const readHeaderLen = Math.min(size, 32 * 1024);
-          const buf = Buffer.alloc(readHeaderLen);
-          (0, import_node_fs4.readSync)(fd, buf, 0, readHeaderLen, 0);
-          (0, import_node_fs4.closeSync)(fd);
-          const header = buf.toString("utf8", 0, readHeaderLen);
-          const workspaces = parseAgyLogWorkspace(header);
-          if (workspaces.some((ws) => isMatchingWorkspace(ws, targetPath))) {
-            matched.push(file2);
+        let workspaces = [];
+        const cached2 = agyWorkspaceHeaderCache.get(file2.path);
+        if (cached2 && cached2.mtime === file2.mtime) {
+          workspaces = cached2.workspaces;
+        } else {
+          let fd;
+          try {
+            fd = (0, import_node_fs4.openSync)(file2.path, "r");
+            const size = (0, import_node_fs4.fstatSync)(fd).size;
+            const readHeaderLen = Math.min(size, 32 * 1024);
+            const buf = Buffer.alloc(readHeaderLen);
+            (0, import_node_fs4.readSync)(fd, buf, 0, readHeaderLen, 0);
+            const header = buf.toString("utf8", 0, readHeaderLen);
+            workspaces = parseAgyLogWorkspace(header);
+            if (agyWorkspaceHeaderCache.size >= MAX_AGY_WORKSPACE_CACHE) {
+              const oldest = agyWorkspaceHeaderCache.keys().next().value;
+              if (oldest) agyWorkspaceHeaderCache.delete(oldest);
+            }
+            agyWorkspaceHeaderCache.set(file2.path, { mtime: file2.mtime, workspaces });
+          } catch {
+            workspaces = [];
+          } finally {
+            if (fd !== void 0) {
+              try {
+                (0, import_node_fs4.closeSync)(fd);
+              } catch {
+              }
+            }
           }
-        } catch {
+        }
+        if (workspaces.some((ws) => isMatchingWorkspace(ws, targetPath))) {
+          matched.push(file2);
         }
       }
       if (matched.length) {
@@ -55643,13 +55785,13 @@ function readAgyLiveState(ctx) {
     let foundEffort;
     let foundMode;
     for (const file2 of candidateFiles.slice(0, 5)) {
+      let fd;
       try {
-        const fd = (0, import_node_fs4.openSync)(file2.path, "r");
+        fd = (0, import_node_fs4.openSync)(file2.path, "r");
         const size = (0, import_node_fs4.fstatSync)(fd).size;
         const readLen = Math.min(size, 128 * 1024);
         const buf = Buffer.alloc(readLen);
         (0, import_node_fs4.readSync)(fd, buf, 0, readLen, Math.max(0, size - readLen));
-        (0, import_node_fs4.closeSync)(fd);
         const tail = buf.toString("utf8", 0, readLen);
         if (!foundModel) {
           foundModel = parseAgyLogModel(tail);
@@ -55667,9 +55809,18 @@ function readAgyLiveState(ctx) {
         }
         if (foundModel && foundEffort && foundMode) break;
       } catch {
+      } finally {
+        if (fd !== void 0) {
+          try {
+            (0, import_node_fs4.closeSync)(fd);
+          } catch {
+          }
+        }
       }
     }
-    return { model: foundModel, effort: foundEffort, mode: foundMode };
+    const result = { model: foundModel, effort: foundEffort, mode: foundMode };
+    agyLiveStateCache.set(cacheKey, { at: Date.now(), state: result });
+    return result;
   } catch {
     return {};
   }
@@ -56451,6 +56602,14 @@ var import_node_fs5 = require("node:fs");
 var import_node_path8 = require("node:path");
 var import_node_os2 = require("node:os");
 var memCache = /* @__PURE__ */ new Map();
+var MAX_MEM_CACHE_ENTRIES = 100;
+function setMemCache(key, res) {
+  if (memCache.size >= MAX_MEM_CACHE_ENTRIES) {
+    const oldest = memCache.keys().next().value;
+    if (oldest) memCache.delete(oldest);
+  }
+  memCache.set(key, res);
+}
 var inflightFetches = /* @__PURE__ */ new Map();
 var CACHE_DIR = (0, import_node_path8.join)((0, import_node_os2.tmpdir)(), "agentdeck-icons");
 function ensureCacheDir() {
@@ -56477,7 +56636,7 @@ function resolveLucideSvg(name) {
   if (!raw) return void 0;
   const inner = raw.replace(/<svg[^>]*>/i, "").replace(/<\/svg>/i, "").trim();
   const res = { lucide: inner };
-  memCache.set(key, res);
+  setMemCache(key, res);
   return inner;
 }
 function resolveLocalIconUri(repoPath, relPath) {
@@ -56492,7 +56651,7 @@ function resolveLocalIconUri(repoPath, relPath) {
       const ext = (0, import_node_path8.extname)(fullPath).toLowerCase();
       const mime = MIME_MAP[ext] || "image/png";
       const uri = `data:${mime};base64,${buf.toString("base64")}`;
-      memCache.set(key, { uri });
+      setMemCache(key, { uri });
       return uri;
     }
   } catch {
@@ -56518,7 +56677,7 @@ async function fetchRemoteIconUri(url2) {
   if ((0, import_node_fs5.existsSync)(diskPath)) {
     try {
       const uri = (0, import_node_fs5.readFileSync)(diskPath, "utf8");
-      memCache.set(key, { uri });
+      setMemCache(key, { uri });
       return uri;
     } catch {
     }
@@ -56530,7 +56689,7 @@ async function fetchRemoteIconUri(url2) {
       const buf = Buffer.from(await res.arrayBuffer());
       const mime = res.headers.get("content-type") || "image/png";
       const uri = `data:${mime};base64,${buf.toString("base64")}`;
-      memCache.set(key, { uri });
+      setMemCache(key, { uri });
       try {
         (0, import_node_fs5.writeFileSync)(diskPath, uri, "utf8");
       } catch {
@@ -56759,20 +56918,25 @@ function needsAttention(b, isTarget = false) {
   if ("isPageButton" in b && b.isPageButton) {
     if (!b.otherColor || b.otherColor === "white" || b.otherColor === "orange" || b.otherColor === "blue") return false;
     if (b.otherColor === "green") return Boolean(b.otherUnread);
-    return b.otherColor === "violet" || b.otherColor === "amber" || b.otherColor === "red";
+    if (b.otherColor === "red") return b.otherUnread !== false;
+    return b.otherColor === "violet" || b.otherColor === "amber";
   }
   if (isTarget) return false;
-  if (b.state === "done") return Boolean(b.unread);
+  if (b.state === "done" || b.color === "green") return Boolean(b.unread);
   if (b.state === "unverifiable") return false;
-  if (b.state === "interrupted") return true;
-  if (b.color === "green") return Boolean(b.unread);
-  return b.color === "violet" || b.color === "amber" || b.color === "red";
+  if (b.state === "interrupted" || b.state === "error" || b.state === "failed" || b.color === "red") {
+    return b.unread !== false;
+  }
+  return b.color === "violet" || b.color === "amber";
 }
 function representativeOtherState(otherItems) {
   if (!otherItems.length) return {};
-  if (otherItems.some((e) => e.item.state === "error" || e.item.state === "failed" || e.item.state === "interrupted")) {
-    const s = otherItems.find((e) => e.item.state === "interrupted")?.item.state ?? "error";
-    return { otherState: s, otherColor: "red" };
+  const unreadErr = otherItems.find(
+    (e) => (e.item.state === "error" || e.item.state === "failed" || e.item.state === "interrupted") && e.unread !== false
+  );
+  if (unreadErr) {
+    const s = otherItems.find((e) => e.item.state === "interrupted" && e.unread !== false)?.item.state ?? "error";
+    return { otherState: s, otherColor: "red", ...unreadErr.unread !== void 0 ? { otherUnread: unreadErr.unread } : {} };
   }
   if (otherItems.some((e) => e.item.state === "waiting" || e.item.state === "permission" || e.item.state === "blocked")) {
     return { otherState: "waiting", otherColor: "violet" };
@@ -56782,6 +56946,13 @@ function representativeOtherState(otherItems) {
   }
   if (otherItems.some((e) => e.item.state === "working" || e.item.state === "monitoring")) {
     return { otherState: "working", otherColor: "orange" };
+  }
+  const reviewedErr = otherItems.find(
+    (e) => e.item.state === "error" || e.item.state === "failed" || e.item.state === "interrupted"
+  );
+  if (reviewedErr) {
+    const s = otherItems.find((e) => e.item.state === "interrupted")?.item.state ?? "error";
+    return { otherState: s, otherColor: "red", otherUnread: false };
   }
   if (otherItems.some((e) => e.item.state === "done")) {
     return { otherState: "done", otherColor: "green", otherUnread: false };
@@ -56946,7 +57117,7 @@ function buildDeck(input, opts = {}) {
   const page = Math.min(Math.max(0, opts.page ?? 0), pageCount - 1);
   const start = page * sessionCapacityPerPage;
   let pageItems = enriched.slice(start, start + sessionCapacityPerPage);
-  if (opts.pinnedSlots && page === 0) {
+  if (opts.pinnedSlots) {
     const pinned = opts.pinnedSlots;
     const stabilized = [];
     const usedItems = /* @__PURE__ */ new Set();
@@ -57338,16 +57509,22 @@ function pageButtonSvg(bOrPage, pageCountOrTick = 1, hasAlertOrNowMs = false, ti
   const barColor = b.otherColor ? HEX[b.otherColor] ?? HEX.white : "#3f3f46";
   const stIcon = b.otherStatus || b.otherState ? stateIcon(b.otherStatus || b.otherState, 130, 9) : "";
   const attn = needsAttention(b, false);
+  const isLit = attn && Boolean(b.otherColor);
   let glow = "";
-  if (attn && b.otherColor) {
+  if (isLit) {
     const urgent = b.otherColor === "violet" || b.otherColor === "amber" || b.otherColor === "red";
     const period = urgent ? 640 : 1300;
-    const p = 0.5 - 0.5 * Math.cos(2 * Math.PI * (nowMs % period) / period);
-    const op = (urgent ? 0.4 : 0.28) * p;
+    const p = nowMs > 0 ? 0.5 - 0.5 * Math.cos(2 * Math.PI * (nowMs % period) / period) : 0.7;
+    const op = Math.max(0.18, (urgent ? 0.45 : 0.32) * p);
     glow = `<rect width="144" height="144" rx="18" fill="${barColor}" opacity="${op.toFixed(2)}"/>`;
   }
-  const g0 = dim ? '<g opacity="0.32">' : "";
-  const g1 = dim ? "</g>" : "";
+  const borderStroke = isLit ? barColor : "#3f3f46";
+  const borderWidth = isLit ? "2.5" : "1.5";
+  const pillFill = isLit ? barColor : "#3f3f46";
+  const pillFillOpacity = isLit ? "0.35" : "0.6";
+  const pillStroke = isLit ? barColor : "#52525b";
+  const g0 = dim && !isLit ? '<g opacity="0.32">' : "";
+  const g1 = dim && !isLit ? "</g>" : "";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">
   <defs>
     <clipPath id="r"><rect width="144" height="144" rx="18"/></clipPath>
@@ -57356,7 +57533,7 @@ function pageButtonSvg(bOrPage, pageCountOrTick = 1, hasAlertOrNowMs = false, ti
       <stop offset="100%" stop-color="#18181b"/>
     </linearGradient>
   </defs>
-  ${g0}<rect width="144" height="144" rx="18" fill="url(#pbg)" stroke="#3f3f46" stroke-width="1.5"/>
+  ${g0}<rect width="144" height="144" rx="18" fill="url(#pbg)" stroke="${borderStroke}" stroke-width="${borderWidth}"/>
   ${glow}
   <rect width="144" height="18" fill="${barColor}" clip-path="url(#r)"/>
   ${stIcon}
@@ -57368,7 +57545,7 @@ function pageButtonSvg(bOrPage, pageCountOrTick = 1, hasAlertOrNowMs = false, ti
   <text x="72" y="78" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="28" font-weight="800">${curr} <tspan fill="#71717a" font-size="20" font-weight="600">/ ${b.pageCount}</tspan></text>
 
   <!-- Bottom: Action pill (NEXT \u276F / \u276E PREV) -->
-  <rect x="22" y="100" width="100" height="28" rx="14" fill="#3f3f46" fill-opacity="0.6" stroke="#52525b" stroke-width="1"/>
+  <rect x="22" y="100" width="100" height="28" rx="14" fill="${pillFill}" fill-opacity="${pillFillOpacity}" stroke="${pillStroke}" stroke-width="${isLit ? "1.5" : "1"}"/>
   <text x="72" y="119" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="13" font-weight="700" letter-spacing="0.5">${actionText}</text>${g1}
 </svg>`;
 }
@@ -57400,15 +57577,6 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   const hostSvg = b.host ? `<text x="72" y="129" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="11" font-weight="600" letter-spacing="0.2">${esc2(fitText(b.host.toUpperCase(), 76 / 11))}</text>` : "";
   const stIcon = stateIcon(b.status || b.state, 130, 9);
   const badge = agentBadge(b.agentType, { boxX: 5, boxY: 112, boxSize: 27 });
-  const attn = needsAttention(b, isTarget);
-  let glow = "";
-  if (attn) {
-    const urgent = b.color === "violet" || b.color === "amber" || b.color === "red";
-    const period = urgent ? 640 : 1300;
-    const p = 0.5 - 0.5 * Math.cos(2 * Math.PI * (nowMs % period) / period);
-    const op = (urgent ? 0.4 : 0.28) * p;
-    glow = `<rect width="144" height="144" rx="18" fill="${color}" opacity="${op.toFixed(2)}"/>`;
-  }
   const g0 = dim ? '<g opacity="0.32">' : "";
   const g1 = dim ? "</g>" : "";
   const cornerTag = isTarget ? `<circle cx="14" cy="9" r="8" fill="#ffffff"/>` : "";
@@ -57416,7 +57584,6 @@ function keySvg(b, tick2 = 0, isTarget = false, nowMs = 0, dim = false) {
   <defs><clipPath id="r"><rect width="144" height="144" rx="18"/></clipPath></defs>
   ${g0}<rect width="144" height="144" rx="18" fill="#1c1c1e"/>
   ${renderBgIcon(b)}
-  ${glow}
   <rect width="144" height="18" fill="${color}" clip-path="url(#r)"/>
   ${projSvg}${subSvg}${titleSvg}${hostSvg}${stIcon}${badge}${g1}${cornerTag}
 </svg>`;
@@ -57524,16 +57691,6 @@ function dialImage(role, label, value, tick2 = 0, disabled = false, badge, sub, 
     const stIcon = disabled ? "" : stateIcon(attention.state, 9, 50, 4.5, "#ffffff");
     statusBar = `<rect width="18" height="100" fill="${barColor}" clip-path="url(#dr)"/>${stIcon}`;
   }
-  let glow = "";
-  if (attention?.attention && !disabled) {
-    const gcol = stateColor || HEX.white;
-    const urgent = gcol === HEX.violet || gcol === HEX.amber || gcol === HEX.red;
-    const period = urgent ? 640 : 1300;
-    const now = attention.nowMs ?? 0;
-    const p = 0.5 - 0.5 * Math.cos(2 * Math.PI * (now % period) / period);
-    const op = (urgent ? 0.4 : 0.28) * p;
-    glow = `<rect width="200" height="100" fill="${gcol}" opacity="${op.toFixed(2)}" clip-path="url(#dr)"/>`;
-  }
   const rail = attention ? "" : `<rect width="7" height="100" fill="${accent}"/>`;
   const badgeSvg = badge ? agentBadgeForDial(badge) : "";
   const dimG0 = disabled ? '<g opacity="0.38">' : "";
@@ -57541,7 +57698,6 @@ function dialImage(role, label, value, tick2 = 0, disabled = false, badge, sub, 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="200" height="100">
   <defs><clipPath id="dr"><rect width="200" height="100" rx="12"/></clipPath></defs>
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
-  ${glow}
   ${statusBar}
   ${dimG0}${rail}
   ${labelSvg}
@@ -57633,7 +57789,7 @@ var TALK_HINT = {
   STT_FAILED: "STT Failed"
 };
 var talkHint = (code) => TALK_HINT[code] ?? "STT Error";
-var EXEC = { maxBuffer: 64 * 1024 * 1024 };
+var EXEC = { maxBuffer: 64 * 1024 * 1024, timeout: 1e4 };
 async function orcaJson(args) {
   const { stdout } = await execFileP(ORCA, [...args, "--json"], EXEC);
   return JSON.parse(stdout);
@@ -57825,10 +57981,15 @@ function getActivePinnedSlots() {
   pinnedSlots.clear();
   return void 0;
 }
-function pinSessionToSlot0(handle) {
+function holdCurrentSlotsInPlace() {
   pinnedSlots.clear();
   pinnedUntil = Date.now() + PINNED_SLOT_HOLD_MS;
-  pinnedSlots.set(handle, 0);
+  for (let i = 0; i < deck.slots.length; i++) {
+    const s = deck.slots[i];
+    if (s && !s.empty && !s.isPageButton && s.handle) {
+      pinnedSlots.set(s.handle, i);
+    }
+  }
 }
 var targetSwitchTimer = null;
 function switchTargetSoon(handle) {
@@ -57870,70 +58031,128 @@ var environmentByHandle = /* @__PURE__ */ new Map();
 function envArgsFor(handle) {
   return environmentArgs(handle ? environmentByHandle.get(handle) : void 0);
 }
-async function orcaRevealTerminal(params) {
+var cachedRuntimeInfo = null;
+function getSocketEndpointAndToken() {
   const metaPath = (0, import_node_path9.join)(ORCA_DATA_DIR, "orca-runtime.json");
-  if (!(0, import_node_fs6.existsSync)(metaPath)) return false;
-  let meta;
+  if (!(0, import_node_fs6.existsSync)(metaPath)) return null;
   try {
-    meta = JSON.parse((0, import_node_fs6.readFileSync)(metaPath, "utf-8"));
+    const stat = (0, import_node_fs6.statSync)(metaPath);
+    if (cachedRuntimeInfo && cachedRuntimeInfo.mtimeMs === stat.mtimeMs) {
+      if ((0, import_node_fs6.existsSync)(cachedRuntimeInfo.endpoint)) {
+        return cachedRuntimeInfo;
+      }
+    }
+    const meta = JSON.parse((0, import_node_fs6.readFileSync)(metaPath, "utf-8"));
+    const transports = Array.isArray(meta?.transports) ? meta.transports : meta?.transport ? [meta.transport] : [];
+    const unixTransport = transports.find((t) => t?.kind === "unix");
+    const endpoint = unixTransport?.endpoint;
+    if (endpoint && (0, import_node_fs6.existsSync)(endpoint)) {
+      cachedRuntimeInfo = {
+        endpoint,
+        authToken: meta.authToken || "",
+        mtimeMs: stat.mtimeMs
+      };
+      return cachedRuntimeInfo;
+    }
   } catch {
-    return false;
   }
-  const unixTransport = Array.isArray(meta?.transports) ? meta.transports.find((t) => t.kind === "unix") : meta?.transport?.kind === "unix" ? meta.transport : null;
-  const endpoint = unixTransport?.endpoint;
-  if (!endpoint) return false;
-  return await new Promise((resolve2) => {
+  return null;
+}
+async function orcaRpc(method, params = {}, timeoutMs = 2500) {
+  const info = getSocketEndpointAndToken();
+  if (!info) throw new Error("Orca runtime socket not available");
+  return await new Promise((resolve2, reject) => {
     let settled = false;
-    const socket = (0, import_node_net.createConnection)(endpoint);
+    const socket = (0, import_node_net.createConnection)(info.endpoint);
     const reqId = (0, import_node_crypto3.randomUUID)();
+    let buf = "";
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       socket.destroy();
-      resolve2(false);
-    }, 2e3);
-    socket.on("error", () => {
+      reject(new Error(`Socket RPC timeout after ${timeoutMs}ms: ${method}`));
+    }, timeoutMs);
+    socket.on("error", (err) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve2(false);
+      reject(err);
     });
     socket.on("connect", () => {
-      socket.write(
-        JSON.stringify({
-          id: reqId,
-          authToken: meta.authToken,
-          method: "terminal.reveal",
-          params
-        }) + "\n"
-      );
+      const payload = JSON.stringify({
+        id: reqId,
+        authToken: info.authToken,
+        method,
+        params
+      }) + "\n";
+      socket.write(payload);
     });
-    socket.on("data", (data) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.end();
-      try {
-        const res = JSON.parse(data.toString());
-        resolve2(res?.ok === true && res?.result?.reveal?.navigated === true);
-      } catch {
-        resolve2(false);
+    socket.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      const newlineIdx = buf.indexOf("\n");
+      if (newlineIdx !== -1) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.destroy();
+        try {
+          const line = buf.slice(0, newlineIdx);
+          const parsed = JSON.parse(line);
+          if (parsed && typeof parsed === "object" && parsed.ok === false) {
+            reject(new Error(parsed.error?.message || `RPC error: ${method}`));
+          } else {
+            resolve2(parsed);
+          }
+        } catch (e) {
+          reject(e);
+        }
       }
     });
   });
 }
+async function orcaRevealTerminal(params) {
+  try {
+    const res = await orcaRpc("terminal.reveal", params);
+    return res?.ok === true && res?.result?.reveal?.navigated === true;
+  } catch {
+    return false;
+  }
+}
 async function switchTerminal(handle) {
   const b = sessionByHandle.get(handle);
-  const switchArgs = ["terminal", "switch", ...envArgsFor(handle), "--terminal", handle];
-  plugin_default.logger.info(`switching terminal: ${switchArgs.join(" ")}`);
-  await orcaRun(switchArgs);
+  const env = environmentByHandle.get(handle);
+  let focused = false;
+  if (!env) {
+    try {
+      const res = await orcaRpc("terminal.focus", {
+        terminal: handle,
+        navigation: "host"
+      });
+      if (res?.ok) focused = true;
+    } catch {
+    }
+  }
+  if (!focused) {
+    const switchArgs = ["terminal", "switch", ...envArgsFor(handle), "--terminal", handle];
+    plugin_default.logger.info(`switching terminal via CLI: ${switchArgs.join(" ")}`);
+    await orcaRun(switchArgs);
+  }
   let worktreeId = b?.worktreeId;
   let tabId = b?.tabId;
   let leafId = b?.leafId;
   const envId = b?.environmentId;
   if (envId && (!worktreeId || !tabId)) {
     try {
-      const show = await orcaJson(["terminal", "show", ...envArgsFor(handle), "--terminal", handle]);
+      let show;
+      if (env) {
+        show = await orcaJson(["terminal", "show", ...envArgsFor(handle), "--terminal", handle]);
+      } else {
+        try {
+          show = await orcaRpc("terminal.show", { terminal: handle });
+        } catch {
+          show = await orcaJson(["terminal", "show", "--terminal", handle]);
+        }
+      }
       if (show?.result?.terminal) {
         worktreeId = show.result.terminal.worktreeId;
         tabId = show.result.terminal.tabId;
@@ -58010,6 +58229,10 @@ var talkState = "hold";
 var recPoll = null;
 async function startRecording() {
   if (recording) return;
+  if (recPoll) {
+    clearInterval(recPoll);
+    recPoll = null;
+  }
   recording = true;
   talkState = "\u25CF REC";
   renderAll();
@@ -58098,13 +58321,54 @@ async function stopAndSend(target) {
   }
   renderAll();
 }
+var screenTailByHandle = /* @__PURE__ */ new Map();
+var lastTargetOutputAt = /* @__PURE__ */ new Map();
+var screenReadBusy = false;
+async function refreshTargetScreen(target) {
+  if (screenReadBusy || !target) return screenTailByHandle.get(target);
+  const session = sessionByHandle.get(target);
+  const lastOutput = session ? session.lastOutputAt : void 0;
+  if (lastOutput !== void 0 && lastOutput !== null && lastOutput === lastTargetOutputAt.get(target) && screenTailByHandle.has(target)) {
+    return screenTailByHandle.get(target);
+  }
+  screenReadBusy = true;
+  try {
+    const env = environmentByHandle.get(target);
+    let res;
+    if (env) {
+      res = await orcaJson(["terminal", "read", ...envArgsFor(target), "--terminal", target, "--screen", "--limit", "15"]);
+    } else {
+      try {
+        res = await orcaRpc("terminal.read", {
+          terminal: target,
+          screen: true,
+          limit: 15
+        });
+      } catch {
+        res = await orcaJson(["terminal", "read", "--terminal", target, "--screen", "--limit", "15"]);
+      }
+    }
+    const tail = res?.result?.terminal?.tail;
+    if (Array.isArray(tail) && tail.length) {
+      const text = tail.join("\n");
+      screenTailByHandle.set(target, text);
+      lastTargetOutputAt.set(target, lastOutput ?? null);
+      return text;
+    }
+  } catch (e) {
+    plugin_default.logger.error(`read screen for ${target}: ${e}`);
+  } finally {
+    screenReadBusy = false;
+  }
+  return screenTailByHandle.get(target);
+}
 function contextForHandle(h) {
   const b = sessionByHandle.get(h);
   return {
     handle: h,
     worktreePath: b?.worktreePath,
     worktreeId: b?.worktreeId,
-    preview: b?.preview,
+    preview: screenTailByHandle.get(h) || b?.preview,
     tabTitle: b?.tabTitle || b?.label
   };
 }
@@ -58125,7 +58389,7 @@ function refreshSessionState(h) {
   const ctx = contextForHandle(h);
   const state = agent.readCurrentState(ctx);
   let modelChanged = false;
-  if (state.model) {
+  if (state.model && (h !== targetHandle || Date.now() - pickAt.model >= PICK_GRACE)) {
     if (currentModelByHandle.get(h) !== state.model) {
       currentModelByHandle.set(h, state.model);
       modelChanged = true;
@@ -58135,7 +58399,7 @@ function refreshSessionState(h) {
   if (!effortToSet && state.model) {
     effortToSet = agent.getEffortForModel(state.model);
   }
-  if (effortToSet) {
+  if (effortToSet && (h !== targetHandle || Date.now() - pickAt.effort >= PICK_GRACE)) {
     if (currentEffortByHandle.get(h) !== effortToSet || modelChanged) {
       currentEffortByHandle.set(h, effortToSet);
       if (modelChanged) {
@@ -58143,13 +58407,13 @@ function refreshSessionState(h) {
       }
     }
   }
-  if (state.mode) {
+  if (state.mode && (h !== targetHandle || Date.now() - pickAt.mode >= PICK_GRACE)) {
     currentModeByHandle.set(h, state.mode);
   }
   if (state.modes && state.modes.length) {
     modesByHandle.set(h, state.modes);
   }
-  if (state.permissions) {
+  if (state.permissions && (h !== targetHandle || Date.now() - pickAt.permissions >= PICK_GRACE)) {
     currentPermissionsByHandle.set(h, state.permissions);
   }
   if (state.recentModels || state.favoriteModels) {
@@ -58164,10 +58428,17 @@ function refreshSessionState(h) {
   return modelChanged;
 }
 function setTarget(h) {
+  boostPolling();
   targetHandle = h;
   if (h) {
     noteHandle(h);
     refreshSessionState(h);
+    refreshTargetScreen(h).then(() => {
+      refreshSessionState(h);
+      applyPending();
+      renderDials();
+    }).catch(() => {
+    });
   }
   agentForHandle();
   pickAt.model = 0;
@@ -58344,6 +58615,7 @@ function refreshCurrentState() {
   adoptPending("model");
   adoptPending("effort");
   adoptPending("mode");
+  adoptPending("permissions");
 }
 var lastEffortDiscoverAt = 0;
 var effortDiscoverBusy = false;
@@ -58437,7 +58709,7 @@ function dialFeedback(role) {
       status: tb.status,
       color: tb.color,
       attention: needsAttention(tb, false),
-      nowMs: Date.now()
+      nowMs: 0
     } : void 0;
     return { full: dialImage("target", "TARGET", v, tick, false, badge, branch, void 0, st) };
   }
@@ -58455,7 +58727,8 @@ function renderKeys() {
     const [id, { action: a }] = entries[i];
     const b = deck.slots[i] ?? { empty: true };
     const isTarget = !b.empty && b.handle === targetHandle;
-    const dim = boardAttn && !b.empty && !needsAttention(b, isTarget);
+    const isWorking = !b.empty && (b.state === "working" || b.color === "orange");
+    const dim = boardAttn && !b.empty && !isTarget && !isWorking && !needsAttention(b, false);
     const img = keyImage(b, tick, isTarget, now, dim);
     if (lastImg.get(id) === img) continue;
     lastImg.set(id, img);
@@ -58479,10 +58752,6 @@ function anyAttention() {
     if (b && !b.empty && needsAttention(b, b.handle === targetHandle)) return true;
   }
   return false;
-}
-function targetAttention() {
-  const tb = targetHandle ? sessionByHandle.get(targetHandle) : void 0;
-  return Boolean(tb) && needsAttention(tb, false);
 }
 function getHookEvents() {
   const map2 = /* @__PURE__ */ new Map();
@@ -58516,7 +58785,12 @@ var lastRepoFetchAt = 0;
 async function refreshRepos() {
   if (Date.now() - lastRepoFetchAt < 15e3 && cachedRepos.length > 0) return;
   try {
-    const rl = await orcaJson(["repo", "list"]);
+    let rl;
+    try {
+      rl = await orcaRpc("repo.list");
+    } catch {
+      rl = await orcaJson(["repo", "list"]);
+    }
     if (rl?.result?.repos) {
       cachedRepos = rl.result.repos;
       lastRepoFetchAt = Date.now();
@@ -58530,6 +58804,18 @@ var cachedEnvironments = [];
 var lastEnvFetchAt = 0;
 async function refreshEnvironments() {
   if (Date.now() - lastEnvFetchAt < 3e4 && cachedEnvironments.length > 0) return;
+  const envFile = (0, import_node_path9.join)(ORCA_DATA_DIR, "orca-environments.json");
+  if ((0, import_node_fs6.existsSync)(envFile)) {
+    try {
+      const data = JSON.parse((0, import_node_fs6.readFileSync)(envFile, "utf-8"));
+      if (Array.isArray(data?.environments)) {
+        cachedEnvironments = data.environments.filter((e) => e?.name);
+        lastEnvFetchAt = Date.now();
+        return;
+      }
+    } catch {
+    }
+  }
   try {
     const el = await orcaJson(["environment", "list"]);
     if (el?.result?.environments) {
@@ -58543,12 +58829,30 @@ async function refreshEnvironments() {
 var cachedHosts = [];
 var lastHostFetchAt = 0;
 async function refreshHosts() {
-  if (Date.now() - lastHostFetchAt < 3e4 && cachedHosts.length > 0) return;
+  if (Date.now() - lastHostFetchAt < 6e4 && cachedHosts.length > 0) return;
+  for (const cacheFile of ["/tmp/orca-panel-hosts.json", "/tmp/orca-hosts.json"]) {
+    if ((0, import_node_fs6.existsSync)(cacheFile)) {
+      try {
+        const cached2 = JSON.parse((0, import_node_fs6.readFileSync)(cacheFile, "utf-8"));
+        const atMs = typeof cached2.at === "number" ? cached2.at < 1e11 ? cached2.at * 1e3 : cached2.at : 0;
+        if (Date.now() - atMs < 6e4 && Array.isArray(cached2.hosts) && cached2.hosts.length > 0) {
+          cachedHosts = cached2.hosts;
+          lastHostFetchAt = Date.now();
+          return;
+        }
+      } catch {
+      }
+    }
+  }
   try {
     const hl = await orcaJson(["host", "list"]);
     if (hl?.result?.hosts) {
       cachedHosts = hl.result.hosts;
       lastHostFetchAt = Date.now();
+      try {
+        (0, import_node_fs6.writeFileSync)("/tmp/orca-hosts.json", JSON.stringify({ hosts: cachedHosts, at: Date.now() }));
+      } catch {
+      }
     }
   } catch (e) {
     plugin_default.logger.error(`fetch hosts: ${e}`);
@@ -58577,7 +58881,12 @@ async function refreshRateLimits() {
     return;
   }
   try {
-    const data = await orcaJson(["account", "list"]);
+    let data;
+    try {
+      data = await orcaRpc("accounts.list");
+    } catch {
+      data = await orcaJson(["account", "list"]);
+    }
     if (data?.result?.rateLimits) {
       cachedRateLimits = data.result.rateLimits;
       lastRateLimitFetchAt = Date.now();
@@ -58608,7 +58917,7 @@ async function poll() {
           ]);
           return {
             env,
-            terminals: (rtl.result?.terminals ?? []).map((t) => ({ ...t, environment: env.name, environmentId: env.id })),
+            terminals: (rtl.result?.terminals ?? []).map((t2) => ({ ...t2, environment: env.name, environmentId: env.id })),
             worktrees: (rwp.result?.worktrees ?? []).map((w) => ({ ...w, environment: env.name, environmentId: env.id })),
             visualLayouts: rtl.result?.visualLayouts ?? []
           };
@@ -58618,11 +58927,20 @@ async function poll() {
         }
       })
     );
-    const [tl, wp, remote] = await Promise.all([
-      orcaJson(["terminal", "list", "--include-visual-layouts"]),
-      orcaJson(["worktree", "ps"]),
-      remotePoll
-    ]);
+    let tl;
+    let wp;
+    try {
+      [tl, wp] = await Promise.all([
+        orcaRpc("terminal.list", { includeVisualLayouts: true }),
+        orcaRpc("worktree.ps")
+      ]);
+    } catch {
+      [tl, wp] = await Promise.all([
+        orcaJson(["terminal", "list", "--include-visual-layouts"]),
+        orcaJson(["worktree", "ps"])
+      ]);
+    }
+    const [remote] = await Promise.all([remotePoll]);
     const localTerminals = tl.result?.terminals ?? [];
     const localWorktrees = wp.result?.worktrees ?? [];
     const remoteOk = remote.filter((r) => !!r);
@@ -58683,20 +59001,29 @@ async function poll() {
         }
       }
     }
-    for (const h of Array.from(agentByHandle.keys())) {
-      if (!sessionByHandle.has(h)) {
-        agentByHandle.delete(h);
-        agentInstanceByHandle.delete(h);
-        environmentByHandle.delete(h);
-        modelsByHandle.delete(h);
-        modesByHandle.delete(h);
-        effortsByHandle.delete(h);
-        currentModelByHandle.delete(h);
-        currentEffortByHandle.delete(h);
-        currentModeByHandle.delete(h);
-        modelByHandle.delete(h);
-        effortByHandle.delete(h);
-        modeByHandle.delete(h);
+    const handleMaps = [
+      agentByHandle,
+      agentInstanceByHandle,
+      environmentByHandle,
+      modelsByHandle,
+      modesByHandle,
+      effortsByHandle,
+      currentModelByHandle,
+      currentEffortByHandle,
+      currentModeByHandle,
+      currentPermissionsByHandle,
+      screenTailByHandle,
+      lastTargetOutputAt,
+      modelByHandle,
+      effortByHandle,
+      modeByHandle,
+      permissionsByHandle
+    ];
+    for (const map2 of handleMaps) {
+      for (const h of Array.from(map2.keys())) {
+        if (!sessionByHandle.has(h)) {
+          map2.delete(h);
+        }
       }
     }
     const isTargetRemote = targetHandle ? Boolean(environmentByHandle.get(targetHandle)) : false;
@@ -58718,6 +59045,10 @@ async function poll() {
       }
     }
     lastActiveHandle = activeHandle;
+    const t = ensureTarget();
+    if (t) {
+      await refreshTargetScreen(t);
+    }
     refreshDiscovery();
     refreshCurrentState();
     refreshEfforts();
@@ -58725,7 +59056,31 @@ async function poll() {
     try {
       (0, import_node_fs6.writeFileSync)(
         "/tmp/agentdeck-debug.json",
-        JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), total: deck.total, slotViews: slotViews.size, dialViews: dialViews.size, environments: cachedEnvironments.map((e) => e.name), target: targetHandle, targetEnvironment: environmentByHandle.get(targetHandle ?? "") ?? null, dials: { model: dialValue("model"), effort: dialValue("effort"), mode: dialValue("mode"), permissions: dialValue("permissions") }, slots: deck.slots }, null, 2)
+        JSON.stringify(
+          {
+            at: (/* @__PURE__ */ new Date()).toISOString(),
+            total: deck.total,
+            slotViews: slotViews.size,
+            dialViews: dialViews.size,
+            environments: cachedEnvironments.map((e) => e.name),
+            target: targetHandle,
+            targetEnvironment: environmentByHandle.get(targetHandle ?? "") ?? null,
+            dials: {
+              model: dialValue("model"),
+              effort: dialValue("effort"),
+              mode: dialValue("mode"),
+              permissions: dialValue("permissions")
+            },
+            slots: deck.slots.map(
+              (s) => s.empty ? s : {
+                ...s,
+                bgIconUri: s.bgIconUri ? `[data-uri ${s.bgIconUri.length} chars]` : void 0
+              }
+            )
+          },
+          null,
+          2
+        )
       );
     } catch {
     }
@@ -58798,14 +59153,33 @@ async function spawnSession(ev) {
     ev.action.showAlert?.();
   }
 }
-var fileDebounceTimer = null;
+var pollTimer = null;
+var pollBurstUntil = 0;
+var IDLE_POLL_INTERVAL_MS = 3e3;
+var BURST_POLL_INTERVAL_MS = 1e3;
+var BURST_DURATION_MS = 4e3;
+function boostPolling(durationMs = BURST_DURATION_MS) {
+  pollBurstUntil = Math.max(pollBurstUntil, Date.now() + durationMs);
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(runPollLoop, 50);
+  }
+}
 function pollDebounced(delay = 50) {
-  if (fileDebounceTimer) clearTimeout(fileDebounceTimer);
-  fileDebounceTimer = setTimeout(() => {
-    fileDebounceTimer = null;
-    poll().catch(() => {
-    });
-  }, delay);
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(runPollLoop, delay);
+}
+async function runPollLoop() {
+  pollTimer = null;
+  try {
+    await poll();
+  } catch (e) {
+    plugin_default.logger.error(`poll loop error: ${e}`);
+  } finally {
+    const isBurst = Date.now() < pollBurstUntil;
+    const delay = isBurst ? BURST_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS;
+    pollTimer = setTimeout(runPollLoop, delay);
+  }
 }
 var SlotAction = class extends SingletonAction {
   onWillAppear(ev) {
@@ -58834,6 +59208,8 @@ var SlotAction = class extends SingletonAction {
     const b = idx >= 0 ? deck.slots[idx] : void 0;
     if (b && "isPageButton" in b && b.isPageButton) {
       currentPage = (currentPage + 1) % deck.pageCount;
+      pinnedSlots.clear();
+      pinnedUntil = 0;
       pollDebounced(10);
       return;
     }
@@ -58848,8 +59224,9 @@ var SlotAction = class extends SingletonAction {
         return;
       }
       setTarget(b.handle);
+      b.unread = false;
       lastNav = Date.now();
-      pinSessionToSlot0(b.handle);
+      holdCurrentSlotsInPlace();
       try {
         await switchTerminal(b.handle);
         await focusOrca();
@@ -58883,6 +59260,7 @@ var DialBase = class extends SingletonAction {
     lastDialImg.delete(ev.action.id);
   }
   onDialRotate(ev) {
+    boostPolling();
     const dir = (ev.payload?.ticks ?? 0) > 0 ? 1 : (ev.payload?.ticks ?? 0) < 0 ? -1 : 0;
     if (!dir) return;
     const t = ensureTarget();
@@ -58922,6 +59300,7 @@ var DialBase = class extends SingletonAction {
     }
   }
   async onDialDown(ev) {
+    boostPolling();
     const t = ensureTarget();
     if (this.role === "model" || this.role === "effort" || this.role === "mode" || this.role === "permissions") {
       const agent = agentForHandle();
@@ -58939,6 +59318,7 @@ var DialBase = class extends SingletonAction {
         if (this.role === "model") {
           modelByHandle.set(t, value);
           currentModelByHandle.set(t, value);
+          pendingModel = value;
           const inferred = agent.getEffortForModel(value);
           if (inferred) {
             effortByHandle.set(t, inferred);
@@ -58952,16 +59332,24 @@ var DialBase = class extends SingletonAction {
         } else if (this.role === "effort") {
           effortByHandle.set(t, value);
           currentEffortByHandle.set(t, value);
+          pendingEffort = value;
         } else if (this.role === "mode") {
           modeByHandle.set(t, value);
           currentModeByHandle.set(t, value);
+          pendingMode = value;
         } else if (this.role === "permissions") {
           permissionsByHandle.set(t, value);
           currentPermissionsByHandle.set(t, value);
+          pendingPermissions = value;
         }
+        pickAt[kind] = Date.now();
         try {
           const modeList = this.role === "mode" ? dialList("mode") : void 0;
           await applyAgentSteps(t, agent.getApplySteps(kind, value, prevValue, modeList));
+          pickAt[kind] = Date.now();
+          if (this.role === "mode") {
+            await refreshTargetScreen(t);
+          }
           refreshCurrentState();
         } catch (e) {
           plugin_default.logger.error(`apply ${kind}: ${e}`);
@@ -59069,6 +59457,7 @@ setInterval(() => {
   }
   lastHeartbeat = now;
 }, 1e3);
+var fileWatchDebounceTimer = null;
 function setupFileWatchers() {
   const dirsToWatch = [
     (0, import_node_path9.join)(ORCA_DATA_DIR, "agent-hooks"),
@@ -59085,7 +59474,11 @@ function setupFileWatchers() {
     try {
       if ((0, import_node_fs6.existsSync)(dir)) {
         (0, import_node_fs6.watch)(dir, { recursive: false }, () => {
-          pollDebounced(50);
+          if (fileWatchDebounceTimer) return;
+          fileWatchDebounceTimer = setTimeout(() => {
+            fileWatchDebounceTimer = null;
+            pollDebounced(250);
+          }, 1e3);
         });
       }
     } catch (e) {
@@ -59095,28 +59488,7 @@ function setupFileWatchers() {
 }
 setupFileWatchers();
 plugin_default.connect();
-setInterval(poll, 1e3);
-setInterval(() => {
-  tick++;
-  if (anyAttention() || anyMarquee()) renderKeys();
-}, 450);
-var wasAttention = false;
-setInterval(() => {
-  const attn = anyAttention() || targetAttention();
-  if (attn) {
-    wasAttention = true;
-    renderKeys();
-    renderDials();
-  } else if (wasAttention) {
-    wasAttention = false;
-    renderKeys();
-    renderDials();
-  }
-}, 160);
-poll();
-function anyMarquee() {
-  return false;
-}
+runPollLoop();
 /*! Bundled license information:
 
 lucide-static/dist/cjs/lucide-static.js:

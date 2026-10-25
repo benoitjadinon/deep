@@ -15,6 +15,15 @@ export interface ResolvedBgIcon {
 
 // Memory cache: URL or path or lucideName -> ResolvedBgIcon
 const memCache = new Map<string, ResolvedBgIcon>();
+const MAX_MEM_CACHE_ENTRIES = 100;
+
+function setMemCache(key: string, res: ResolvedBgIcon): void {
+  if (memCache.size >= MAX_MEM_CACHE_ENTRIES) {
+    const oldest = memCache.keys().next().value;
+    if (oldest) memCache.delete(oldest);
+  }
+  memCache.set(key, res);
+}
 // In-flight fetch promises to prevent redundant requests
 const inflightFetches = new Map<string, Promise<string | undefined>>();
 
@@ -54,7 +63,7 @@ export function resolveLucideSvg(name?: string): string | undefined {
 
   const inner = raw.replace(/<svg[^>]*>/i, "").replace(/<\/svg>/i, "").trim();
   const res: ResolvedBgIcon = { lucide: inner };
-  memCache.set(key, res);
+  setMemCache(key, res);
   return inner;
 }
 
@@ -75,7 +84,7 @@ export function resolveLocalIconUri(repoPath?: string, relPath?: string): string
       const ext = extname(fullPath).toLowerCase();
       const mime = MIME_MAP[ext] || "image/png";
       const uri = `data:${mime};base64,${buf.toString("base64")}`;
-      memCache.set(key, { uri });
+      setMemCache(key, { uri });
       return uri;
     }
   } catch {}
@@ -110,7 +119,7 @@ export async function fetchRemoteIconUri(url?: string): Promise<string | undefin
   if (existsSync(diskPath)) {
     try {
       const uri = readFileSync(diskPath, "utf8");
-      memCache.set(key, { uri });
+      setMemCache(key, { uri });
       return uri;
     } catch {}
   }
@@ -122,7 +131,7 @@ export async function fetchRemoteIconUri(url?: string): Promise<string | undefin
       const buf = Buffer.from(await res.arrayBuffer());
       const mime = res.headers.get("content-type") || "image/png";
       const uri = `data:${mime};base64,${buf.toString("base64")}`;
-      memCache.set(key, { uri });
+      setMemCache(key, { uri });
       try {
         writeFileSync(diskPath, uri, "utf8");
       } catch {}

@@ -299,23 +299,21 @@ describe("stateIcon — white glyphs for the state-colored top bar", () => {
   });
 });
 
-describe("keySvg attention animation (pulse ring)", () => {
+describe("keySvg attention rendering (pulse animations removed)", () => {
   const attn = { empty: false as const, handle: "t", label: "x", state: "waiting", color: "amber" as const, repo: "svd", branch: "main" };
   const calm = { empty: false as const, handle: "t", label: "x", state: "working", color: "blue" as const, repo: "svd", branch: "main" };
-  it("attention key changes SVG across nowMs timestamps", () => {
-    expect(keySvg(attn, 0, false, 0)).not.toBe(keySvg(attn, 0, false, 320));
-  });
-  it("static (working) key is invariant to nowMs", () => {
+  it("keys are invariant across nowMs timestamps (no pulse animations)", () => {
+    expect(keySvg(attn, 0, false, 0)).toBe(keySvg(attn, 0, false, 320));
     expect(keySvg(calm, 0, false, 0)).toBe(keySvg(calm, 0, false, 999));
   });
-  it("target session stops pulsing for all states when focused (isTarget true)", () => {
+  it("target session key renders target corner dot", () => {
     const done = { empty: false as const, handle: "t", label: "x", state: "done", color: "green" as const, repo: "svd", branch: "main" };
-    expect(keySvg(done, 0, true, 0)).toBe(keySvg(done, 0, true, 500));
-    expect(keySvg(attn, 0, true, 0)).toBe(keySvg(attn, 0, true, 320));
+    expect(keySvg(done, 0, true, 0)).toContain('<circle cx="14" cy="9" r="8" fill="#ffffff"/>');
+    expect(keySvg(done, 0, false, 0)).not.toContain('<circle cx="14" cy="9" r="8" fill="#ffffff"/>');
   });
-  it("attention key pulses background with state color when not focused", () => {
-    expect((keySvg(attn, 0, false, 200).match(/fill="#f59e0b"/g) || []).length).toBeGreaterThanOrEqual(2);
-    expect((keySvg(calm, 0, false, 200).match(/fill="#3b82f6"/g) || []).length).toBe(1);
+  it("attention key displays state color on ribbon bar", () => {
+    expect(keySvg(attn, 0, false, 0)).toContain('fill="#f59e0b"');
+    expect(keySvg(calm, 0, false, 0)).toContain('fill="#3b82f6"');
   });
 });
 
@@ -520,29 +518,13 @@ describe("dialImage — dial rendering", () => {
     expect(idle).not.toContain('cy="50"'); // no glyph when idle
   });
 
-  it("target dial blinks like a button when attention triggers, with urgent amber/red period", () => {
-    // amber attention at 160ms of a 640ms cycle -> p=0.5 -> 0.40*0.5 = 0.20
+  it("target dial renders state status rail without pulse animations", () => {
     const mid = Buffer.from(
       dialImage("target", "TARGET", "svd", 0, false, "opencode", "main", undefined, { state: "waiting", color: "amber", attention: true, nowMs: 160 }).split(",")[1],
       "base64",
     ).toString("utf8");
-    expect(mid).toContain('opacity="0.20"');
-    expect(mid).toContain('width="200" height="100" fill="#f59e0b" opacity');
-
-    // green (calm) attention: 1300ms period, at 325ms p=0.5 -> 0.28*0.5 = 0.14
-    const calm = Buffer.from(
-      dialImage("target", "TARGET", "svd", 0, false, "claude", "main", undefined, { state: "done", color: "green", attention: true, nowMs: 325 }).split(",")[1],
-      "base64",
-    ).toString("utf8");
-    expect(calm).toContain('opacity="0.14"');
-
-    // no attention -> no glow overlay at all
-    const off = Buffer.from(
-      dialImage("target", "TARGET", "svd", 0, false, "opencode", "main", undefined, { state: "waiting", color: "amber", attention: false, nowMs: 160 }).split(",")[1],
-      "base64",
-    ).toString("utf8");
-    expect(off).not.toContain('opacity="0.20"');
-    expect(off.match(/<rect width="200" height="100" fill/g) || []).toHaveLength(0);
+    expect(mid).toContain('width="18" height="100" fill="#f59e0b"');
+    expect(mid.match(/<rect width="200" height="100" fill/g) || []).toHaveLength(0);
   });
 
   it("target dial state bar keeps the agent badge at its default top-right spot", () => {

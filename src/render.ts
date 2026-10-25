@@ -287,19 +287,26 @@ export function pageButtonSvg(
   const barColor = b.otherColor ? (HEX[b.otherColor] ?? HEX.white) : "#3f3f46";
   const stIcon = (b.otherStatus || b.otherState) ? stateIcon(b.otherStatus || b.otherState, 130, 9) : "";
 
-  // Pulse animation for attention-needed states on other pages (amber/red/unread-done)
   const attn = needsAttention(b as any, false);
+  const isLit = attn && Boolean(b.otherColor);
+
   let glow = "";
-  if (attn && b.otherColor) {
+  if (isLit) {
     const urgent = b.otherColor === "violet" || b.otherColor === "amber" || b.otherColor === "red";
     const period = urgent ? 640 : 1300; // ms/cycle
-    const p = 0.5 - 0.5 * Math.cos((2 * Math.PI * (nowMs % period)) / period); // 0->1->0
-    const op = (urgent ? 0.4 : 0.28) * p;
+    const p = nowMs > 0 ? (0.5 - 0.5 * Math.cos((2 * Math.PI * (nowMs % period)) / period)) : 0.7;
+    const op = Math.max(0.18, (urgent ? 0.45 : 0.32) * p);
     glow = `<rect width="144" height="144" rx="18" fill="${barColor}" opacity="${op.toFixed(2)}"/>`;
   }
 
-  const g0 = dim ? '<g opacity="0.32">' : "";
-  const g1 = dim ? "</g>" : "";
+  const borderStroke = isLit ? barColor : "#3f3f46";
+  const borderWidth = isLit ? "2.5" : "1.5";
+  const pillFill = isLit ? barColor : "#3f3f46";
+  const pillFillOpacity = isLit ? "0.35" : "0.6";
+  const pillStroke = isLit ? barColor : "#52525b";
+
+  const g0 = (dim && !isLit) ? '<g opacity="0.32">' : "";
+  const g1 = (dim && !isLit) ? "</g>" : "";
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">
   <defs>
@@ -309,7 +316,7 @@ export function pageButtonSvg(
       <stop offset="100%" stop-color="#18181b"/>
     </linearGradient>
   </defs>
-  ${g0}<rect width="144" height="144" rx="18" fill="url(#pbg)" stroke="#3f3f46" stroke-width="1.5"/>
+  ${g0}<rect width="144" height="144" rx="18" fill="url(#pbg)" stroke="${borderStroke}" stroke-width="${borderWidth}"/>
   ${glow}
   <rect width="144" height="18" fill="${barColor}" clip-path="url(#r)"/>
   ${stIcon}
@@ -321,7 +328,7 @@ export function pageButtonSvg(
   <text x="72" y="78" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="28" font-weight="800">${curr} <tspan fill="#71717a" font-size="20" font-weight="600">/ ${b.pageCount}</tspan></text>
 
   <!-- Bottom: Action pill (NEXT ❯ / ❮ PREV) -->
-  <rect x="22" y="100" width="100" height="28" rx="14" fill="#3f3f46" fill-opacity="0.6" stroke="#52525b" stroke-width="1"/>
+  <rect x="22" y="100" width="100" height="28" rx="14" fill="${pillFill}" fill-opacity="${pillFillOpacity}" stroke="${pillStroke}" stroke-width="${isLit ? '1.5' : '1'}"/>
   <text x="72" y="119" text-anchor="middle" fill="#e4e4e7" font-family="sans-serif" font-size="13" font-weight="700" letter-spacing="0.5">${actionText}</text>${g1}
 </svg>`;
 }
@@ -378,16 +385,6 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
   const stIcon = stateIcon((b as any).status || b.state, 130, 9);
   const badge = agentBadge(b.agentType, { boxX: 5, boxY: 112, boxSize: 27 });
 
-  // Pulse animation for attention-needed keys
-  const attn = needsAttention(b, isTarget);
-  let glow = "";
-  if (attn) {
-    const urgent = b.color === "violet" || b.color === "amber" || b.color === "red";
-    const period = urgent ? 640 : 1300; // ms/cycle
-    const p = 0.5 - 0.5 * Math.cos((2 * Math.PI * (nowMs % period)) / period); // 0->1->0
-    const op = (urgent ? 0.4 : 0.28) * p;
-    glow = `<rect width="144" height="144" rx="18" fill="${color}" opacity="${op.toFixed(2)}"/>`;
-  }
   // Dim non-attention keys when attention keys exist
   const g0 = dim ? '<g opacity="0.32">' : "";
   const g1 = dim ? "</g>" : "";
@@ -400,7 +397,6 @@ export function keySvg(b: Button, tick = 0, isTarget = false, nowMs = 0, dim = f
   <defs><clipPath id="r"><rect width="144" height="144" rx="18"/></clipPath></defs>
   ${g0}<rect width="144" height="144" rx="18" fill="#1c1c1e"/>
   ${renderBgIcon(b)}
-  ${glow}
   <rect width="144" height="18" fill="${color}" clip-path="url(#r)"/>
   ${projSvg}${subSvg}${titleSvg}${hostSvg}${stIcon}${badge}${g1}${cornerTag}
 </svg>`;
@@ -593,19 +589,6 @@ export function dialImage(
     const stIcon = disabled ? "" : stateIcon(attention.state, 9, 50, 4.5, "#ffffff");
     statusBar = `<rect width="18" height="100" fill="${barColor}" clip-path="url(#dr)"/>${stIcon}`;
   }
-  // Attention pulse overlay — same phase/opacity rules as keySvg (urgent violet/amber/red blink fast,
-  // calmer pulse for unread-done green), so the dial blinks exactly like a needs-attention button.
-  let glow = "";
-  if (attention?.attention && !disabled) {
-    const gcol = stateColor || HEX.white;
-    const urgent = gcol === HEX.violet || gcol === HEX.amber || gcol === HEX.red;
-    const period = urgent ? 640 : 1300; // ms/cycle
-    const now = attention.nowMs ?? 0;
-    const p = 0.5 - 0.5 * Math.cos((2 * Math.PI * (now % period)) / period); // 0->1->0
-    const op = (urgent ? 0.4 : 0.28) * p;
-    glow = `<rect width="200" height="100" fill="${gcol}" opacity="${op.toFixed(2)}" clip-path="url(#dr)"/>`;
-  }
-
   // When a state overlay is present the 7px accent rail is replaced by the status bar above.
   const rail = attention ? "" : `<rect width="7" height="100" fill="${accent}"/>`;
 
@@ -617,7 +600,6 @@ export function dialImage(
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="200" height="100">
   <defs><clipPath id="dr"><rect width="200" height="100" rx="12"/></clipPath></defs>
   <rect width="200" height="100" rx="12" fill="#1c1c1e"/>
-  ${glow}
   ${statusBar}
   ${dimG0}${rail}
   ${labelSvg}
