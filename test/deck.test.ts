@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildDeck,
-  activityBucket,
+  orderSessionsByOrca,
   colorFor,
   projectOf,
   needsAttention,
@@ -9,9 +9,6 @@ import {
   resolveActiveTerminal,
   nextWorktreeName,
   extractTabTitlesFromLayouts,
-  statePriority,
-  sortSessions,
-  sortSessionsByProject,
   representativeOtherState,
   stabilizeTerminalAgents,
   hostLabel,
@@ -344,95 +341,97 @@ describe("buildDeck — merges orca sources into 8-slot button model", () => {
   const T = Math.floor(1_790_000_000_000 / 60_000) * 60_000;
   const MIN = 60_000;
 
-  it("orders sessions by most recent activity inside an equal state tier", () => {
+  it("orders sessions according to Orca worktrees order", () => {
     const ts = [
       { handle: "term_a", tabId: "t1", leafId: "l1", title: "a", worktreePath: "/x", lastOutputAt: T },
       { handle: "term_b", tabId: "t2", leafId: "l2", title: "b", worktreePath: "/x", lastOutputAt: T + 5 * MIN },
       { handle: "term_c", tabId: "t3", leafId: "l3", title: "c", worktreePath: "/x", lastOutputAt: T + MIN },
     ];
-    const wts = ts.map((t) => ({ agents: [{ paneKey: `${t.tabId}:${t.leafId}`, state: "done" }] }));
+    // Worktree list in order: wt_b, wt_c, wt_a
+    const wts = [
+      { worktreeId: "wt_b", agents: [{ paneKey: "t2:l2", state: "done" }] },
+      { worktreeId: "wt_c", agents: [{ paneKey: "t3:l3", state: "done" }] },
+      { worktreeId: "wt_a", agents: [{ paneKey: "t1:l1", state: "done" }] },
+    ];
     const deck = buildDeck({ terminals: ts, worktrees: wts });
     expect(deck.slots.slice(0, 3).map((s: any) => s.handle)).toEqual(["term_b", "term_c", "term_a"]);
   });
 
-  it("debounces ordering: activity inside the same bucket keeps handle order", () => {
-    // Same state, same minute bucket but different seconds -> order stays by handle, no re-sort churn.
+  it("orders sessions by visual layout tab order within a worktree", () => {
     const ts = [
-      { handle: "term_a", tabId: "t1", leafId: "l1", title: "a", worktreePath: "/x", lastOutputAt: T },
-      { handle: "term_b", tabId: "t2", leafId: "l2", title: "b", worktreePath: "/x", lastOutputAt: T + 5_000 },
-      { handle: "term_c", tabId: "t3", leafId: "l3", title: "c", worktreePath: "/x", lastOutputAt: T + 55_000 },
+      { handle: "term_a", tabId: "t1", leafId: "l1", title: "a", worktreeId: "wt_1" },
+      { handle: "term_b", tabId: "t2", leafId: "l2", title: "b", worktreeId: "wt_1" },
+      { handle: "term_c", tabId: "t3", leafId: "l3", title: "c", worktreeId: "wt_1" },
     ];
-    const wts = ts.map((t) => ({ agents: [{ paneKey: `${t.tabId}:${t.leafId}`, state: "done" }] }));
-    const handles = buildDeck({ terminals: ts, worktrees: wts }, { now: T + 56_000 })
-      .slots.filter((s) => !s.empty)
-      .map((s: any) => s.handle);
-    expect(handles).toEqual(["term_a", "term_b", "term_c"]);
-
-    // Crossing into a newer bucket promotes the session (still debounced to bucket granularity).
-    const promoted = ts.map((t) => (t.handle === "term_c" ? { ...t, lastOutputAt: T + MIN } : t));
-    const handles2 = buildDeck({ terminals: promoted, worktrees: wts }, { now: T + MIN + 1_000 })
-      .slots.filter((s) => !s.empty)
-      .map((s: any) => s.handle);
-    expect(handles2).toEqual(["term_c", "term_a", "term_b"]);
-
-    // bucketMs = 1 disables the debounce (raw recency wins) — the tuning knob via AGENTDECK_ORDER_BUCKET_MS.
-    const raw = buildDeck({ terminals: ts, worktrees: wts }, { now: T + 56_000, activityBucketMs: 1 })
-      .slots.filter((s) => !s.empty)
-      .map((s: any) => s.handle);
-    expect(raw).toEqual(["term_c", "term_b", "term_a"]);
+    const wts = [
+      {
+        worktreeId: "wt_1",
+        agents: [
+          { paneKey: "t1:l1", state: "done" },
+          { paneKey: "t2:l2", state: "done" },
+          { paneKey: "t3:l3", state: "done" },
+        ],
+      },
+    ];
+    // visualLayouts tab order: t3, then t1, then t2
+    const visualLayouts = [
+      {
+        worktreeId: "wt_1",
+        root: {
+          type: "group",
+          tabs: [
+            { tabId: "t3", activeLeafId: "l3", panes: { type: "terminal", handle: "term_c" } },
+            { tabId: "t1", activeLeafId: "l1", panes: { type: "terminal", handle: "term_a" } },
+            { tabId: "t2", activeLeafId: "l2", panes: { type: "terminal", handle: "term_b" } },
+          ],
+        },
+      },
+    ];
+    const deck = buildDeck({ terminals: ts, worktrees: wts, visualLayouts });
+    expect(deck.slots.slice(0, 3).map((s: any) => s.handle)).toEqual(["term_c", "term_a", "term_b"]);
   });
 
-  it("keeps concurrently working sessions steady within a bucket", () => {
-    // Both sessions keep producing output every few seconds: order must not flip per poll.
+  it("preserves stable session ordering across state changes without recency re-sorting churn", () => {
     const ts = [
       { handle: "term_a1", tabId: "a1", leafId: "l1", title: "a1", worktreePath: "/x/alpha", lastOutputAt: T + 10_000 },
       { handle: "term_b1", tabId: "b1", leafId: "l1", title: "b1", worktreePath: "/x/beta", lastOutputAt: T + 40_000 },
     ];
-    const wts = ts.map((t) => ({ agents: [{ paneKey: `${t.tabId}:${t.leafId}`, state: "working" }] }));
-    const first = buildDeck({ terminals: ts, worktrees: wts }, { now: T + 41_000 }).slots.filter((s) => !s.empty).map((s: any) => s.handle);
-    // beta produced output later but both are in the same bucket -> handle order holds (alpha first).
+    const wts = [
+      { agents: [{ paneKey: "a1:l1", state: "working" }] },
+      { agents: [{ paneKey: "b1:l1", state: "working" }] },
+    ];
+    const first = buildDeck({ terminals: ts, worktrees: wts }).slots.filter((s) => !s.empty).map((s: any) => s.handle);
     expect(first).toEqual(["term_a1", "term_b1"]);
-    const again = buildDeck({ terminals: ts, worktrees: wts }, { now: T + 58_000 }).slots.filter((s) => !s.empty).map((s: any) => s.handle);
-    expect(again).toEqual(first);
-    expect(activityBucket(T + 10_000)).toBe(activityBucket(T + 40_000));
+
+    // Even if beta produces much later output, worktree order keeps positions stable
+    const updatedTs = [
+      { ...ts[0], lastOutputAt: T + 10_000 },
+      { ...ts[1], lastOutputAt: T + 1_000_000 },
+    ];
+    const again = buildDeck({ terminals: updatedTs, worktrees: wts }).slots.filter((s) => !s.empty).map((s: any) => s.handle);
+    expect(again).toEqual(["term_a1", "term_b1"]);
   });
 
-  it("orders sessions by importance tier (active/attention first, completed/idle last), then activity recency", () => {
-    // Fixture across multiple projects: AltReady, deep, sleep, notes
+  it("follows Orca worktree order regardless of agent state", () => {
+    // Worktrees defined in a specific order: AltReady wt_a1, deep wt_d1, Sleepy wt_w1, Notes wt_i1
     const ts = [
+      { handle: "term_idle", tabId: "i1", leafId: "l1", title: "notes idle", worktreePath: "/x/Notes", worktreeId: "wt_i1", lastOutputAt: T },
       { handle: "term_done_unread", tabId: "d1", leafId: "l1", title: "deep done unread", worktreePath: "/x/deep", worktreeId: "wt_d1", lastOutputAt: T + 10 * MIN },
       { handle: "term_ask_question", tabId: "a1", leafId: "l1", title: "alt question", worktreePath: "/x/AltReady", worktreeId: "wt_a1", lastOutputAt: T + 2 * MIN },
       { handle: "term_working", tabId: "w1", leafId: "l1", title: "sleep active", worktreePath: "/x/Sleepy", worktreeId: "wt_w1", lastOutputAt: T + 5 * MIN },
-      { handle: "term_idle", tabId: "i1", leafId: "l1", title: "notes idle", worktreePath: "/x/Notes", worktreeId: "wt_i1", lastOutputAt: T },
-      { handle: "term_error", tabId: "e1", leafId: "l1", title: "alt error", worktreePath: "/x/AltReady", worktreeId: "wt_e1", lastOutputAt: T + 4 * MIN },
-      { handle: "term_working_older", tabId: "w2", leafId: "l2", title: "deep active", worktreePath: "/x/deep", worktreeId: "wt_w2", lastOutputAt: T + 1 * MIN },
-      { handle: "term_done_reviewed", tabId: "d2", leafId: "l2", title: "deep done reviewed", worktreePath: "/x/deep", worktreeId: "wt_d2", lastOutputAt: T + 3 * MIN },
     ];
     const wts = [
-      { worktreeId: "wt_d1", unread: true, agents: [{ paneKey: "d1:l1", state: "done" }] },
       { worktreeId: "wt_a1", unread: false, agents: [{ paneKey: "a1:l1", state: "waiting" }] },
+      { worktreeId: "wt_d1", unread: true, agents: [{ paneKey: "d1:l1", state: "done" }] },
       { worktreeId: "wt_w1", unread: false, agents: [{ paneKey: "w1:l1", state: "working" }] },
       { worktreeId: "wt_i1", unread: false, agents: [{ paneKey: "i1:l1", state: "idle" }] },
-      { worktreeId: "wt_e1", unread: false, agents: [{ paneKey: "e1:l1", state: "error" }] },
-      { worktreeId: "wt_w2", unread: false, agents: [{ paneKey: "w2:l2", state: "working" }] },
-      { worktreeId: "wt_d2", unread: false, agents: [{ paneKey: "d2:l2", state: "done" }] },
     ];
     const slots = buildDeck({ terminals: ts, worktrees: wts }).slots.filter((s) => !s.empty) as any[];
-    // Active tier (unread done, working, error, question) before completed/idle (reviewed done, idle):
-    // T+10m: term_done_unread (active)
-    // T+5m:  term_working (active)
-    // T+4m:  term_error (active)
-    // T+2m:  term_ask_question (active)
-    // T+1m:  term_working_older (active)
-    // T+3m:  term_done_reviewed (inactive)
-    // T:     term_idle (inactive)
+    // Follows worktree ps order strictly (wt_a1, wt_d1, wt_w1, wt_i1)
     expect(slots.map((s) => s.handle)).toEqual([
+      "term_ask_question",
       "term_done_unread",
       "term_working",
-      "term_error",
-      "term_ask_question",
-      "term_working_older",
-      "term_done_reviewed",
       "term_idle",
     ]);
   });
@@ -464,39 +463,41 @@ describe("buildDeck — merges orca sources into 8-slot button model", () => {
     expect(needsAttention(deckAfter.slots[1] as any, false)).toBe(false);
   });
 
-  it("does not group by project: individual sessions stand on their own state and recency", () => {
-    const ts = [
-      { handle: "term_a", tabId: "t1", leafId: "l1", title: "a", worktreePath: "/x/alpha", lastOutputAt: T },
-      { handle: "term_b", tabId: "t2", leafId: "l2", title: "b", worktreePath: "/x/beta", lastOutputAt: T },
-      { handle: "term_c", tabId: "t3", leafId: "l3", title: "c", worktreePath: "/x/beta", lastOutputAt: T + 10 * MIN },
-    ];
-    const wts = ts.map((t) => ({ agents: [{ paneKey: `${t.tabId}:${t.leafId}`, state: "done" }] }));
-    const handles = buildDeck({ terminals: ts, worktrees: wts }).slots.filter((s) => !s.empty).map((s: any) => s.handle);
-    // term_c (done, T+10m) first, then term_a (done, T) and term_b (done, T) in handle order (no project clustering lifting term_b)
-    expect(handles).toEqual(["term_c", "term_a", "term_b"]);
-  });
-
-  it("sortSessionsByProject: legacy helper preserves project grouping", () => {
-    const ts = [
-      { handle: "term_a", tabId: "t1", leafId: "l1", project: "alpha", recency: T },
-      { handle: "term_b", tabId: "t2", leafId: "l2", project: "beta", recency: T },
-      { handle: "term_c", tabId: "t3", leafId: "l3", project: "beta", recency: T + 10 * MIN },
-    ];
-    const sorted = sortSessionsByProject(ts, (s) => s.project, (s) => s.recency, (s) => s.handle);
-    expect(sorted.map((s) => s.handle)).toEqual(["term_c", "term_b", "term_a"]);
-  });
-
-  it("uses agent evidence timestamps when terminal output time is missing", () => {
+  it("orders sessions within a worktree by agents list order when visualLayouts is not provided", () => {
     const ts = [
       { handle: "term_a", tabId: "t1", leafId: "l1", title: "a", worktreePath: "/x/alpha" },
       { handle: "term_b", tabId: "t2", leafId: "l2", title: "b", worktreePath: "/x/beta" },
+      { handle: "term_c", tabId: "t3", leafId: "l3", title: "c", worktreePath: "/x/beta" },
     ];
     const wts = [
-      { agents: [{ paneKey: "t1:l1", state: "done", updatedAt: T }] },
-      { agents: [{ paneKey: "t2:l2", state: "done", updatedAt: T + 5 * MIN }] },
+      {
+        worktreePath: "/x/beta",
+        agents: [
+          { paneKey: "t3:l3", state: "done" },
+          { paneKey: "t2:l2", state: "done" },
+        ],
+      },
+      {
+        worktreePath: "/x/alpha",
+        agents: [
+          { paneKey: "t1:l1", state: "done" },
+        ],
+      },
     ];
     const handles = buildDeck({ terminals: ts, worktrees: wts }).slots.filter((s) => !s.empty).map((s: any) => s.handle);
-    expect(handles).toEqual(["term_b", "term_a"]);
+    expect(handles).toEqual(["term_c", "term_b", "term_a"]);
+  });
+
+  it("appends unattached agent terminals in natural encounter order", () => {
+    const ts = [
+      { handle: "term_attached", tabId: "t1", leafId: "l1", title: "attached", worktreeId: "wt_1" },
+      { handle: "term_unattached", tabId: "t2", leafId: "l2", title: "unattached", agentIdentity: "claude" },
+    ];
+    const wts = [
+      { worktreeId: "wt_1", agents: [{ paneKey: "t1:l1", state: "working" }] },
+    ];
+    const handles = buildDeck({ terminals: ts, worktrees: wts }).slots.filter((s) => !s.empty).map((s: any) => s.handle);
+    expect(handles).toEqual(["term_attached", "term_unattached"]);
   });
 
   it("pagination: splits pages when session count exceeds capacity", () => {
@@ -586,43 +587,87 @@ describe("nextWorktreeName — generate name for new worktree slot", () => {
   });
 });
 
-describe("statePriority & sortSessions — priority rankings and un-grouped session ordering", () => {
-  it("statePriority: maps states to numeric ranks", () => {
-    expect(statePriority("waiting")).toBe(0);
-    expect(statePriority("blocked")).toBe(0);
-    expect(statePriority("error")).toBe(0);
-    expect(statePriority("working")).toBe(0);
-    expect(statePriority("done", true)).toBe(0);
-    expect(statePriority("idle")).toBe(20);
-    expect(statePriority("unverifiable")).toBe(20);
-    expect(statePriority("done", false)).toBe(20);
-    expect(statePriority("done")).toBe(20);
-    expect(statePriority(undefined)).toBe(20);
-    expect(statePriority("unknown" as any)).toBe(20);
+describe("orderSessionsByOrca — Orca natural ordering", () => {
+  it("orders sessions according to worktree list order", () => {
+    const s1 = { tabId: "t1", leafId: "l1", handle: "s1" };
+    const s2 = { tabId: "t2", leafId: "l2", handle: "s2" };
+    const s3 = { tabId: "t3", leafId: "l3", handle: "s3" };
+    const worktrees = [
+      { worktreeId: "wt2", agents: [{ paneKey: "t2:l2" }] },
+      { worktreeId: "wt3", agents: [{ paneKey: "t3:l3" }] },
+      { worktreeId: "wt1", agents: [{ paneKey: "t1:l1" }] },
+    ];
+    const ordered = orderSessionsByOrca([s1, s2, s3], worktrees);
+    expect(ordered.map((s) => s.handle)).toEqual(["s2", "s3", "s1"]);
   });
 
-  it("sortSessions: orders by state priority tier, then activity bucket recency", () => {
-    const items = [
-      { id: "s1", state: "done" as const, recency: 10000 },
-      { id: "s2", state: "waiting" as const, recency: 2000 },
-      { id: "s3", state: "working" as const, recency: 5000 },
-      { id: "s4", state: "error" as const, recency: 3000 },
-      { id: "s5", state: "idle" as const, recency: 8000 },
-      { id: "s6", state: "working" as const, recency: 9000 },
-      { id: "s7", state: "done" as const, recency: 4000 },
+  it("orders sessions within a worktree according to visualLayouts root tabs", () => {
+    const s1 = { tabId: "t1", leafId: "l1", handle: "s1" };
+    const s2 = { tabId: "t2", leafId: "l2", handle: "s2" };
+    const worktrees = [
+      { worktreeId: "wt1", agents: [{ paneKey: "t1:l1" }, { paneKey: "t2:l2" }] },
     ];
-    // Active tier (s6, s3, s4, s2) -> Inactive tier (s1, s5, s7)
-    const sorted = sortSessions(items, (s) => s.state, (s) => s.recency, (s) => s.id, {
-      bucketMs: 1,
-    });
-    expect(sorted.map((s) => s.id)).toEqual(["s6", "s3", "s4", "s2", "s1", "s5", "s7"]);
+    const visualLayouts = [
+      {
+        worktreeId: "wt1",
+        root: {
+          type: "group",
+          tabs: [
+            { tabId: "t2", panes: { type: "terminal", handle: "s2" } },
+            { tabId: "t1", panes: { type: "terminal", handle: "s1" } },
+          ],
+        },
+      },
+    ];
+    const ordered = orderSessionsByOrca([s1, s2], worktrees, visualLayouts);
+    expect(ordered.map((s) => s.handle)).toEqual(["s2", "s1"]);
+  });
 
-    // With usePriority: false: pure recency order
-    const pureRecency = sortSessions(items, (s) => s.state, (s) => s.recency, (s) => s.id, {
-      bucketMs: 1,
-      usePriority: false,
-    });
-    expect(pureRecency.map((s) => s.id)).toEqual(["s1", "s6", "s5", "s3", "s7", "s4", "s2"]);
+  it("extracts panes from nested layout splits", () => {
+    const s1 = { tabId: "t1", leafId: "l1", handle: "s1" };
+    const s2 = { tabId: "t1", leafId: "l2", handle: "s2" };
+    const s3 = { tabId: "t1", leafId: "l3", handle: "s3" };
+    const worktrees = [
+      { worktreeId: "wt1", agents: [{ paneKey: "t1:l1" }, { paneKey: "t1:l2" }, { paneKey: "t1:l3" }] },
+    ];
+    const visualLayouts = [
+      {
+        worktreeId: "wt1",
+        root: {
+          type: "group",
+          tabs: [
+            {
+              tabId: "t1",
+              panes: {
+                type: "split",
+                children: [
+                  { type: "terminal", handle: "s3", leafId: "l3" },
+                  {
+                    type: "split",
+                    children: [
+                      { type: "terminal", handle: "s1", leafId: "l1" },
+                      { type: "terminal", handle: "s2", leafId: "l2" },
+                    ],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ];
+    const ordered = orderSessionsByOrca([s1, s2, s3], worktrees, visualLayouts);
+    expect(ordered.map((s) => s.handle)).toEqual(["s3", "s1", "s2"]);
+  });
+
+  it("appends unattached sessions not in worktrees", () => {
+    const s1 = { tabId: "t1", leafId: "l1", handle: "s1" };
+    const sOrphan = { tabId: "orphan", leafId: "orphan", handle: "orphan" };
+    const worktrees = [
+      { worktreeId: "wt1", agents: [{ paneKey: "t1:l1" }] },
+    ];
+    const ordered = orderSessionsByOrca([sOrphan, s1], worktrees);
+    expect(ordered.map((s) => s.handle)).toEqual(["s1", "orphan"]);
   });
 });
 
@@ -924,8 +969,8 @@ describe("buildDeck — Orca substates (interrupted, monitoring, permissions)", 
       {
         agents: [
           { paneKey: "tab_int:leaf_int", state: "done" as const, interrupted: true, agentType: "antigravity" },
-          { paneKey: "tab_done:leaf_done", state: "done" as const, interrupted: false, agentType: "antigravity" },
           { paneKey: "tab_work:leaf_work", state: "working" as const, interrupted: false, agentType: "claude" },
+          { paneKey: "tab_done:leaf_done", state: "done" as const, interrupted: false, agentType: "antigravity" },
         ],
       },
     ];
@@ -1074,15 +1119,19 @@ describe("environmentArgs — routing commands to a paired remote runtime", () =
 
 describe("buildDeck — pinnedSlots interaction hold", () => {
   const T = 1_700_000_000_000;
-  it("preserves exact slot indices when pinnedSlots is provided even if a session becomes more recent", () => {
+  it("preserves exact slot indices when pinnedSlots is provided overriding natural order", () => {
     const ts = [
       { handle: "term_a", tabId: "t1", leafId: "l1", title: "a", worktreePath: "/x", lastOutputAt: T },
       { handle: "term_b", tabId: "t2", leafId: "l2", title: "b", worktreePath: "/x", lastOutputAt: T + 1000 },
     ];
-    const wts = ts.map((t) => ({ agents: [{ paneKey: `${t.tabId}:${t.leafId}`, state: "working" }] }));
+    // Worktree order puts term_b first
+    const wts = [
+      { agents: [{ paneKey: "t2:l2", state: "working" }] },
+      { agents: [{ paneKey: "t1:l1", state: "working" }] },
+    ];
 
-    // Unpinned: term_b (more recent) is at slot 0, term_a is at slot 1
-    const unpinned = buildDeck({ terminals: ts, worktrees: wts }, { now: T + 2000, activityBucketMs: 1 });
+    // Unpinned: term_b is at slot 0, term_a is at slot 1
+    const unpinned = buildDeck({ terminals: ts, worktrees: wts }, { now: T + 2000 });
     expect(unpinned.slots[0].handle).toBe("term_b");
     expect(unpinned.slots[1].handle).toBe("term_a");
 
@@ -1093,7 +1142,7 @@ describe("buildDeck — pinnedSlots interaction hold", () => {
     ]);
     const pinned = buildDeck(
       { terminals: ts, worktrees: wts },
-      { now: T + 2000, activityBucketMs: 1, pinnedSlots: pinnedMap },
+      { now: T + 2000, pinnedSlots: pinnedMap },
     );
     // Positions stay completely frozen in place
     expect(pinned.slots[0].handle).toBe("term_a");

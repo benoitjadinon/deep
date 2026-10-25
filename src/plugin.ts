@@ -35,7 +35,6 @@ import {
   resolveActiveTerminal,
   nextWorktreeName,
   stabilizeTerminalAgents,
-  DEFAULT_ACTIVITY_BUCKET_MS,
   type Deck,
   type OrcaHost,
   type OrcaRepo,
@@ -116,13 +115,6 @@ const TALK_HINT: Record<string, string> = {
 };
 const talkHint = (code: string) => TALK_HINT[code] ?? "STT Error";
 const EXEC = { maxBuffer: 64 * 1024 * 1024 } as const;
-// Deck ordering debounce: sessions/groups active in the same wall-clock bucket keep their relative order,
-// so several concurrently working projects don't re-sort the keys on every poll. Override with
-// AGENTDECK_ORDER_BUCKET_MS (milliseconds).
-const ORDER_BUCKET_MS =
-  Number(process.env.AGENTDECK_ORDER_BUCKET_MS ?? "") > 0
-    ? Number(process.env.AGENTDECK_ORDER_BUCKET_MS)
-    : DEFAULT_ACTIVITY_BUCKET_MS;
 
 async function orcaJson(args: string[]): Promise<any> {
   const { stdout } = await execFileP(ORCA, [...args, "--json"], EXEC);
@@ -1255,7 +1247,6 @@ async function poll(): Promise<void> {
       page: currentPage,
       perPage: activeSlots,
       now,
-      activityBucketMs: ORDER_BUCKET_MS,
       pagingSlotIndex,
       pinnedSlots: activePinned,
     });
@@ -1265,13 +1256,12 @@ async function poll(): Promise<void> {
         page: currentPage,
         perPage: activeSlots,
         now,
-        activityBucketMs: ORDER_BUCKET_MS,
         pagingSlotIndex,
         pinnedSlots: activePinned,
       });
     }
     // Full session list (sidebar total) — target dial can cycle past 8 keys
-    const full = buildDeck(deckInput, { page: 0, perPage: 9999, now, activityBucketMs: ORDER_BUCKET_MS });
+    const full = buildDeck(deckInput, { page: 0, perPage: 9999, now });
     allHandles = [];
     sessionByHandle.clear();
     for (const s of full.slots) {

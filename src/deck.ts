@@ -311,115 +311,120 @@ export function sessionRecency(...times: Array<number | null | undefined>): numb
   return max;
 }
 
-/** Ordering debounce: sessions active in the same wall-clock bucket tie, so the deck only re-sorts when
- * activity crosses a bucket boundary instead of on every output line. Default 60s. */
-export const DEFAULT_ACTIVITY_BUCKET_MS = 60 * 1000;
-
-/** Coarse activity epoch of a timestamp (0 when unknown = oldest). */
-export function activityBucket(
-  timestamp: number | null | undefined,
-  bucketMs: number = DEFAULT_ACTIVITY_BUCKET_MS,
-): number {
-  if (typeof timestamp !== "number" || !Number.isFinite(timestamp) || timestamp <= 0) return 0;
-  return Math.floor(timestamp / Math.max(1, bucketMs));
-}
-
-/** State sorting priority rank: lower number = placed higher/earlier on the deck */
-export function statePriority(state: AgentState, unread?: boolean): number {
-  if (state === "done") {
-    return unread ? 0 : 20; // unread done needs attention (active tier); reviewed done is inactive tier
-  }
-  switch (state) {
-    case "working":
-    case "monitoring":
-    case "waiting":
-    case "permission":
-    case "blocked":
-    case "interrupted":
-    case "error":
-    case "failed":
-      return 0; // Active / In-progress / Attention tier
-    case "idle":
-    case "unverifiable":
-    default:
-      return 20; // Inactive / Completed tier
-  }
-}
-
-/**
- * Deck ordering: sort sessions by importance (active/attention first, completed/idle last),
- * then by activity recency bucket.
- * Inside each tier, sessions are ordered by activity bucket (freshest bucket first),
- * with the terminal handle as deterministic tiebreak.
- */
-export function sortSessions<T>(
-  sessions: T[],
-  stateOf: (s: T) => AgentState,
-  recencyOf: (s: T) => number,
-  handleOf: (s: T) => string,
-  opts: {
-    bucketMs?: number;
-    unreadOf?: (s: T) => boolean | undefined;
-    usePriority?: boolean;
-  } = {},
-): T[] {
-  const bucketMs = opts.bucketMs ?? DEFAULT_ACTIVITY_BUCKET_MS;
-  const usePriority = opts.usePriority ?? true;
-  const entries = sessions.map((s) => ({
-    s,
-    priority: usePriority ? statePriority(stateOf(s), opts.unreadOf?.(s)) : 0,
-    bucket: activityBucket(recencyOf(s), bucketMs),
-    handle: handleOf(s),
-  }));
-
-  entries.sort((a, b) => {
-    // 1. Primary sort: state priority (active/attention tier first, completed/idle last)
-    if (a.priority !== b.priority) return a.priority - b.priority;
-    // 2. Secondary sort: activity recency bucket (most recently active session first inside tier)
-    if (a.bucket !== b.bucket) return b.bucket - a.bucket;
-    // 3. Deterministic handle tiebreak
-    return a.handle.localeCompare(b.handle);
-  });
-
-  return entries.map((e) => e.s);
-}
-
-/**
- * Legacy project-grouped deck ordering.
- */
-export function sortSessionsByProject<T>(
-  sessions: T[],
-  projectOf: (s: T) => string | undefined,
-  recencyOf: (s: T) => number,
-  handleOf: (s: T) => string,
-  opts: { bucketMs?: number } = {},
-): T[] {
-  const bucketMs = opts.bucketMs ?? DEFAULT_ACTIVITY_BUCKET_MS;
-  const entries = sessions.map((s) => ({
-    s,
-    project: projectOf(s) ?? "",
-    bucket: activityBucket(recencyOf(s), bucketMs),
-    handle: handleOf(s),
-  }));
-
-  const groupBucket = new Map<string, number>();
-  for (const e of entries) {
-    const prev = groupBucket.get(e.project) ?? 0;
-    if (e.bucket > prev) groupBucket.set(e.project, e.bucket);
-  }
-
-  entries.sort((a, b) => {
-    if (a.project !== b.project) {
-      const ra = groupBucket.get(a.project) ?? 0;
-      const rb = groupBucket.get(b.project) ?? 0;
-      if (ra !== rb) return rb - ra; // most recently active project group first
-      return a.project.localeCompare(b.project); // deterministic group order
+/** Extract all terminal handles and paneKeys in visual layout order (tab-order from left to right) */
+export function extractLayoutPanes(node: any): Array<{ handle?: string; paneKey?: string }> {
+  const result: Array<{ handle?: string; paneKey?: string }> = [];
+  const walk = (n: any) => {
+    if (!n) return;
+    if (n.type === "terminal") {
+      const paneKey = n.tabId && n.leafId ? `${n.tabId}:${n.leafId}` : undefined;
+      result.push({ handle: n.handle, paneKey });
+      return;
     }
-    if (a.bucket !== b.bucket) return b.bucket - a.bucket; // most recently active session first
-    return a.handle.localeCompare(b.handle);
-  });
+    if (Array.isArray(n.tabs)) {
+      for (const tab of n.tabs) {
+        if (tab.panes) {
+          walk(tab.panes);
+        } else {
+          const tabId = tab.tabId;
+          const leafId = tab.activeLeafId;
+          const paneKey = tabId && leafId ? `${tabId}:${leafId}` : undefined;
+          result.push({ paneKey });
+        }
+      }
+    }
+    if (n.first) walk(n.first);
+    if (n.second) walk(n.second);
+    if (Array.isArray(n.children)) {
+      for (const child of n.children) walk(child);
+    }
+  };
+  walk(node);
+  return result;
+}
 
-  return entries.map((e) => e.s);
+/**
+ * Order sessions to follow the order displayed in Orca:
+ * 1. Worktrees follow the order provided by Orca (`input.worktrees` from `orca worktree ps`).
+ * 2. Within each worktree, sessions follow visual layout tab order (left to right),
+ *    falling back to worktree agent order.
+ * 3. Any unattached agent terminals follow in their natural encounter order.
+ */
+export function orderSessionsByOrca<T extends Record<string, any>>(
+  sessions: T[],
+  worktrees?: OrcaWorktree[],
+  visualLayouts?: any[],
+): T[] {
+  const getHandle = (s: T): string => s.t?.handle ?? s.handle ?? "";
+  const getPane = (s: T): string =>
+    s.pane ?? s.paneKey ?? (s.t?.tabId && s.t?.leafId ? `${s.t.tabId}:${s.t.leafId}` : s.tabId && s.leafId ? `${s.tabId}:${s.leafId}` : "");
+  const getWtId = (s: T): string | undefined => s.t?.worktreeId ?? s.worktreeId;
+
+  const sessionByPane = new Map<string, T>();
+  const sessionByHandle = new Map<string, T>();
+  const sessionsByWt = new Map<string, T[]>();
+
+  for (const s of sessions) {
+    const pane = getPane(s);
+    if (pane) sessionByPane.set(pane, s);
+    const handle = getHandle(s);
+    if (handle) sessionByHandle.set(handle, s);
+    const wtId = getWtId(s);
+    if (wtId) {
+      const list = sessionsByWt.get(wtId) ?? [];
+      list.push(s);
+      sessionsByWt.set(wtId, list);
+    }
+  }
+
+  // Extract visual layout tab/pane order per worktreeId
+  const layoutPanesByWt = new Map<string, Array<{ handle?: string; paneKey?: string }>>();
+  if (visualLayouts) {
+    for (const vl of visualLayouts) {
+      if (!vl?.worktreeId || !vl?.root) continue;
+      layoutPanesByWt.set(vl.worktreeId, extractLayoutPanes(vl.root));
+    }
+  }
+
+  const result: T[] = [];
+  const seen = new Set<string>();
+
+  const add = (s?: T) => {
+    if (!s) return;
+    const key = getHandle(s) || getPane(s);
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      result.push(s);
+    }
+  };
+
+  // 1. Follow order of worktrees from Orca
+  for (const wt of worktrees ?? []) {
+    const wtId = wt.worktreeId;
+    if (wtId && layoutPanesByWt.has(wtId)) {
+      for (const p of layoutPanesByWt.get(wtId)!) {
+        const s =
+          (p.handle ? sessionByHandle.get(p.handle) : undefined) ||
+          (p.paneKey ? sessionByPane.get(p.paneKey) : undefined);
+        add(s);
+      }
+    }
+    for (const a of wt.agents ?? []) {
+      add(sessionByPane.get(a.paneKey));
+    }
+    if (wtId) {
+      for (const s of sessionsByWt.get(wtId) ?? []) {
+        add(s);
+      }
+    }
+  }
+
+  // 2. Any remaining agent sessions in raw order
+  for (const s of sessions) {
+    add(s);
+  }
+
+  return result;
 }
 
 /**
@@ -500,13 +505,11 @@ export function representativeOtherState(
 const EMPTY: Button = { empty: true };
 
 /**
- * Merge two Orca sources into an 8-slot (default) button model.
+ * Merge Orca sources into an 8-slot (default) button model.
  * - Join terminal (handle) and worktree agent (state) by paneKey (`tabId:leafId`).
  * - Exclude pure shell terminals without agent state.
- * - Group by project: a project's agents are adjacent, groups ordered by most recent activity
- *   (freshest activity bucket first), most recent session first inside a group, handle as deterministic
- *   tiebreak. Activity is bucketed (`activityBucketMs`, default 60s) so concurrently working projects
- *   do not re-sort the deck on every output line.
+ * - Follow the order of sessions displayed in Orca: worktrees in Orca's order (`orca worktree ps`),
+ *   and within each worktree, sessions in visual layout tab order (left to right).
  * - Paginate by perPage (default 8), padding empty slots with `{ empty: true }`.
  */
 export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
@@ -690,14 +693,8 @@ export function buildDeck(input: DeckInput, opts: DeckOptions = {}): Deck {
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
 
-  // Sort sessions: alerts/questions first -> active working -> inactive -> reviewed done; most recent activity first inside each tier.
-  const sessions = sortSessions(
-    sessionsRaw,
-    (s) => s.state,
-    (s) => s.recency,
-    (s) => s.t.handle,
-    { bucketMs: opts.activityBucketMs, unreadOf: (s) => s.unread },
-  );
+  // Follow the order of sessions displayed in Orca (worktree order + visual layout tab order) without custom sorting.
+  const sessions = orderSessionsByOrca(sessionsRaw, input.worktrees, input.visualLayouts);
 
   // Repository metadata index by repoId, path, and displayName
   const repoById = new Map<string, OrcaRepo>();

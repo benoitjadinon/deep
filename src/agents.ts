@@ -1750,15 +1750,17 @@ export function parseHermesModelsCache(jsonText: string): string[] {
 export function qualifyHermesModel(candidate: string, knownModels?: string[]): string {
   if (!candidate || candidate.includes("/")) return candidate;
   const list = knownModels && knownModels.length ? knownModels : readHermesModelsCache();
-  const fallback = list.length ? list : [
+  const match = list.find((m) => m === candidate || m.endsWith("/" + candidate));
+  if (match) return match;
+  const defaults = [
     "deepseek/deepseek-v4-flash-0731",
     "anthropic/claude-sonnet-4-6",
     "openai/gpt-5.6-luna",
     "google/gemini-3.8-flash",
     "minimax/minimax-m3",
   ];
-  const match = fallback.find((m) => m === candidate || m.endsWith("/" + candidate));
-  return match || candidate;
+  const defaultMatch = defaults.find((m) => m === candidate || m.endsWith("/" + candidate));
+  return defaultMatch || candidate;
 }
 
 export function readHermesState(ctx?: AgentContext): AgentStateSnapshot {

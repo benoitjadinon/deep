@@ -55839,15 +55839,17 @@ function parseHermesModelsCache(jsonText) {
 function qualifyHermesModel(candidate, knownModels) {
   if (!candidate || candidate.includes("/")) return candidate;
   const list = knownModels && knownModels.length ? knownModels : readHermesModelsCache();
-  const fallback = list.length ? list : [
+  const match = list.find((m) => m === candidate || m.endsWith("/" + candidate));
+  if (match) return match;
+  const defaults = [
     "deepseek/deepseek-v4-flash-0731",
     "anthropic/claude-sonnet-4-6",
     "openai/gpt-5.6-luna",
     "google/gemini-3.8-flash",
     "minimax/minimax-m3"
   ];
-  const match = fallback.find((m) => m === candidate || m.endsWith("/" + candidate));
-  return match || candidate;
+  const defaultMatch = defaults.find((m) => m === candidate || m.endsWith("/" + candidate));
+  return defaultMatch || candidate;
 }
 function readHermesState(ctx) {
   let model;
@@ -56653,47 +56655,93 @@ function sessionRecency(...times) {
   }
   return max;
 }
-var DEFAULT_ACTIVITY_BUCKET_MS = 60 * 1e3;
-function activityBucket(timestamp, bucketMs = DEFAULT_ACTIVITY_BUCKET_MS) {
-  if (typeof timestamp !== "number" || !Number.isFinite(timestamp) || timestamp <= 0) return 0;
-  return Math.floor(timestamp / Math.max(1, bucketMs));
+function extractLayoutPanes(node) {
+  const result = [];
+  const walk = (n) => {
+    if (!n) return;
+    if (n.type === "terminal") {
+      const paneKey = n.tabId && n.leafId ? `${n.tabId}:${n.leafId}` : void 0;
+      result.push({ handle: n.handle, paneKey });
+      return;
+    }
+    if (Array.isArray(n.tabs)) {
+      for (const tab of n.tabs) {
+        if (tab.panes) {
+          walk(tab.panes);
+        } else {
+          const tabId = tab.tabId;
+          const leafId = tab.activeLeafId;
+          const paneKey = tabId && leafId ? `${tabId}:${leafId}` : void 0;
+          result.push({ paneKey });
+        }
+      }
+    }
+    if (n.first) walk(n.first);
+    if (n.second) walk(n.second);
+    if (Array.isArray(n.children)) {
+      for (const child of n.children) walk(child);
+    }
+  };
+  walk(node);
+  return result;
 }
-function statePriority(state, unread) {
-  if (state === "done") {
-    return unread ? 0 : 20;
+function orderSessionsByOrca(sessions, worktrees, visualLayouts) {
+  const getHandle = (s) => s.t?.handle ?? s.handle ?? "";
+  const getPane = (s) => s.pane ?? s.paneKey ?? (s.t?.tabId && s.t?.leafId ? `${s.t.tabId}:${s.t.leafId}` : s.tabId && s.leafId ? `${s.tabId}:${s.leafId}` : "");
+  const getWtId = (s) => s.t?.worktreeId ?? s.worktreeId;
+  const sessionByPane = /* @__PURE__ */ new Map();
+  const sessionByHandle2 = /* @__PURE__ */ new Map();
+  const sessionsByWt = /* @__PURE__ */ new Map();
+  for (const s of sessions) {
+    const pane = getPane(s);
+    if (pane) sessionByPane.set(pane, s);
+    const handle = getHandle(s);
+    if (handle) sessionByHandle2.set(handle, s);
+    const wtId = getWtId(s);
+    if (wtId) {
+      const list = sessionsByWt.get(wtId) ?? [];
+      list.push(s);
+      sessionsByWt.set(wtId, list);
+    }
   }
-  switch (state) {
-    case "working":
-    case "monitoring":
-    case "waiting":
-    case "permission":
-    case "blocked":
-    case "interrupted":
-    case "error":
-    case "failed":
-      return 0;
-    // Active / In-progress / Attention tier
-    case "idle":
-    case "unverifiable":
-    default:
-      return 20;
+  const layoutPanesByWt = /* @__PURE__ */ new Map();
+  if (visualLayouts) {
+    for (const vl of visualLayouts) {
+      if (!vl?.worktreeId || !vl?.root) continue;
+      layoutPanesByWt.set(vl.worktreeId, extractLayoutPanes(vl.root));
+    }
   }
-}
-function sortSessions(sessions, stateOf, recencyOf, handleOf, opts = {}) {
-  const bucketMs = opts.bucketMs ?? DEFAULT_ACTIVITY_BUCKET_MS;
-  const usePriority = opts.usePriority ?? true;
-  const entries = sessions.map((s) => ({
-    s,
-    priority: usePriority ? statePriority(stateOf(s), opts.unreadOf?.(s)) : 0,
-    bucket: activityBucket(recencyOf(s), bucketMs),
-    handle: handleOf(s)
-  }));
-  entries.sort((a, b) => {
-    if (a.priority !== b.priority) return a.priority - b.priority;
-    if (a.bucket !== b.bucket) return b.bucket - a.bucket;
-    return a.handle.localeCompare(b.handle);
-  });
-  return entries.map((e) => e.s);
+  const result = [];
+  const seen = /* @__PURE__ */ new Set();
+  const add = (s) => {
+    if (!s) return;
+    const key = getHandle(s) || getPane(s);
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      result.push(s);
+    }
+  };
+  for (const wt of worktrees ?? []) {
+    const wtId = wt.worktreeId;
+    if (wtId && layoutPanesByWt.has(wtId)) {
+      for (const p of layoutPanesByWt.get(wtId)) {
+        const s = (p.handle ? sessionByHandle2.get(p.handle) : void 0) || (p.paneKey ? sessionByPane.get(p.paneKey) : void 0);
+        add(s);
+      }
+    }
+    for (const a of wt.agents ?? []) {
+      add(sessionByPane.get(a.paneKey));
+    }
+    if (wtId) {
+      for (const s of sessionsByWt.get(wtId) ?? []) {
+        add(s);
+      }
+    }
+  }
+  for (const s of sessions) {
+    add(s);
+  }
+  return result;
 }
 function nextWorktreeName(repo, existingNames) {
   const prefix = `${repo}-`;
@@ -56870,13 +56918,7 @@ function buildDeck(input, opts = {}) {
       recency
     };
   }).filter((x) => x !== null);
-  const sessions = sortSessions(
-    sessionsRaw,
-    (s) => s.state,
-    (s) => s.recency,
-    (s) => s.t.handle,
-    { bucketMs: opts.activityBucketMs, unreadOf: (s) => s.unread }
-  );
+  const sessions = orderSessionsByOrca(sessionsRaw, input.worktrees, input.visualLayouts);
   const repoById = /* @__PURE__ */ new Map();
   const repoByPath = /* @__PURE__ */ new Map();
   const repoByName = /* @__PURE__ */ new Map();
@@ -57592,7 +57634,6 @@ var TALK_HINT = {
 };
 var talkHint = (code) => TALK_HINT[code] ?? "STT Error";
 var EXEC = { maxBuffer: 64 * 1024 * 1024 };
-var ORDER_BUCKET_MS = Number(process.env.AGENTDECK_ORDER_BUCKET_MS ?? "") > 0 ? Number(process.env.AGENTDECK_ORDER_BUCKET_MS) : DEFAULT_ACTIVITY_BUCKET_MS;
 async function orcaJson(args) {
   const { stdout } = await execFileP(ORCA, [...args, "--json"], EXEC);
   return JSON.parse(stdout);
@@ -58609,7 +58650,6 @@ async function poll() {
       page: currentPage,
       perPage: activeSlots,
       now,
-      activityBucketMs: ORDER_BUCKET_MS,
       pagingSlotIndex,
       pinnedSlots: activePinned
     });
@@ -58619,12 +58659,11 @@ async function poll() {
         page: currentPage,
         perPage: activeSlots,
         now,
-        activityBucketMs: ORDER_BUCKET_MS,
         pagingSlotIndex,
         pinnedSlots: activePinned
       });
     }
-    const full = buildDeck(deckInput, { page: 0, perPage: 9999, now, activityBucketMs: ORDER_BUCKET_MS });
+    const full = buildDeck(deckInput, { page: 0, perPage: 9999, now });
     allHandles = [];
     sessionByHandle.clear();
     for (const s of full.slots) {
