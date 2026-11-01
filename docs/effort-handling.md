@@ -5,7 +5,8 @@ models legitimately don't offer every level (e.g. **DeepSeek has no `medium`**).
 
 ## The generic pipeline
 
-For the **target** session, three pieces are resolved independently every poll (~1.5s):
+For the **target** session, three pieces are resolved independently on each shared board poll
+(every 8s while idle, or every second for 4s after interaction):
 
 | Piece | Source |
 |---|---|

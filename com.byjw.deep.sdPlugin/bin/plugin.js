@@ -58961,6 +58961,9 @@ var slotViews = /* @__PURE__ */ new Map();
 var dialViews = /* @__PURE__ */ new Map();
 var lastImg = /* @__PURE__ */ new Map();
 var lastDialImg = /* @__PURE__ */ new Map();
+function hasVisibleActions() {
+  return slotViews.size > 0 || dialViews.size > 0;
+}
 function getSortedSlotEntries() {
   return Array.from(slotViews.entries()).sort(([, a], [, b]) => {
     const cA = a.coordinates;
@@ -59211,7 +59214,7 @@ async function refreshRateLimits() {
 }
 var pollBusy = false;
 async function poll() {
-  if (pollBusy) return;
+  if (pollBusy || !hasVisibleActions()) return;
   pollBusy = true;
   try {
     refreshRepos().catch(() => {
@@ -59468,30 +59471,41 @@ async function spawnSession(ev) {
 }
 var pollTimer = null;
 var pollBurstUntil = 0;
-var IDLE_POLL_INTERVAL_MS = 3e3;
+var IDLE_POLL_INTERVAL_MS = 8e3;
 var BURST_POLL_INTERVAL_MS = 1e3;
 var BURST_DURATION_MS = 4e3;
-function boostPolling(durationMs = BURST_DURATION_MS) {
-  pollBurstUntil = Math.max(pollBurstUntil, Date.now() + durationMs);
-  if (pollTimer) {
-    clearTimeout(pollTimer);
-    pollTimer = setTimeout(runPollLoop, 50);
-  }
-}
-function pollDebounced(delay = 50) {
+function schedulePoll(delay) {
   if (pollTimer) clearTimeout(pollTimer);
   pollTimer = setTimeout(runPollLoop, delay);
 }
+function stopPollingIfIdle() {
+  if (hasVisibleActions() || !pollTimer) return;
+  clearTimeout(pollTimer);
+  pollTimer = null;
+}
+function boostPolling(durationMs = BURST_DURATION_MS) {
+  pollBurstUntil = Math.max(pollBurstUntil, Date.now() + durationMs);
+  if (hasVisibleActions()) schedulePoll(50);
+}
+function pollDebounced(delay = 50) {
+  if (!hasVisibleActions()) {
+    stopPollingIfIdle();
+    return;
+  }
+  schedulePoll(delay);
+}
 async function runPollLoop() {
   pollTimer = null;
+  if (!hasVisibleActions()) return;
   try {
     await poll();
   } catch (e) {
     plugin_default.logger.error(`poll loop error: ${e}`);
   } finally {
+    if (!hasVisibleActions()) return;
     const isBurst = Date.now() < pollBurstUntil;
     const delay = isBurst ? BURST_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS;
-    pollTimer = setTimeout(runPollLoop, delay);
+    schedulePoll(delay);
   }
 }
 var SlotAction = class extends SingletonAction {
@@ -59514,6 +59528,7 @@ var SlotAction = class extends SingletonAction {
   onWillDisappear(ev) {
     slotViews.delete(ev.action.id);
     lastImg.delete(ev.action.id);
+    stopPollingIfIdle();
   }
   async onKeyDown(ev) {
     const sortedIds = getSortedSlotIds();
@@ -59571,6 +59586,7 @@ var DialBase = class extends SingletonAction {
   onWillDisappear(ev) {
     dialViews.delete(ev.action.id);
     lastDialImg.delete(ev.action.id);
+    stopPollingIfIdle();
   }
   onDialRotate(ev) {
     boostPolling();

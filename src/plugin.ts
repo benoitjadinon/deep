@@ -1071,6 +1071,10 @@ const dialViews = new Map<string, { action: any; role: string }>();
 const lastImg = new Map<string, string>();
 const lastDialImg = new Map<string, string>();
 
+function hasVisibleActions(): boolean {
+  return slotViews.size > 0 || dialViews.size > 0;
+}
+
 function getSortedSlotEntries(): Array<[string, { action: any; coordinates?: Coords; settings?: SlotSettings }]> {
   return Array.from(slotViews.entries()).sort(([, a], [, b]) => {
     const cA = a.coordinates;
@@ -1363,7 +1367,7 @@ async function refreshRateLimits(): Promise<void> {
 
 let pollBusy = false;
 async function poll(): Promise<void> {
-  if (pollBusy) return;
+  if (pollBusy || !hasVisibleActions()) return;
   pollBusy = true;
   try {
     refreshRepos().catch(() => {});
@@ -1641,33 +1645,46 @@ async function spawnSession(ev: any): Promise<void> {
 
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let pollBurstUntil = 0;
-const IDLE_POLL_INTERVAL_MS = 3000;
+const IDLE_POLL_INTERVAL_MS = 8000;
 const BURST_POLL_INTERVAL_MS = 1000;
 const BURST_DURATION_MS = 4000;
 
-function boostPolling(durationMs = BURST_DURATION_MS): void {
-  pollBurstUntil = Math.max(pollBurstUntil, Date.now() + durationMs);
-  if (pollTimer) {
-    clearTimeout(pollTimer);
-    pollTimer = setTimeout(runPollLoop, 50);
-  }
-}
-
-function pollDebounced(delay = 50): void {
+function schedulePoll(delay: number): void {
   if (pollTimer) clearTimeout(pollTimer);
   pollTimer = setTimeout(runPollLoop, delay);
 }
 
+function stopPollingIfIdle(): void {
+  if (hasVisibleActions() || !pollTimer) return;
+  clearTimeout(pollTimer);
+  pollTimer = null;
+}
+
+function boostPolling(durationMs = BURST_DURATION_MS): void {
+  pollBurstUntil = Math.max(pollBurstUntil, Date.now() + durationMs);
+  if (hasVisibleActions()) schedulePoll(50);
+}
+
+function pollDebounced(delay = 50): void {
+  if (!hasVisibleActions()) {
+    stopPollingIfIdle();
+    return;
+  }
+  schedulePoll(delay);
+}
+
 async function runPollLoop(): Promise<void> {
   pollTimer = null;
+  if (!hasVisibleActions()) return;
   try {
     await poll();
   } catch (e) {
     streamDeck.logger.error(`poll loop error: ${e}`);
   } finally {
+    if (!hasVisibleActions()) return;
     const isBurst = Date.now() < pollBurstUntil;
     const delay = isBurst ? BURST_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS;
-    pollTimer = setTimeout(runPollLoop, delay);
+    schedulePoll(delay);
   }
 }
 
@@ -1692,6 +1709,7 @@ class SlotAction extends SingletonAction<SlotSettings> {
   override onWillDisappear(ev: any): void {
     slotViews.delete(ev.action.id);
     lastImg.delete(ev.action.id);
+    stopPollingIfIdle();
   }
   override async onKeyDown(ev: any): Promise<void> {
     const sortedIds = getSortedSlotIds();
@@ -1750,6 +1768,7 @@ class DialBase extends SingletonAction {
   override onWillDisappear(ev: any): void {
     dialViews.delete(ev.action.id);
     lastDialImg.delete(ev.action.id);
+    stopPollingIfIdle();
   }
   override onDialRotate(ev: any): void {
     boostPolling();
