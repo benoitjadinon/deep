@@ -1,0 +1,27 @@
+% agentdeck, build
+
+# Build Stream Deck plugin bundle
+npm run build
+
+# Generate icons from lucide-static
+npm run icons
+
+# Package plugin (icons + build)
+npm run package
+
+% agentdeck, dev
+
+# Run unit tests
+npm run test
+
+# Run unit tests in watch mode
+npm run test:watch
+
+# Test polling Orca agent sessions
+npm run poll
+
+# Restart OpenDeck service/daemon
+npm run restart
+
+# Tail OpenDeck/plugin logs
+npm run logs

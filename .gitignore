@@ -5,3 +5,4 @@ com.byjw.deep.sdPlugin/logs/
 *.streamDeckPlugin
 .DS_Store
 .idea/
+.direnv/
